@@ -1,78 +1,112 @@
-# 御宅追番 (Mikanani-Dog)
+# 御宅追番 (anidog)
 
-一个基于 FastAPI 和 Vue 3 的番剧自动下载管理系统。
+一个基于 Go + Vue 3 的番剧自动下载管理系统。通过 RSS 订阅、BT Indexer 搜索、流媒体抓取三种手段自动为追番列表填坑。
 
 ## 功能特点
 
-- 番剧订阅：管理RSS订阅源，设置过滤规则
-- 资源管理：自动解析番剧标题、集数信息
-- 下载管理：对接下载器（如qBittorrent），监控下载进度
-- 文件处理：智能重命名文件，按番剧整理
-- 通知系统：支持多平台通知
+- **三路并行下载**：Orchestrator 统一调度 RSS / BT Indexer / 流媒体三种源，按剧集粒度自动选最优源
+- **自动发现**：RSS 模式支持 AutoBangumi 风格自动追番，解析标题后通过 Bangumi 建档
+- **智能标题解析**：中文优化的正则解析器，识别字幕组 / 集数 / 分辨率 / 语言 / 批量包
+- **Plex 友好目录**：下载统一落到 `<名称 (年份)>/Season NN/` 目录结构
+- **剧集网格**：源无关的剧集进度 UI，badge 标注每集实际来源（BT / Str / RSS）
+- **诊断面板**：未命中时展示各源检查结果，辅助用户判断是偏好太严还是源无资源
 
 ## 技术栈
 
 ### 后端
-
-- Web框架：FastAPI
-- 数据库：SQLModel + SQLite
-- 任务处理：内置线程池
-- 实时通信：WebSocket
+- Go + Gin + GORM
+- PostgreSQL
+- qBittorrent（Docker LinuxServer 镜像）
+- go-rod（流媒体浏览器自动化）
 
 ### 前端
+- Vue 3 + Pinia + Vue Router
+- Naive UI + Tailwind CSS
+- Vite
 
-- 框架：Vue 3
-- 状态管理：Pinia
-- UI库：Naive UI + Tailwind CSS
-- 构建工具：Vite
-- 实时通信：Socket.IO
+## 快速启动
 
-## 项目结构
-
-```
-mikanani-dog/
-  ├── backend/             # 后端代码
-  │   ├── app/             # 应用代码
-  │   │   ├── api/         # API路由
-  │   │   ├── core/        # 核心模块
-  │   │   ├── models/      # 数据模型
-  │   │   └── services/    # 服务模块
-  │   ├── main.py          # 主入口
-  │   └── requirements.txt # 依赖
-  └── frontend/            # 前端代码
-      ├── src/             # 源码
-      ├── package.json     # 依赖配置
-      ├── vite.config.js   # Vite配置
-      └── tailwind.config.js # Tailwind配置
-```
-
-## 安装与运行
-
-### 后端
+### Docker Compose（推荐）
 
 ```bash
-cd backend
-pip install -r requirements.txt
-python main.py
+# 开发环境（挂载源码 + 热重载）
+docker compose -f docker-compose.dev.yml up -d
+
+# 生产环境
+docker compose up -d
+
+# 查看日志
+docker compose logs -f backend
+
+# 停止
+docker compose down
 ```
 
-### 前端
+访问：
+- 前端：http://localhost:3002
+- 后端：http://localhost:8088/api/v1
+- qBittorrent WebUI：容器内 8080，开发环境不暴露
 
+默认测试账户：`admin / admin123`（首次启动需自行注册）
+
+### 本地开发（非 Docker）
+
+后端：
+```bash
+cd backend
+go mod download
+CONFIG_NAME=dev go run ./cmd/anidog
+```
+
+前端：
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-## 快速开始
+## 项目结构
 
-1. 启动后端服务
-2. 启动前端开发服务器
-3. 访问 http://localhost:3000
-4. 首次使用时注册管理员账户
-5. 添加RSS订阅源和过滤规则
-6. 配置下载器连接信息
+```
+anidog/
+├── backend/                  # Go 后端
+│   ├── cmd/anidog/           # 主入口
+│   ├── internal/
+│   │   ├── handler/          # HTTP 路由
+│   │   ├── service/          # 业务逻辑
+│   │   │   ├── orchestrator/ # 多源编排调度
+│   │   │   ├── indexer/      # BT Indexer (Mikan/Dmhy/BangumiMoe/Nyaa)
+│   │   │   ├── titleparse/   # 标题解析器
+│   │   │   ├── rss/          # RSS 引擎
+│   │   │   ├── stream/       # 流媒体抓取
+│   │   │   ├── bangumi/      # Bangumi API 集成
+│   │   │   └── download/     # 下载任务管理
+│   │   ├── downloader/       # qBittorrent provider
+│   │   └── model/            # GORM 数据模型
+│   └── dev.yaml              # 开发配置
+├── frontend/                 # Vue 前端
+│   └── src/
+│       ├── components/
+│       ├── views/
+│       ├── stores/
+│       └── utils/
+├── docker-compose.yml        # 生产
+└── docker-compose.dev.yml    # 开发
+```
 
-## 开发者
+## 生产部署注意事项
 
-本项目基于 FastAPI 和 Vue 3 技术栈，欢迎贡献代码。 
+`backend/dev.yaml` 中的密码、JWT 密钥都是开发默认值，生产部署必须通过环境变量覆盖：
+
+```yaml
+# docker-compose.yml 中 backend 服务的 environment
+SECRET_KEY: "<32字节随机字符串>"
+DOWNLOADER_PASSWORD: "<qBittorrent WebUI 密码>"
+DATABASE_URL: "postgres://anidog:<强密码>@postgres:5432/anidog?sslmode=disable"
+```
+
+同样地，生产环境应把 `docker-compose.yml` 中 PostgreSQL 和 qBittorrent 的默认密码改掉。
+
+## 开发
+
+详细架构、数据流、常用运维命令见 [CLAUDE.md](CLAUDE.md)。

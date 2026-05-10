@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库服务（开发环境，不暴露端口）
+  postgres:
+    image: postgres:16-alpine
+    container_name: anidog-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: anidog_dev
+      POSTGRES_USER: anidog
+      POSTGRES_PASSWORD: anidog123
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - anidog-dev-network
+
+  # qBittorrent 下载器服务（开发环境，不暴露端口）
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: anidog-qbittorrent-dev
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: Asia/Shanghai
+      WEBUI_PORT: 8080
+    volumes:
+      - qbittorrent_config:/config
+      # 与 backend 共享同一宿主机目录，实现统一下载位置 + 宿主机直接访问
+      - ./downloads:/downloads
+    networks:
+      - anidog-dev-network
+
+  # Backend 服务（dev：挂载源码 + air 热重载）
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: anidog-backend-dev
+    restart: unless-stopped
+    expose:
+      - "8088"
+    depends_on:
+      - postgres
+      - qbittorrent
+    volumes:
+      - ./backend:/app
+      - go_mod_cache:/go/pkg/mod
+      - go_build_cache:/root/.cache/go-build
+      - ./downloads:/downloads
+    environment:
+      CONFIG_NAME: dev
+      GOFLAGS: "-buildvcs=false"
+    networks:
+      - anidog-dev-network
+
+  # Frontend 服务（暴露端口，挂载本地代码并启用热重载）
+  frontend:
+    image: node:18-alpine
+    container_name: anidog-frontend-dev
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://backend:8088
+      - NODE_ENV=development
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 80"
+    ports:
+      - "3002:80"
+    networks:
+      - anidog-dev-network
+
+volumes:
+  postgres_data:
+    driver: local
+  qbittorrent_config:
+    driver: local
+  # qbittorrent_downloads 已移除，改用 bind mount ./downloads 与 backend 共享
+  go_mod_cache:
+    driver: local
+  go_build_cache:
+    driver: local
+
+networks:
+  anidog-dev-network:
+    driver: bridge

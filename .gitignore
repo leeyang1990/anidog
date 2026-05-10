@@ -217,6 +217,19 @@ Thumbs.db
 config.local.py
 .env.local
 .env.production
+# 后端 yaml 配置（可能含密码/token）
+.env.yaml
+*.env.yaml
+# 下载文件和数据库
+/downloads/
+/backend/mikanani.db*
+# Go 构建产物
+/backend/anidog
+/backend/tmp/
+/backend/data/
+# 允许提交的示例/默认配置
+!backend/dev.yaml
+!backend/.env.yaml.example
 
 # Backup files
 *.bak

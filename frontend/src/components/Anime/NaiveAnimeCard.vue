@@ -1,252 +1,83 @@
 <template>
-  <n-card
-    class="anime-card"
-    :bordered="false"
-    size="small"
-    hoverable
+  <div
+    class="group relative bg-card text-card-foreground rounded-lg border overflow-hidden cursor-pointer hover:shadow-md transition-shadow"
     @click="$emit('click')"
   >
-    <div class="relative aspect-[2/3] overflow-hidden">
-      <!-- 封面图片 -->
-      <n-image
-        :src="anime.cover_image || defaultCover"
+    <!-- 删除按钮 (hover 显示) -->
+    <button
+      class="absolute top-2 right-2 z-10 h-8 w-8 rounded-full bg-background/80 backdrop-blur-sm border flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500 hover:text-white hover:border-red-500 transition-all shadow-sm"
+      title="从追番列表移除"
+      @click.stop="handleDelete"
+    >
+      <n-icon size="14"><TrashOutline /></n-icon>
+    </button>
+
+    <!-- Cover -->
+    <div class="relative aspect-[2/3] overflow-hidden bg-muted">
+      <img
+        :src="anime.cover_url || anime.cover_image || ''"
         :alt="anime.title"
-        object-fit="cover"
-        preview-disabled
-        class="w-full h-full transition-transform duration-500 hover:scale-110"
-        @error="handleImageError"
+        class="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+        @error="($event.target).style.display='none'"
       />
-      
-      <!-- 顶部状态标签 -->
-      <div class="absolute top-3 right-3">
-        <n-tag :type="statusTagType" size="small" round strong>
-          {{ statusText }}
-        </n-tag>
-      </div>
-      
-      <!-- 评分标签 -->
-      <div v-if="anime.rating" class="absolute top-3 left-3">
-        <n-tag type="warning" size="small" round strong>
-          <template #icon>
-            <n-icon><StarOutline /></n-icon>
-          </template>
-          {{ anime.rating }}
-        </n-tag>
-      </div>
-      
-      <!-- 底部渐变遮罩 -->
-      <div class="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/90 via-black/50 to-transparent"></div>
-      
-      <!-- 底部信息 -->
-      <div class="absolute bottom-0 left-0 right-0 p-4">
-        <h3 class="text-white font-bold text-lg mb-2 line-clamp-2 drop-shadow-lg">{{ anime.title }}</h3>
-        <div class="flex items-center justify-between text-sm text-gray-200">
-          <span class="bg-white/20 px-2 py-1 rounded-full backdrop-blur-sm font-medium">{{ episodeText }}</span>
-          <span v-if="anime.release_time" class="bg-white/10 px-2 py-1 rounded-full backdrop-blur-sm">{{ anime.release_time }}</span>
-        </div>
-      </div>
-      
-      <!-- 悬停时显示的操作按钮 -->
-      <div class="absolute inset-0 bg-black/50 opacity-0 hover:opacity-100 transition-opacity duration-300 flex items-center justify-center">
-        <n-button-group>
-          <n-button tertiary type="primary" strong @click.stop="$emit('play')">
-            <template #icon><n-icon><PlayOutline /></n-icon></template>
-            播放
-          </n-button>
-          <n-button tertiary type="info" strong @click.stop="$emit('detail')">
-            <template #icon><n-icon><InformationCircleOutline /></n-icon></template>
-            详情
-          </n-button>
-        </n-button-group>
+
+      <!-- Rating -->
+      <span
+        v-if="anime.bangumi_rating || anime.rating"
+        class="absolute top-2 left-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold bg-amber-500 text-white shadow"
+      >{{ anime.bangumi_rating || anime.rating }}</span>
+
+      <!-- Bottom gradient + title -->
+      <div class="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/80 to-transparent pointer-events-none" />
+      <div class="absolute inset-x-0 bottom-0 p-3">
+        <h3 class="text-sm font-medium text-white line-clamp-2">{{ anime.title }}</h3>
+        <span class="text-xs text-white/70 mt-1 inline-block">{{ episodeText }}</span>
       </div>
     </div>
-    
-    <!-- 底部操作区 -->
-    <div class="pt-4 flex items-center justify-between">
-      <div>
-        <n-button
-          v-if="anime.is_subscribed"
-          @click.stop="$emit('unsubscribe')"
-          size="small"
-          type="success"
-          strong
-        >
-          <template #icon><n-icon><CheckmarkOutline /></n-icon></template>
-          已订阅
-        </n-button>
-        <n-button
-          v-else
-          @click.stop="$emit('subscribe')"
-          size="small"
-          type="primary"
-          strong
-        >
-          <template #icon><n-icon><AddOutline /></n-icon></template>
-          订阅
-        </n-button>
-      </div>
-      
-      <div class="flex items-center space-x-1">
-        <n-button
-          quaternary
-          circle
-          size="small"
-          @click.stop="$emit('favorite')"
-          :type="anime.is_favorite ? 'error' : 'default'"
-        >
-          <template #icon>
-            <n-icon>
-              <component :is="anime.is_favorite ? HeartFilled : HeartOutline" />
-            </n-icon>
-          </template>
-        </n-button>
-        <n-dropdown
-          trigger="click"
-          :options="dropdownOptions"
-          @select="handleDropdownSelect"
-          placement="bottom-end"
-        >
-          <n-button quaternary circle size="small" @click.stop>
-            <template #icon><n-icon><EllipsisHorizontalOutline /></n-icon></template>
-          </n-button>
-        </n-dropdown>
-      </div>
+
+    <!-- Info bar -->
+    <div class="px-3 py-2 text-xs text-muted-foreground flex items-center justify-between">
+      <span>{{ statusText }}</span>
+      <span v-if="anime.air_weekday != null">{{ WEEKDAY_NAMES[anime.air_weekday] || '' }}</span>
     </div>
-  </n-card>
+  </div>
 </template>
 
 <script setup>
-import { ref, computed, h } from 'vue'
-import { 
-  NCard, 
-  NImage, 
-  NTag, 
-  NButton, 
-  NButtonGroup, 
-  NIcon, 
-  NDropdown 
-} from 'naive-ui'
-import { 
-  StarOutline, 
-  PlayOutline, 
-  InformationCircleOutline, 
-  CheckmarkOutline, 
-  AddOutline, 
-  HeartOutline, 
-  EllipsisHorizontalOutline,
-  DownloadOutline,
-  ShareSocial,
-  Warning
-} from '@vicons/ionicons5'
-import { HeartFilled } from '@vicons/antd'
+import { computed } from 'vue'
+import { NIcon, useDialog } from 'naive-ui'
+import { TrashOutline } from '@vicons/ionicons5'
 
 const props = defineProps({
-  anime: {
-    type: Object,
-    required: true
-  }
+  anime: { type: Object, required: true }
 })
 
-const emit = defineEmits([
-  'click', 
-  'subscribe', 
-  'unsubscribe', 
-  'play', 
-  'detail', 
-  'favorite', 
-  'download', 
-  'share', 
-  'report'
-])
+const emit = defineEmits(['click', 'delete'])
+const dialog = useDialog()
 
-// 默认封面
-const defaultCover = ref('https://via.placeholder.com/300x400/1f2937/6b7280?text=No+Image')
+const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
-// 处理图片加载错误
-const handleImageError = (e) => {
-  e.target.src = defaultCover.value
-}
-
-// 状态标签类型
-const statusTagType = computed(() => {
-  const status = props.anime.status
-  const types = {
-    'ongoing': 'success',
-    'completed': 'info',
-    'upcoming': 'warning',
-    'dropped': 'error'
-  }
-  return types[status] || 'default'
-})
-
-// 状态文本
 const statusText = computed(() => {
-  const statusMap = {
-    'ongoing': '连载中',
-    'completed': '已完结',
-    'upcoming': '即将开播',
-    'dropped': '已弃番'
-  }
-  return statusMap[props.anime.status] || '未知'
+  const map = { ongoing: '连载中', completed: '已完结', upcoming: '即将开播', dropped: '已弃番' }
+  return map[props.anime.status] || ''
 })
 
-// 集数文本
 const episodeText = computed(() => {
-  const current = props.anime.current_episode
-  const total = props.anime.total_episodes
-  if (total) {
-    return `${current || 0}/${total}集`
+  const { current_episode, episode_count } = props.anime
+  const total = episode_count || 0
+  if (current_episode && current_episode > 0) {
+    return `${current_episode}/${total}`
   }
-  return current ? `第${current}集` : '暂无'
+  return total > 0 ? `${total}集` : ''
 })
 
-// 下拉菜单选项
-const dropdownOptions = [
-  {
-    label: '下载',
-    key: 'download',
-    icon: () => h(NIcon, null, { default: () => h(DownloadOutline) })
-  },
-  {
-    label: '分享',
-    key: 'share',
-    icon: () => h(NIcon, null, { default: () => h(ShareSocial) })
-  },
-  {
-    type: 'divider'
-  },
-  {
-    label: '报告问题',
-    key: 'report',
-    icon: () => h(NIcon, null, { default: () => h(Warning) })
-  }
-]
-
-// 处理下拉菜单选择
-const handleDropdownSelect = (key) => {
-  emit(key)
+function handleDelete() {
+  dialog.warning({
+    title: '移除追番',
+    content: `确定要将《${props.anime.title}》从追番列表中移除吗？`,
+    positiveText: '移除',
+    negativeText: '取消',
+    onPositiveClick: () => emit('delete', props.anime)
+  })
 }
 </script>
-
-<style scoped>
-.anime-card {
-  transition: all 0.3s ease;
-  overflow: hidden;
-}
-
-.anime-card:hover {
-  transform: translateY(-8px) scale(1.02);
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
-}
-
-.aspect-\[2\/3\] {
-  aspect-ratio: 2/3;
-}
-
-.line-clamp-2 {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-</style> 

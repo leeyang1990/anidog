@@ -3,133 +3,91 @@
 @tailwind utilities;
 
 @layer base {
-  /* 优化滚动条样式 */
+  :root {
+    --radius: 0.625rem;
+
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 229 84% 67%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 229 84% 67%;
+
+    --chart-1: 229 84% 67%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 43 96% 56%;
+    --chart-4: 340 75% 55%;
+    --chart-5: 262 83% 58%;
+
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 229 84% 67%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 229 84% 67%;
+    --sidebar-muted-foreground: 240 5% 64.9%;
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 229 84% 74%;
+    --primary-foreground: 240 10% 3.9%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 229 84% 74%;
+    --chart-1: 229 84% 74%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+                 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica,
+                 Arial, sans-serif;
+  }
+
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
-
   ::-webkit-scrollbar-track {
-    @apply bg-gray-100 dark:bg-gray-800;
+    background: transparent;
   }
-
   ::-webkit-scrollbar-thumb {
-    @apply bg-gray-300 dark:bg-gray-600 rounded-full;
+    @apply bg-muted-foreground/20 rounded-full;
   }
-
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-gray-400 dark:bg-gray-500;
-  }
-
-  /* 平滑滚动 */
-  html {
-    scroll-behavior: smooth;
-  }
-
-  /* 优化文字渲染 */
-  body {
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    @apply bg-muted-foreground/40;
   }
 }
-
-@layer components {
-  /* 玻璃态效果 */
-  .glass {
-    @apply bg-white/70 dark:bg-gray-900/70 backdrop-blur-xl;
-  }
-
-  /* 渐变背景 */
-  .gradient-bg {
-    @apply bg-gradient-to-br from-indigo-50 via-white to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-indigo-950;
-  }
-
-  /* 卡片悬浮效果 */
-  .card-hover {
-    @apply transition-all duration-300 hover:shadow-2xl hover:-translate-y-1;
-  }
-
-  /* 按钮动画 */
-  .btn-press {
-    @apply transition-all duration-150 active:scale-95;
-  }
-
-  /* 文字渐变 */
-  .text-gradient {
-    @apply bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent;
-  }
-
-  /* 加载动画 */
-  .loading-spin {
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  /* 淡入动画 */
-  .fade-in {
-    animation: fadeIn 0.5s ease-out;
-  }
-
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  /* 脉冲动画 */
-  .pulse-animation {
-    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  }
-
-  @keyframes pulse {
-    0%, 100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: .5;
-    }
-  }
-}
-
-@layer utilities {
-  /* 模糊背景 */
-  .blur-background {
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-  }
-
-  /* 渐变边框 */
-  .gradient-border {
-    background: linear-gradient(to right, #6366f1, #a855f7, #ec4899);
-    background-clip: padding-box;
-    border: 2px solid transparent;
-  }
-
-  /* 光晕效果 */
-  .glow {
-    box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
-  }
-
-  /* 文字阴影 */
-  .text-shadow {
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  }
-
-  /* 内发光 */
-  .inner-glow {
-    box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06);
-  }
-} 

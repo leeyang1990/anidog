@@ -27,26 +27,36 @@ export const useAuthStore = defineStore('auth', {
         })
 
         if (!response.ok) {
-          const error = await response.json()
-          throw new Error(error.detail || '登录失败')
+          const errorText = await response.text()
+          try {
+            const error = JSON.parse(errorText)
+            throw new Error(error.detail || '登录失败')
+          } catch {
+            throw new Error(errorText || '登录失败')
+          }
         }
 
-        const data = await response.json()
-        console.log('登录响应:', data)
-        
+        const responseText = await response.text()
+        let data
+        try {
+          data = JSON.parse(responseText)
+        } catch (parseError) {
+          throw new Error('服务器返回的不是有效的JSON格式')
+        }
+
         // 确保令牌格式正确
         if (!data.access_token) {
           throw new Error('服务器返回的令牌格式不正确')
         }
-        
+
         this.setToken(data.access_token)
         if (data.refresh_token) {
           this.setRefreshToken(data.refresh_token)
         }
-        
+
         // 获取用户信息
         await this.fetchUserInfo()
-        
+
         return true
       } catch (error) {
         console.error('登录失败:', error)
@@ -74,7 +84,14 @@ export const useAuthStore = defineStore('auth', {
           throw new Error('刷新令牌失败')
         }
 
-        const data = await response.json()
+        const responseText = await response.text()
+        let data
+        try {
+          data = JSON.parse(responseText)
+        } catch (parseError) {
+          throw new Error('服务器返回的不是有效的JSON格式')
+        }
+
         if (!data.access_token) {
           throw new Error('服务器返回的令牌格式不正确')
         }
@@ -97,10 +114,8 @@ export const useAuthStore = defineStore('auth', {
         console.error('无法获取用户信息：没有认证令牌')
         return null
       }
-      
+
       try {
-        console.log('获取用户信息，使用令牌:', this.token.substring(0, 10) + '...')
-        
         // 使用原生fetch，避免循环依赖
         const response = await fetch('/api/v1/users/me', {
           headers: {
@@ -114,8 +129,14 @@ export const useAuthStore = defineStore('auth', {
           throw new Error('获取用户信息失败')
         }
 
-        const userData = await response.json()
-        console.log('获取到的用户信息:', userData)
+        const responseText = await response.text()
+        let userData
+        try {
+          userData = JSON.parse(responseText)
+        } catch (parseError) {
+          throw new Error('服务器返回的不是有效的JSON格式')
+        }
+
         this.setUser(userData)
         return userData
       } catch (error) {
@@ -133,7 +154,6 @@ export const useAuthStore = defineStore('auth', {
         return
       }
       
-      console.log('设置新令牌:', newToken.substring(0, 10) + '...')
       this.token = newToken
       this.isLoggedIn = true
       localStorage.setItem('token', newToken)
@@ -155,7 +175,6 @@ export const useAuthStore = defineStore('auth', {
     },
 
     logout() {
-      console.log('执行登出操作')
       this.token = null
       this.refreshToken = null
       this.user = null

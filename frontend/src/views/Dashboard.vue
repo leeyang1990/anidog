@@ -1,127 +1,95 @@
 <template>
-  <div class="p-4">
-    <n-grid :x-gap="12" :y-gap="12" :cols="24">
-      <!-- 统计卡片 -->
-      <n-grid-item span="6">
-        <n-card>
-          <template #header>
-            <div class="flex items-center">
-              <n-icon size="20" class="mr-2">
-                <film-icon />
-              </n-icon>
-              动画数量
+  <div>
+    <PageHeader title="仪表盘" subtitle="番剧下载管理概览" />
+
+    <!-- Loading -->
+    <div v-if="loading" class="flex items-center justify-center py-20">
+      <n-spin size="large" />
+    </div>
+
+    <!-- Error -->
+    <div v-else-if="error" class="flex flex-col items-center justify-center py-20 text-center">
+      <p class="text-lg text-muted-foreground mb-4">{{ error }}</p>
+      <button class="h-10 px-6 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors" @click="fetchDashboardData">重试</button>
+    </div>
+
+    <template v-else>
+      <!-- Stats: 4 cards grid -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div v-for="stat in statCards" :key="stat.label" class="bg-card text-card-foreground rounded-lg border p-6">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center">
+              <n-icon size="16" class="text-primary"><component :is="stat.icon" /></n-icon>
             </div>
-          </template>
-          <div class="text-2xl font-bold">{{ stats.animeCount || 0 }}</div>
-        </n-card>
-      </n-grid-item>
-
-      <n-grid-item span="6">
-        <n-card>
-          <template #header>
-            <div class="flex items-center">
-              <n-icon size="20" class="mr-2">
-                <rss-icon />
-              </n-icon>
-              RSS 订阅
-            </div>
-          </template>
-          <div class="text-2xl font-bold">{{ stats.rssCount || 0 }}</div>
-        </n-card>
-      </n-grid-item>
-
-      <n-grid-item span="6">
-        <n-card>
-          <template #header>
-            <div class="flex items-center">
-              <n-icon size="20" class="mr-2">
-                <arrow-down-tray-icon />
-              </n-icon>
-              正在下载
-            </div>
-          </template>
-          <div class="text-2xl font-bold">{{ stats.downloadingCount || 0 }}</div>
-        </n-card>
-      </n-grid-item>
-
-      <n-grid-item span="6">
-        <n-card>
-          <template #header>
-            <div class="flex items-center">
-              <n-icon size="20" class="mr-2">
-                <check-circle-icon />
-              </n-icon>
-              已完成下载
-            </div>
-          </template>
-          <div class="text-2xl font-bold">{{ stats.completedCount || 0 }}</div>
-        </n-card>
-      </n-grid-item>
-
-      <!-- 图表 -->
-      <n-grid-item span="12">
-        <n-card title="最近7天下载统计">
-          <div v-if="chartDataReady">
-            <line-chart :data="downloadStats" :options="lineChartOptions" />
+            <span class="text-sm font-medium text-muted-foreground">{{ stat.label }}</span>
           </div>
-          <div v-else class="h-64 flex items-center justify-center">
-            <n-spin />
-          </div>
-        </n-card>
-      </n-grid-item>
-
-      <n-grid-item span="12">
-        <n-card title="下载状态分布">
-          <div v-if="chartDataReady">
-            <pie-chart :data="downloadStatusStats" :options="pieChartOptions" />
-          </div>
-          <div v-else class="h-64 flex items-center justify-center">
-            <n-spin />
-          </div>
-        </n-card>
-      </n-grid-item>
-
-      <!-- 最近下载列表 -->
-      <n-grid-item span="24">
-        <n-card title="最近下载">
-          <n-data-table
-            :columns="columns"
-            :data="recentDownloads"
-            :loading="loading"
-            :pagination="{ pageSize: 5 }"
-          />
-        </n-card>
-      </n-grid-item>
-    </n-grid>
-  </div>
-  <div class="mt-8 flex justify-center">
-    <n-card title="体验新界面" class="max-w-md">
-      <div class="text-center">
-        <p class="mb-4">我们推出了全新的界面设计，更美观、更流畅的用户体验！</p>
-        <n-button type="primary" @click="router.push('/naive')">
-          立即体验新界面
-        </n-button>
+          <div class="text-2xl font-bold tracking-tight">{{ stat.value }}</div>
+        </div>
       </div>
-    </n-card>
+
+      <!-- Charts: 2/3 + 1/3 bento grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+        <div class="lg:col-span-2 bg-card text-card-foreground rounded-lg border p-6">
+          <h3 class="text-lg font-semibold tracking-tight mb-4">最近7天下载统计</h3>
+          <div class="h-64">
+            <Line v-if="chartData" :data="chartData" :options="chartOptions" />
+          </div>
+        </div>
+        <div class="bg-card text-card-foreground rounded-lg border p-6">
+          <h3 class="text-lg font-semibold tracking-tight mb-4">下载状态分布</h3>
+          <div class="h-64 flex items-center justify-center">
+            <Doughnut v-if="doughnutData" :data="doughnutData" :options="doughnutOptions" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent downloads table -->
+      <div class="bg-card text-card-foreground rounded-lg border">
+        <div class="p-6 pb-0">
+          <h3 class="text-lg font-semibold tracking-tight">最近下载</h3>
+        </div>
+        <div class="mt-4">
+          <table class="w-full">
+            <thead>
+              <tr class="border-b text-left text-sm text-muted-foreground">
+                <th class="pb-3 pl-6 font-medium">文件名</th>
+                <th class="pb-3 font-medium">大小</th>
+                <th class="pb-3 font-medium">状态</th>
+                <th class="pb-3 pr-6 font-medium">更新时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="dl in recentDownloads" :key="dl.id || dl.filename" class="border-b last:border-0 hover:bg-muted/50 transition-colors">
+                <td class="py-3 pl-6 text-sm">{{ dl.name || dl.filename }}</td>
+                <td class="py-3 text-sm text-muted-foreground">{{ dl.size }}</td>
+                <td class="py-3 text-sm">
+                  <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium"
+                    :class="statusBadgeClass(dl.status)">
+                    {{ statusText(dl.status) }}
+                  </span>
+                </td>
+                <td class="py-3 pr-6 text-sm text-muted-foreground">{{ formatTime(dl.updated_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="!recentDownloads.length" class="py-8 text-center text-sm text-muted-foreground">暂无下载记录</div>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, h, computed } from 'vue'
-import { NIcon, useMessage, NSpin } from 'naive-ui'
+import { ref, computed, onMounted } from 'vue'
+import { useMessage, NIcon, NSpin } from 'naive-ui'
 import {
-  FilmIcon as FilmIconOutline,
-  RssIcon as RssIconOutline,
-  ArrowDownTrayIcon as ArrowDownTrayIconOutline,
-  CheckCircleIcon as CheckCircleIconOutline
-} from '@heroicons/vue/24/outline'
-// 重命名导入的组件
-const FilmIcon = FilmIconOutline
-const RssIcon = RssIconOutline
-const ArrowDownTrayIcon = ArrowDownTrayIconOutline
-const CheckCircleIcon = CheckCircleIconOutline
+  FilmOutline,
+  LogoRss,
+  DownloadOutline,
+  CheckmarkCircleOutline
+} from '@vicons/ionicons5'
 
-import { Line as LineChart, Pie as PieChart } from 'vue-chartjs'
+import { Line, Doughnut } from 'vue-chartjs'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -133,9 +101,10 @@ import {
   Legend,
   ArcElement
 } from 'chart.js'
-import { api } from '@/utils/api'
+import dayjs from 'dayjs'
+import { get } from '@/utils/api'
+import PageHeader from '@/components/Common/PageHeader.vue'
 
-// 注册 Chart.js 组件
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -147,104 +116,137 @@ ChartJS.register(
   ArcElement
 )
 
+const CHART_COLORS = {
+  primary: '#667eea',
+  chart2: '#10b981',
+  chart3: '#f59e0b',
+  chart4: '#f43f5e',
+  chart5: '#8b5cf6'
+}
+
 const loading = ref(false)
-const chartDataReady = ref(false)
+const error = ref(null)
 const stats = ref({})
-
-// 图表配置
-const lineChartOptions = {
-  responsive: true,
-  maintainAspectRatio: false
-}
-
-const pieChartOptions = {
-  responsive: true,
-  maintainAspectRatio: false
-}
-
-// 图表数据
-const downloadStats = ref({
-  labels: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
-  datasets: [{
-    label: '下载数量',
-    data: [0, 0, 0, 0, 0, 0, 0],
-    fill: false,
-    borderColor: '#3B82F6',
-    tension: 0.1
-  }]
-})
-
-const downloadStatusStats = ref({
-  labels: ['等待中', '下载中', '已完成', '已失败'],
-  datasets: [{
-    data: [0, 0, 0, 0],
-    backgroundColor: ['#FCD34D', '#60A5FA', '#34D399', '#F87171']
-  }]
-})
-
 const recentDownloads = ref([])
-
-const columns = [
-  {
-    title: '文件名',
-    key: 'filename',
-    ellipsis: true
-  },
-  {
-    title: '大小',
-    key: 'size',
-    width: 100
-  },
-  {
-    title: '状态',
-    key: 'status',
-    width: 100,
-    render(row) {
-      const statusMap = {
-        waiting: '等待中',
-        downloading: '下载中',
-        completed: '已完成',
-        failed: '已失败'
-      }
-      return statusMap[row.status] || row.status
-    }
-  },
-  {
-    title: '更新时间',
-    key: 'updated_at',
-    width: 200
-  }
-]
 
 const message = useMessage()
 
+const chartData = ref(null)
+const doughnutData = ref(null)
+
+const chartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      display: false
+    }
+  },
+  scales: {
+    y: {
+      beginAtZero: true,
+      ticks: {
+        stepSize: 1
+      }
+    }
+  }
+}
+
+const doughnutOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      position: 'bottom'
+    }
+  }
+}
+
+const statCards = computed(() => [
+  {
+    label: '动画数量',
+    value: stats.value.animeCount || 0,
+    icon: FilmOutline
+  },
+  {
+    label: 'RSS 订阅',
+    value: stats.value.rssCount || 0,
+    icon: LogoRss
+  },
+  {
+    label: '正在下载',
+    value: stats.value.downloadingCount || 0,
+    icon: DownloadOutline
+  },
+  {
+    label: '已完成下载',
+    value: stats.value.completedCount || 0,
+    icon: CheckmarkCircleOutline
+  }
+])
+
+function statusBadgeClass(status) {
+  const map = {
+    completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+    downloading: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+    waiting: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+    failed: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
+  }
+  return map[status] || 'bg-secondary text-secondary-foreground'
+}
+
+function statusText(status) {
+  const map = {
+    completed: '已完成',
+    downloading: '下载中',
+    waiting: '等待中',
+    failed: '已失败'
+  }
+  return map[status] || status
+}
+
+function formatTime(time) {
+  if (!time) return '—'
+  return dayjs(time).format('YYYY-MM-DD HH:mm')
+}
+
 async function fetchDashboardData() {
   loading.value = true
-  chartDataReady.value = false
-  
+  error.value = null
+
   try {
-    const data = await api.get('/dashboard')
-    
-    // 更新统计数据
+    const data = await get('/dashboard')
+
     stats.value = data.stats || {}
-    
-    // 更新下载统计图表
+
     if (data.downloadStats && Array.isArray(data.downloadStats.dates)) {
-      downloadStats.value = {
+      chartData.value = {
         labels: data.downloadStats.dates,
         datasets: [{
           label: '下载数量',
           data: data.downloadStats.counts || [],
           fill: false,
-          borderColor: '#3B82F6',
+          borderColor: CHART_COLORS.primary,
+          backgroundColor: CHART_COLORS.primary + '33',
+          tension: 0.1
+        }]
+      }
+    } else {
+      chartData.value = {
+        labels: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
+        datasets: [{
+          label: '下载数量',
+          data: [0, 0, 0, 0, 0, 0, 0],
+          fill: false,
+          borderColor: CHART_COLORS.primary,
+          backgroundColor: CHART_COLORS.primary + '33',
           tension: 0.1
         }]
       }
     }
-    
-    // 更新状态分布图表
+
     if (data.stats) {
-      downloadStatusStats.value = {
+      doughnutData.value = {
         labels: ['等待中', '下载中', '已完成', '已失败'],
         datasets: [{
           data: [
@@ -253,18 +255,21 @@ async function fetchDashboardData() {
             data.stats.completedCount || 0,
             data.stats.failedCount || 0
           ],
-          backgroundColor: ['#FCD34D', '#60A5FA', '#34D399', '#F87171']
+          backgroundColor: [
+            CHART_COLORS.chart3,
+            CHART_COLORS.primary,
+            CHART_COLORS.chart2,
+            CHART_COLORS.chart4
+          ]
         }]
       }
     }
-    
-    // 更新最近下载列表
+
     recentDownloads.value = data.recentDownloads || []
-    
-    // 标记图表数据已准备好
-    chartDataReady.value = true
-  } catch (error) {
-    message.error(error.message || '加载数据失败')
+  } catch (err) {
+    const errorMsg = err.message || '加载数据失败'
+    error.value = errorMsg
+    message.error(errorMsg)
   } finally {
     loading.value = false
   }
@@ -273,4 +278,4 @@ async function fetchDashboardData() {
 onMounted(() => {
   fetchDashboardData()
 })
-</script> 
+</script>

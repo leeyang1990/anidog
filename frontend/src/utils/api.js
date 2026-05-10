@@ -16,13 +16,25 @@ class ApiError extends Error {
 // 基础请求函数
 async function request(endpoint, options = {}, retryCount = 0) {
   const authStore = useAuthStore()
-  
+
+  // 非公开端点要求有 token；否则直接跳登录，避免反复送无头请求
+  const isPublic = endpoint.startsWith('/auth/login') || endpoint.startsWith('/auth/register')
+  if (!isPublic && !authStore.token) {
+    // 清理本地状态 + 跳转登录
+    authStore.logout()
+    if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/')) {
+      const next = window.location.pathname + window.location.search
+      window.location.replace('/auth/login?redirect=' + encodeURIComponent(next))
+    }
+    throw new ApiError('未登录，请先登录', 401)
+  }
+
   // 添加认证头
   const headers = {
     'Content-Type': 'application/json',
     ...options.headers
   }
-  
+
   if (authStore.token) {
     headers['Authorization'] = `Bearer ${authStore.token}`
   }
@@ -53,7 +65,15 @@ async function request(endpoint, options = {}, retryCount = 0) {
         }
       }
 
-      const errorData = await response.json().catch(() => ({}))
+      const responseText = await response.text()
+      let errorData
+      try {
+        errorData = JSON.parse(responseText)
+      } catch (e) {
+        // 如果解析失败，使用原始文本
+        errorData = { detail: responseText }
+      }
+
       throw new ApiError(
         errorData.detail || '请求失败',
         response.status,
@@ -61,7 +81,19 @@ async function request(endpoint, options = {}, retryCount = 0) {
       )
     }
 
-    return await response.json()
+    const responseText = await response.text()
+    let data
+    try {
+      data = JSON.parse(responseText)
+    } catch (e) {
+      throw new ApiError(
+        '服务器返回的不是有效的JSON格式',
+        response.status,
+        { responseText }
+      )
+    }
+
+    return data
   } catch (error) {
     if (error instanceof ApiError) {
       throw error

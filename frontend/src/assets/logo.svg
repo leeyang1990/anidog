@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="AniDog border collie logo">
+  <!-- 黑色头部 + 半立耳（整体剪影） -->
+  <path d="M20 54
+           Q8 22 26 14
+           Q30 8 38 18
+           L48 40
+           Q56 36 64 36
+           Q72 36 80 40
+           L90 18
+           Q98 8 102 14
+           Q120 22 108 54
+           Q116 72 108 88
+           Q96 112 64 114
+           Q32 112 20 88
+           Q12 72 20 54 Z"
+        fill="#111111"/>
+
+  <!-- 白色中央 blaze：贯穿额头到吻部再到下颌（边牧最醒目的特征） -->
+  <path d="M57 36
+           L55 56
+           Q44 66 49 86
+           Q57 102 64 104
+           Q71 102 79 86
+           Q84 66 73 56
+           L71 36
+           Q64 34 57 36 Z"
+        fill="#ffffff"/>
+
+  <!-- 左眼 -->
+  <ellipse cx="36" cy="62" rx="4.2" ry="4.8" fill="#ffffff"/>
+  <circle cx="36.5" cy="63" r="2.2" fill="#111111"/>
+
+  <!-- 右眼 -->
+  <ellipse cx="92" cy="62" rx="4.2" ry="4.8" fill="#ffffff"/>
+  <circle cx="91.5" cy="63" r="2.2" fill="#111111"/>
+
+  <!-- 鼻子 -->
+  <ellipse cx="64" cy="78" rx="6" ry="4.5" fill="#111111"/>
+
+  <!-- 嘴 -->
+  <path d="M64 83 L64 89 M58 92 Q64 95 70 92"
+        stroke="#111111" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+</svg>

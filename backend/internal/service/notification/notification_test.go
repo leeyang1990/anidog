@@ -47,7 +47,7 @@ func TestFormatMessage(t *testing.T) {
 	}{
 		{NotificationInfo{Message: "自定义消息"}, "自定义消息"},
 		{NotificationInfo{OfficialTitle: "芙莉莲", Season: 1, Episode: 5}, "芙莉莲 S01E05 已更新"},
-		{NotificationInfo{}, "御宅追番通知"},
+		{NotificationInfo{}, "AniDog通知"},
 	}
 	for _, tt := range tests {
 		got := formatMessage(&tt.info)

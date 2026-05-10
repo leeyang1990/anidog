@@ -1,4 +1,4 @@
-# 御宅追番 (anidog)
+# AniDog (anidog)
 
 一个基于 Go + Vue 3 的番剧自动下载管理系统。通过 RSS 订阅、BT Indexer 搜索、流媒体抓取三种手段自动为追番列表填坑。
 

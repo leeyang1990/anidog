@@ -84,7 +84,7 @@ func Load() *Config {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	// 默认值
-	viper.SetDefault("app_name", "御宅追番")
+	viper.SetDefault("app_name", "AniDog")
 	viper.SetDefault("project_version", "1.0.0")
 	viper.SetDefault("database_url", "sqlite:///./mikanani.db")
 	viper.SetDefault("secret_key", "supersecretkey")

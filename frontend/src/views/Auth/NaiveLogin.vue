@@ -3,10 +3,8 @@
     <div class="w-full max-w-sm bg-card text-card-foreground rounded-lg border p-8">
       <!-- Header -->
       <div class="text-center mb-8">
-        <div class="h-10 w-10 rounded-md bg-primary flex items-center justify-center mx-auto mb-4">
-          <n-icon size="22" color="#fff"><FilmOutline /></n-icon>
-        </div>
-        <h1 class="text-2xl font-semibold tracking-tight">御宅追番</h1>
+        <img src="@/assets/logo.svg" alt="AniDog" class="h-12 w-12 mx-auto mb-4" />
+        <h1 class="text-2xl font-semibold tracking-tight">AniDog</h1>
         <p class="text-sm text-muted-foreground mt-1">欢迎回来，继续追番之旅</p>
       </div>
 

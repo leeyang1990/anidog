@@ -18,10 +18,10 @@
     >
       <!-- Logo -->
       <div class="h-14 flex items-center px-4 border-b border-sidebar-border shrink-0">
-        <div class="w-8 h-8 rounded-md bg-sidebar-primary flex items-center justify-center shrink-0">
-          <n-icon size="18" color="#fff"><FilmOutline /></n-icon>
+        <div class="w-8 h-8 rounded-md bg-white flex items-center justify-center shrink-0">
+          <img src="@/assets/logo.svg" alt="AniDog" class="w-7 h-7" />
         </div>
-        <span v-if="!collapsed" class="ml-3 text-sm font-semibold text-sidebar-foreground whitespace-nowrap">御宅追番</span>
+        <span v-if="!collapsed" class="ml-3 text-sm font-semibold text-sidebar-foreground whitespace-nowrap">AniDog</span>
       </div>
 
       <!-- Navigation -->
@@ -209,7 +209,7 @@ const activeKey = computed(() => {
 
 const pageTitle = computed(() => {
   const item = menuItems.find(m => m.key === activeKey.value)
-  return item?.label || '御宅追番'
+  return item?.label || 'AniDog'
 })
 
 function navigateTo(route_path) {

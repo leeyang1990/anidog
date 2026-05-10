@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-**anidog**（御宅追番）是一个番剧自动下载管理系统。技术栈：
+**anidog**（AniDog）是一个番剧自动下载管理系统。技术栈：
 
 - **后端**：Go + Gin + GORM + PostgreSQL
 - **前端**：Vue 3 + Naive UI + Tailwind CSS + Vite

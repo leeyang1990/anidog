@@ -230,6 +230,8 @@ config.local.py
 # 允许提交的示例/默认配置
 !backend/dev.yaml
 !backend/.env.yaml.example
+# Vite public 目录（放静态资源）不应被 Gatsby 的 public 规则误伤
+!frontend/public/
 
 # Backup files
 *.bak
@@ -251,3 +253,6 @@ uploads/
 *.tar.gz
 *.zip
 *.rar
+
+# Playwright MCP 调试截图
+.playwright-mcp/

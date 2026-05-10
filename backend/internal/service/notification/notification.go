@@ -31,7 +31,7 @@ func formatMessage(info *NotificationInfo) string {
 	if info.OfficialTitle != "" {
 		return fmt.Sprintf("%s S%02dE%02d 已更新", info.OfficialTitle, info.Season, info.Episode)
 	}
-	return "御宅追番通知"
+	return "AniDog通知"
 }
 
 // TelegramProvider Telegram 通知
@@ -58,7 +58,7 @@ func (p *TelegramProvider) Send(ctx context.Context, info *NotificationInfo) err
 }
 
 func (p *TelegramProvider) Test(ctx context.Context) error {
-	return p.Send(ctx, &NotificationInfo{Message: "御宅追番 - Telegram 通知测试"})
+	return p.Send(ctx, &NotificationInfo{Message: "AniDog - Telegram 通知测试"})
 }
 
 // BarkProvider Bark 通知
@@ -69,7 +69,7 @@ type BarkProvider struct {
 
 func (p *BarkProvider) Send(ctx context.Context, info *NotificationInfo) error {
 	msg := formatMessage(info)
-	payload := map[string]string{"device_key": p.DeviceKey, "title": "御宅追番", "body": msg}
+	payload := map[string]string{"device_key": p.DeviceKey, "title": "AniDog", "body": msg}
 	data, _ := json.Marshal(payload)
 
 	resp, err := http.Post(p.ServerURL+"/"+p.DeviceKey, "application/json", strings.NewReader(string(data)))
@@ -81,7 +81,7 @@ func (p *BarkProvider) Send(ctx context.Context, info *NotificationInfo) error {
 }
 
 func (p *BarkProvider) Test(ctx context.Context) error {
-	return p.Send(ctx, &NotificationInfo{Message: "御宅追番 - Bark 通知测试"})
+	return p.Send(ctx, &NotificationInfo{Message: "AniDog - Bark 通知测试"})
 }
 
 // DiscordProvider Discord 通知
@@ -103,7 +103,7 @@ func (p *DiscordProvider) Send(ctx context.Context, info *NotificationInfo) erro
 }
 
 func (p *DiscordProvider) Test(ctx context.Context) error {
-	return p.Send(ctx, &NotificationInfo{Message: "御宅追番 - Discord 通知测试"})
+	return p.Send(ctx, &NotificationInfo{Message: "AniDog - Discord 通知测试"})
 }
 
 // WebhookProvider 通用 Webhook 通知
@@ -114,7 +114,7 @@ type WebhookProvider struct {
 
 func (p *WebhookProvider) Send(ctx context.Context, info *NotificationInfo) error {
 	msg := formatMessage(info)
-	payload := map[string]string{"message": msg, "title": "御宅追番"}
+	payload := map[string]string{"message": msg, "title": "AniDog"}
 	data, _ := json.Marshal(payload)
 
 	req, err := http.NewRequest(http.MethodPost, p.URL, strings.NewReader(string(data)))
@@ -136,7 +136,7 @@ func (p *WebhookProvider) Send(ctx context.Context, info *NotificationInfo) erro
 }
 
 func (p *WebhookProvider) Test(ctx context.Context) error {
-	return p.Send(ctx, &NotificationInfo{Message: "御宅追番 - Webhook 通知测试"})
+	return p.Send(ctx, &NotificationInfo{Message: "AniDog - Webhook 通知测试"})
 }
 
 // ServerChanProvider Server酱通知
@@ -147,7 +147,7 @@ type ServerChanProvider struct {
 func (p *ServerChanProvider) Send(ctx context.Context, info *NotificationInfo) error {
 	msg := formatMessage(info)
 	apiURL := fmt.Sprintf("https://sctapi.ftqq.com/%s.send", p.SendKey)
-	form := url.Values{"title": {"御宅追番"}, "desp": {msg}}
+	form := url.Values{"title": {"AniDog"}, "desp": {msg}}
 
 	resp, err := http.PostForm(apiURL, form)
 	if err != nil {
@@ -158,7 +158,7 @@ func (p *ServerChanProvider) Send(ctx context.Context, info *NotificationInfo) e
 }
 
 func (p *ServerChanProvider) Test(ctx context.Context) error {
-	return p.Send(ctx, &NotificationInfo{Message: "御宅追番 - Server酱通知测试"})
+	return p.Send(ctx, &NotificationInfo{Message: "AniDog - Server酱通知测试"})
 }
 
 // WeComProvider 企业微信通知
@@ -208,7 +208,7 @@ func (p *WeComProvider) Send(ctx context.Context, info *NotificationInfo) error 
 }
 
 func (p *WeComProvider) Test(ctx context.Context) error {
-	return p.Send(ctx, &NotificationInfo{Message: "御宅追番 - 企业微信通知测试"})
+	return p.Send(ctx, &NotificationInfo{Message: "AniDog - 企业微信通知测试"})
 }
 
 // CreateProvider 根据类型创建通知提供者

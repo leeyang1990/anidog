@@ -1,0 +1,46 @@
+cors_hosts:
+  - "http://localhost:3002"
+  - "http://localhost:3033"
+  - "http://localhost:3000"
+  - "http://localhost:5173"
+
+access_token_expire_minutes: 1440
+
+# 下载器（开发环境连 docker 内的 qBittorrent）
+# 注意：这些是开发默认值，生产部署请通过 docker env 覆盖
+downloader_type: "qbittorrent"
+downloader_host: "http://qbittorrent:8080"
+downloader_username: "admin"
+downloader_password: "adminadmin"
+
+# 数据库（Docker 开发环境）
+database_url: "postgres://anidog:anidog123@postgres:5432/anidog_dev?sslmode=disable"
+
+# 数据库连接池
+db_max_open_conns: 25
+db_max_idle_conns: 5
+
+# 默认规则
+enable_default_rules: true
+default_rule_name: "mikan"
+
+# 日志
+log_level: "DEBUG"
+
+# RSS
+rss_check_interval: 30
+
+# 流媒体
+stream_max_concurrent: 3
+rod_headless: true
+stream_intercept_timeout: 30
+
+# TMDB
+tmdb_language: "zh-CN"
+tmdb_base_url: "https://api.themoviedb.org/3"
+
+# 通知
+enable_notifications: false
+
+# JWT 密钥（生产环境请通过 SECRET_KEY env 覆盖）
+secret_key: "devsecretkey"

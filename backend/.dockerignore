@@ -1,0 +1,45 @@
+# 数据库文件
+*.db
+*.db-shm
+*.db-wal
+
+# 测试文件
+*_test.go
+*_test.db
+*.test.*
+
+# IDE 和编辑器
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Git 相关
+.git
+.gitignore
+.gitattributes
+
+# 日志文件
+logs/
+*.log
+
+# 依赖管理
+vendor/
+
+# Docker 相关
+Dockerfile
+.dockerignore
+bin/
+
+# 构建产物（除了最终二进制）
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 配置文件（敏感信息）
+.env.local
+.env.*.local
+.env.production
+.env.example

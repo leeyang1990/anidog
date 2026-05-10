@@ -1,0 +1,34 @@
+# 开发环境：Go + air 热重载
+FROM golang:1.26.2-alpine
+
+# 运行时依赖：ffmpeg + chromium (rod) + 字体 + git (air 需要)
+RUN apk --no-cache add \
+    ca-certificates \
+    git \
+    ffmpeg \
+    chromium \
+    chromium-swiftshader \
+    nss \
+    freetype \
+    freetype-dev \
+    harfbuzz \
+    ttf-freefont \
+    font-noto-cjk \
+    wqy-zenhei
+
+# 安装 air 热重载工具
+RUN go install github.com/air-verse/air@latest
+
+ENV ROD_BROWSER_BIN=/usr/bin/chromium-browser
+ENV CGO_ENABLED=0
+ENV PATH="/go/bin:${PATH}"
+
+WORKDIR /app
+
+# 下载目录
+RUN mkdir -p /downloads
+
+EXPOSE 8088
+
+# 使用 air 实现热重载（源码通过 volume 挂载）
+CMD ["air", "-c", ".air.toml"]

@@ -1,0 +1,438 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+
+	"github.com/anidog/anidog-go/internal/model"
+	dlservice "github.com/anidog/anidog-go/internal/service/download"
+	"github.com/anidog/anidog-go/internal/service/indexer"
+	"github.com/anidog/anidog-go/internal/service/setting"
+	"github.com/anidog/anidog-go/internal/service/stream"
+)
+
+// Source constants for Download.Source field
+const (
+	SourceStream = "stream"
+	SourceBT     = "bt"
+	SourceRSS    = "rss"
+)
+
+// Orchestrator 剧集驱动的多源下载调度器。
+type Orchestrator struct {
+	db         *gorm.DB
+	dlSvc      *dlservice.Service
+	streamMgr  *stream.StreamManager
+	settingSvc *setting.Service
+	indexers   map[string]indexer.Indexer // Name() -> instance
+	mediaRoot  string                     // BT 下载根目录（容器内路径）
+}
+
+// New 构造 Orchestrator。
+// indexers 由调用方注册，方便测试替换。传 nil 时自动注册 4 家默认 indexer。
+// mediaRoot 为 BT 下载根目录（容器内可写路径），Orchestrator 会按 `<root>/<title> (<year>)/Season <NN>` 组织文件
+func New(
+	db *gorm.DB,
+	dlSvc *dlservice.Service,
+	streamMgr *stream.StreamManager,
+	settingSvc *setting.Service,
+	indexers map[string]indexer.Indexer,
+	mediaRoot string,
+) *Orchestrator {
+	if indexers == nil {
+		indexers = map[string]indexer.Indexer{
+			"mikan":      indexer.NewMikanIndexer(),
+			"dmhy":       indexer.NewDmhyIndexer(),
+			"bangumimoe": indexer.NewBangumiMoeIndexer(),
+			"nyaa":       indexer.NewNyaaIndexer(),
+		}
+	}
+	if mediaRoot == "" {
+		mediaRoot = "/downloads"
+	}
+	return &Orchestrator{
+		db:         db,
+		dlSvc:      dlSvc,
+		streamMgr:  streamMgr,
+		settingSvc: settingSvc,
+		indexers:   indexers,
+		mediaRoot:  mediaRoot,
+	}
+}
+
+// Run 实现 scheduler.Job 接口：定时对所有订阅番剧逐个跑 CheckAnime。
+func (o *Orchestrator) Run(ctx context.Context) {
+	o.CheckAllSubscribed(ctx)
+}
+
+// CheckAllSubscribed 遍历所有订阅番剧，逐个检查并填坑。
+// 同时满足 scheduler.BangumiChecker 接口，可直接替换旧的 bangumi.AutoDownloader。
+func (o *Orchestrator) CheckAllSubscribed(ctx context.Context) {
+	global := LoadGlobal(ctx, o.settingSvc)
+
+	var animes []model.Anime
+	if err := o.db.WithContext(ctx).Where("is_subscribed = ?", true).Find(&animes).Error; err != nil {
+		zap.L().Error("orchestrator: 查询订阅番剧失败", zap.Error(err))
+		return
+	}
+
+	zap.L().Info("orchestrator: 开始扫描", zap.Int("anime_count", len(animes)))
+
+	for i := range animes {
+		a := &animes[i]
+		o.CheckAnime(ctx, a, global)
+	}
+
+	zap.L().Info("orchestrator: 扫描完成")
+}
+
+// CheckAnime 检查单个番剧，对缺失集按优先级尝试各源下载。
+// global 传入全局偏好；函数内部合并 per-anime override。
+func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, global Preference) {
+	if anime == nil || !anime.IsSubscribed {
+		return
+	}
+
+	pref := MergeWithAnime(global, anime)
+
+	// 期望集数
+	expected := 0
+	if anime.EpisodeCount != nil {
+		expected = *anime.EpisodeCount
+	}
+	if expected <= 0 {
+		zap.L().Debug("orchestrator: 番剧无集数信息，跳过", zap.String("title", anime.Title))
+		return
+	}
+
+	// 已下载的集（跨所有 source_type）
+	downloaded := o.downloadedEpisodes(ctx, anime.ID)
+
+	missing := make([]int, 0, expected)
+	for ep := 1; ep <= expected; ep++ {
+		if !downloaded[ep] {
+			missing = append(missing, ep)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+
+	zap.L().Info("orchestrator: 检查番剧",
+		zap.String("title", anime.Title),
+		zap.Uint("anime_id", anime.ID),
+		zap.Ints("missing_episodes", missing),
+	)
+
+	for _, ep := range missing {
+		success := o.tryDownloadEpisode(ctx, anime, ep, pref)
+		if !success {
+			zap.L().Debug("orchestrator: 本轮未下载",
+				zap.String("title", anime.Title),
+				zap.Int("episode", ep))
+		}
+	}
+}
+
+// tryDownloadEpisode 按优先级尝试每个源下载指定集，成功（入队）即返回 true。
+func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anime, ep int, pref Preference) bool {
+	// 来源意图约束：RSS 自动发现的番剧只走 RSS，不主动 BT/Stream 搜索；
+	// 用户若想扩展，应在 AnimeDetail 手动触发 BT 搜索（手动下载会记录为 source=manual）。
+	rssAutoOnly := anime != nil && anime.SourceOrigin == "rss_auto"
+
+	for _, srcType := range pref.Priority {
+		if pref.IsSourceDisabled(srcType) {
+			o.recordDiag(anime.ID, ep, srcType, 0, 0, "源已禁用", "", 0)
+			continue
+		}
+		if rssAutoOnly && srcType != SourceRSS {
+			o.recordDiag(anime.ID, ep, srcType, 0, 0, "RSS 自动发现的番剧仅走 RSS 源", "", 0)
+			continue
+		}
+
+		var (
+			diagResultCount int
+			diagRankedOut   int
+			diagReason      string
+			diagBestTitle   string
+			diagBestScore   float64
+			ok              bool
+		)
+
+		switch srcType {
+		case SourceStream:
+			ok, diagResultCount, diagReason = o.tryStream(ctx, anime, ep)
+		case SourceBT:
+			ok, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore = o.tryBT(ctx, anime, ep, pref)
+		case SourceRSS:
+			ok, diagResultCount, diagReason = o.tryRSS(ctx, anime, ep)
+		default:
+			continue
+		}
+
+		o.recordDiag(anime.ID, ep, srcType, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore)
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// ---- Stream 源适配 ----
+
+func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep int) (ok bool, resultCount int, reason string) {
+	if anime.StreamRuleID == nil || anime.StreamDetailURL == nil {
+		return false, 0, "该番剧未配置流媒体源"
+	}
+	if o.streamMgr == nil {
+		return false, 0, "stream manager 未就绪"
+	}
+
+	var rule model.StreamRule
+	if err := o.db.WithContext(ctx).First(&rule, *anime.StreamRuleID).Error; err != nil {
+		return false, 0, fmt.Sprintf("找不到规则 id=%d", *anime.StreamRuleID)
+	}
+
+	episodes, err := o.streamMgr.GetEpisodes(ctx, &rule, *anime.StreamDetailURL)
+	if err != nil || len(episodes) == 0 {
+		return false, len(episodes), fmt.Sprintf("获取剧集失败: %v", err)
+	}
+
+	roadName := ""
+	if anime.StreamRoadName != nil {
+		roadName = *anime.StreamRoadName
+	}
+	var filtered []stream.EpisodeInfo
+	if roadName != "" {
+		for _, e := range episodes {
+			if e.RoadName == roadName {
+				filtered = append(filtered, e)
+			}
+		}
+	}
+	if len(filtered) == 0 {
+		filtered = episodes
+	}
+
+	// 取第 ep 集（索引从 0 开始）
+	if ep-1 >= len(filtered) {
+		return false, len(filtered), fmt.Sprintf("清单只有 %d 集，无第 %d 集", len(filtered), ep)
+	}
+	epInfo := filtered[ep-1]
+
+	// 入队
+	epCopy := ep
+	task := &dlservice.Task{
+		Name:            fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
+		URL:             epInfo.URL,
+		DownloadType:    model.DownloadTypeStream,
+		Source:          SourceStream,
+		AnimeName:       anime.Title,
+		AnimeID:         &anime.ID,
+		EpisodeNumber:   &epCopy,
+		StreamRuleID:    &rule.ID,
+		StreamRule:      &rule,
+		StreamDetailURL: *anime.StreamDetailURL,
+		StreamRoadName:  roadName,
+	}
+	if _, err := o.dlSvc.Create(ctx, task); err != nil {
+		return false, len(filtered), "创建下载任务失败: " + err.Error()
+	}
+	return true, len(filtered), fmt.Sprintf("已入队: %s", epInfo.Name)
+}
+
+// ---- BT 源适配 ----
+
+func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pref Preference) (
+	ok bool, resultCount int, rankedOut int, reason, bestTitle string, bestScore float64,
+) {
+	// 选启用的 indexer
+	enabled := make([]indexer.Indexer, 0, len(pref.EnabledIndexers))
+	for _, name := range pref.EnabledIndexers {
+		if ix, has := o.indexers[name]; has {
+			enabled = append(enabled, ix)
+		}
+	}
+	if len(enabled) == 0 {
+		return false, 0, 0, "无启用的 BT indexer", "", 0
+	}
+
+	cands := indexer.Aggregate(ctx, enabled, anime.Title)
+	resultCount = len(cands)
+	if resultCount == 0 {
+		return false, 0, 0, "所有 indexer 均无结果", "", 0
+	}
+
+	ranked := indexer.RankByPreference(cands, pref.ToIndexerPref(), ep)
+	rankedOut = resultCount - len(ranked)
+	if len(ranked) == 0 {
+		return false, resultCount, rankedOut, "所有候选均不符合偏好（集数不匹配/分辨率不符/字幕组不符）", "", 0
+	}
+
+	top := ranked[0]
+	bestTitle = top.Title
+	bestScore = top.Score
+
+	// 入队用的 URL
+	url := top.MagnetURL
+	if url == "" {
+		url = top.TorrentURL
+	}
+	if url == "" {
+		return false, resultCount, rankedOut, "候选缺少 magnet/torrent URL", bestTitle, bestScore
+	}
+
+	// 去重 1：该 (anime, ep, source_type) 是否已有 downloading/completed 的记录
+	if o.isDuplicate(ctx, anime.ID, ep, SourceBT) {
+		return false, resultCount, rankedOut, "已有 BT 下载记录（同集），跳过", bestTitle, bestScore
+	}
+	// 去重 2：同一个 anime 下同一 URL 已经提交过（批量包场景：01-12 Fin 不要为每集重复入队）
+	if o.isDuplicateURL(ctx, anime.ID, url) {
+		return true, resultCount, rankedOut, "合集种子已入队（当前集在批量包内）", bestTitle, bestScore
+	}
+
+	// 入队（使用 magnet，走 torrent 执行器）
+	epCopy := ep
+
+	task := &dlservice.Task{
+		Name:          fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
+		URL:           url,
+		DownloadType:  model.DownloadTypeTorrent,
+		Source:        SourceBT,
+		AnimeName:     anime.Title,
+		AnimeID:       &anime.ID,
+		EpisodeNumber: &epCopy,
+		SavePath:      dlservice.BuildAnimeSavePath(o.mediaRoot, anime),
+	}
+	if _, err := o.dlSvc.Create(ctx, task); err != nil {
+		return false, resultCount, rankedOut, "创建下载任务失败: " + err.Error(), bestTitle, bestScore
+	}
+	zap.L().Info("orchestrator: BT 下载入队",
+		zap.String("anime", anime.Title),
+		zap.Int("ep", ep),
+		zap.String("source", top.SourceName),
+		zap.String("title", top.Title),
+		zap.Float64("score", top.Score),
+	)
+	return true, resultCount, rankedOut, fmt.Sprintf("已从 %s 入队（score=%.1f）", top.SourceName, top.Score), bestTitle, bestScore
+}
+
+// ---- RSS 源适配 ----
+// 查询 rss_entry 表中已关联到该 anime 的 entry，如果存在匹配当前集的未下载记录，
+// 表示 RSS 已抓到该集但尚未触发下载（比如被规则过滤）—— 目前 RSS engine 已自动入队，
+// 所以这里主要用于展示诊断；如需强制下载，未来可扩展 "从该 entry 创建下载"。
+func (o *Orchestrator) tryRSS(ctx context.Context, anime *model.Anime, ep int) (ok bool, resultCount int, reason string) {
+	var entries []model.RSSEntry
+	o.db.WithContext(ctx).
+		Where("matched_anime_id = ?", anime.ID).
+		Find(&entries)
+
+	matching := 0
+	for _, e := range entries {
+		if e.ParsedEpisode != nil && *e.ParsedEpisode == ep {
+			matching++
+			if !e.Downloaded {
+				// 该集的 RSS entry 存在但没下载成功（可能被规则过滤），跳过让其他源接手
+				return false, matching, "RSS entry 存在但未下载（可能被规则过滤）"
+			}
+		}
+	}
+
+	if matching == 0 {
+		return false, 0, "无匹配的 RSS entry（等待 feed 更新）"
+	}
+	return false, matching, "RSS entry 已下载"
+}
+
+// ---- 辅助 ----
+
+// downloadedEpisodes 查询某 anime 的已完成/进行中集数（跨所有 source_type）
+func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map[int]bool {
+	var rows []struct {
+		EpisodeNumber *int
+		Status        string
+	}
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number IS NOT NULL", animeID).
+		Where("status IN ?", []string{
+			model.DownloadStatusCompleted,
+			model.DownloadStatusDownloading,
+			model.DownloadStatusPending,
+		}).
+		Select("episode_number, status").
+		Scan(&rows)
+
+	out := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		if r.EpisodeNumber != nil {
+			out[*r.EpisodeNumber] = true
+		}
+	}
+	return out
+}
+
+// isDuplicate 判断 (anime_id, ep, source_type) 是否已有 downloading/completed 的下载
+func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, sourceType string) bool {
+	var count int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND source = ?", animeID, ep, sourceType).
+		Where("status IN ?", []string{
+			model.DownloadStatusDownloading,
+			model.DownloadStatusCompleted,
+			model.DownloadStatusPending,
+		}).
+		Count(&count)
+	return count > 0
+}
+
+// isDuplicateURL 判断同一 URL（通常是 magnet）是否已为同一 anime 提交过任何集。
+// 用于批量包（Fin 合集）场景：同一个 magnet 不应为每一集都重复入队。
+func (o *Orchestrator) isDuplicateURL(ctx context.Context, animeID uint, url string) bool {
+	if url == "" {
+		return false
+	}
+	var count int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND url = ?", animeID, url).
+		Where("status IN ?", []string{
+			model.DownloadStatusDownloading,
+			model.DownloadStatusCompleted,
+			model.DownloadStatusPending,
+			model.DownloadStatusFailed,
+		}).
+		Count(&count)
+	return count > 0
+}
+
+// recordDiag 记录一次源尝试的诊断信息（失败和成功都记）
+func (o *Orchestrator) recordDiag(animeID uint, ep int, srcType string, resultCount, rankedOut int, reason, bestTitle string, bestScore float64) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return
+	}
+	rec := model.OrchestratorDiagnosis{
+		AnimeID:       animeID,
+		EpisodeNumber: ep,
+		SourceType:    srcType,
+		CheckedAt:     time.Now(),
+		ResultCount:   resultCount,
+		RankedOut:     rankedOut,
+		Reason:        reason,
+		BestTitle:     bestTitle,
+		BestScore:     bestScore,
+	}
+	// 覆盖写入：先删同 (anime, ep, src) 的历史，保证 UI 只看最新
+	o.db.Where("anime_id = ? AND episode_number = ? AND source_type = ?", animeID, ep, srcType).
+		Delete(&model.OrchestratorDiagnosis{})
+	if err := o.db.Create(&rec).Error; err != nil {
+		zap.L().Warn("orchestrator: 写诊断记录失败", zap.Error(err))
+	}
+}

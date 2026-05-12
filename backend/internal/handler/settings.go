@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"context"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -25,6 +28,7 @@ func (h *SettingsHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		settings.GET("", h.GetSettings)
 		settings.PUT("", h.UpdateSettings)
 		settings.GET("/system", h.GetSystemInfo)
+		settings.POST("/test-proxy", h.TestProxy)
 	}
 	system := rg.Group("/system")
 	{
@@ -84,6 +88,7 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 		"rename_method":         true,
 		"rename_interval":       true,
 		"rss_check_interval":    true,
+		"http_proxy":            true,
 	}
 
 	pairs := make(map[string]string)
@@ -111,6 +116,49 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 
 func (h *SettingsHandler) GetSystemInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, getSystemInfo(h.svc.Config().ProjectVersion))
+}
+
+// TestProxy 用传入的代理 URL 尝试访问 Bangumi API，验证代理是否可用。
+// Body: {"proxy": "http://host.docker.internal:7890"}  (proxy 为空则走直连)
+// 返回：{"ok": true|false, "latency_ms": int, "error": string}
+func (h *SettingsHandler) TestProxy(c *gin.Context) {
+	var req struct {
+		Proxy string `json:"proxy"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数"})
+		return
+	}
+
+	transport := &http.Transport{}
+	if strings.TrimSpace(req.Proxy) != "" {
+		proxyURL, err := url.Parse(req.Proxy)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": "代理 URL 格式错误：" + err.Error()})
+			return
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+
+	client := &http.Client{Transport: transport, Timeout: 8 * time.Second}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
+	defer cancel()
+
+	// 用 Bangumi API 根路径做健康探测，简单快速且与主要用途一致
+	target := "https://api.bgm.tv/"
+	reqHTTP, _ := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	reqHTTP.Header.Set("User-Agent", "AniDog/1.0 (proxy-test)")
+
+	start := time.Now()
+	resp, err := client.Do(reqHTTP)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "latency_ms": latency, "error": err.Error(), "target": target})
+		return
+	}
+	resp.Body.Close()
+
+	c.JSON(http.StatusOK, gin.H{"ok": true, "latency_ms": latency, "status": resp.StatusCode, "target": target})
 }
 
 func toString(v interface{}) string {

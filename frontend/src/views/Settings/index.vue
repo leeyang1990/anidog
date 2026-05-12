@@ -114,6 +114,71 @@
       </div>
     </div>
 
+    <!-- 网络代理 -->
+    <div v-if="activeTab === 'network'" class="space-y-6">
+      <div class="bg-muted/50 rounded-lg p-6">
+        <div class="flex gap-5">
+          <div class="h-10 w-10 shrink-0 rounded-md bg-primary/10 flex items-center justify-center">
+            <n-icon size="22"><GlobeOutline /></n-icon>
+          </div>
+          <div class="flex-1 space-y-4">
+            <div>
+              <h3 class="text-lg font-semibold tracking-tight">HTTP 代理</h3>
+              <p class="text-sm text-muted-foreground">
+                配置后，Bangumi API、BT Indexer 搜索、RSS 抓取、流媒体拦截等所有出站 HTTP 都会走此代理。
+              </p>
+            </div>
+
+            <div class="space-y-2">
+              <label class="text-sm font-medium">代理地址</label>
+              <input v-model="proxyForm.http_proxy" type="text"
+                placeholder="留空表示直连；Docker 部署建议 http://host.docker.internal:7890"
+                class="h-9 w-full rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring" />
+              <p class="text-xs text-muted-foreground">
+                支持 <code>http://</code>、<code>https://</code>、<code>socks5://</code>。容器内访问宿主机代理请用 <code>host.docker.internal</code>。
+              </p>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <button :disabled="proxyForm.testing" @click="testProxy"
+                class="border border-input bg-background hover:bg-accent rounded-md h-9 px-4 text-sm font-medium transition-colors disabled:opacity-50 inline-flex items-center gap-2">
+                <n-icon v-if="!proxyForm.testing"><PulseOutline /></n-icon>
+                <svg v-else class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                {{ proxyForm.testing ? '测试中...' : '测试连接' }}
+              </button>
+              <button :disabled="saving.proxy" @click="saveProxy"
+                class="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md h-9 px-6 text-sm font-medium transition-colors disabled:opacity-50 inline-flex items-center gap-2">
+                <n-icon v-if="!saving.proxy"><SaveOutline /></n-icon>
+                <svg v-else class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                保存
+              </button>
+            </div>
+
+            <div v-if="proxyForm.testResult" class="rounded-md border p-3 text-sm"
+              :class="proxyForm.testResult.ok ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-red-500/30 bg-red-500/5'">
+              <div class="font-medium" :class="proxyForm.testResult.ok ? 'text-emerald-600' : 'text-red-600'">
+                {{ proxyForm.testResult.ok ? '✓ 连接成功' : '✗ 连接失败' }}
+                <span v-if="proxyForm.testResult.latency_ms !== undefined" class="text-muted-foreground font-normal">
+                  · {{ proxyForm.testResult.latency_ms }}ms
+                </span>
+              </div>
+              <div v-if="proxyForm.testResult.target" class="text-xs text-muted-foreground mt-1">
+                探测目标：{{ proxyForm.testResult.target }}
+              </div>
+              <div v-if="proxyForm.testResult.error" class="text-xs text-red-500 mt-1 break-all">
+                {{ proxyForm.testResult.error }}
+              </div>
+            </div>
+
+            <div class="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
+              ⚠ 保存后需要重启 backend 才能对已初始化的 HTTP 客户端和 rod 浏览器生效：<br />
+              <code class="text-[11px]">docker compose -f docker-compose.dev.yml restart backend</code>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 用户设置 -->
     <div v-if="activeTab === 'user'" class="space-y-6">
       <div class="bg-muted/50 rounded-lg p-6">
@@ -225,14 +290,15 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { NIcon } from 'naive-ui'
 import { useAuthStore } from '../../stores/auth'
-import { get, put } from '../../utils/api'
+import { get, put, post } from '../../utils/api'
 import PageHeader from '@/components/Common/PageHeader.vue'
 import DownloadPrefs from './DownloadPrefs.vue'
 import {
   FolderOpenOutline, SaveOutline,
   PersonCircleOutline,
   CheckmarkOutline, CodeSlashOutline, TimeOutline,
-  HardwareChipOutline, ServerOutline, CreateOutline
+  HardwareChipOutline, ServerOutline, CreateOutline,
+  GlobeOutline, PulseOutline
 } from '@vicons/ionicons5'
 
 const message = useMessage()
@@ -244,11 +310,12 @@ const tabs = [
   { key: 'download', label: '下载偏好' },
   { key: 'rename', label: '重命名设置' },
   { key: 'scheduler', label: '调度器' },
+  { key: 'network', label: '网络代理' },
   { key: 'user', label: '用户设置' },
   { key: 'system', label: '系统信息' }
 ]
 
-const saving = ref({ basic: false, user: false, rename: false, scheduler: false })
+const saving = ref({ basic: false, user: false, rename: false, scheduler: false, proxy: false })
 
 const basicForm = ref({ downloadDir: '', maxConcurrent: 3 })
 
@@ -298,6 +365,12 @@ const userForm = ref({
 
 const systemInfo = ref({ version: '', uptime: '', cpuUsage: 0, memoryUsage: 0, diskUsage: 0 })
 
+const proxyForm = reactive({
+  http_proxy: '',
+  testing: false,
+  testResult: null,
+})
+
 async function fetchSettings() {
   try {
     const data = await get('/settings')
@@ -308,6 +381,7 @@ async function fetchSettings() {
     if (data.rss_check_interval) schedulerForm.rss_interval = data.rss_check_interval
     if (data.language) schedulerForm.language = data.language
     if (data.http_proxy) schedulerForm.http_proxy = data.http_proxy
+    proxyForm.http_proxy = data.http_proxy || ''
   } catch (e) {
     console.error('获取设置失败:', e)
   }
@@ -332,6 +406,31 @@ async function saveRenameSettings() {
 
 async function saveSchedulerSettings() {
   message.warning('设置暂不支持在线修改，请修改配置文件后重启服务')
+}
+
+async function testProxy() {
+  proxyForm.testing = true
+  proxyForm.testResult = null
+  try {
+    const resp = await post('/settings/test-proxy', { proxy: proxyForm.http_proxy || '' })
+    proxyForm.testResult = resp
+  } catch (e) {
+    proxyForm.testResult = { ok: false, error: e?.message || '请求失败' }
+  } finally {
+    proxyForm.testing = false
+  }
+}
+
+async function saveProxy() {
+  saving.value.proxy = true
+  try {
+    await put('/settings', { http_proxy: proxyForm.http_proxy || '' })
+    message.success('已保存，重启 backend 后生效')
+  } catch (e) {
+    message.error(e?.message || '保存失败')
+  } finally {
+    saving.value.proxy = false
+  }
 }
 
 async function saveUserSettings() {

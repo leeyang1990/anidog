@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/database"
@@ -52,6 +53,9 @@ func main() {
 	// 3. 初始化数据库
 	db := database.Init(cfg)
 
+	// 3a. 从 DB setting 覆盖运行时配置（目前只覆盖代理）
+	applyDBConfigOverrides(db, cfg)
+
 	// 4. WebSocket Hub
 	wsHub := ws.NewHub()
 	go wsHub.Run()
@@ -84,7 +88,6 @@ func main() {
 	// 5c. RSS Engine + CRUD
 	rssCrudSvc := rssservice.NewCRUDService(db)
 	rssEngine := rssservice.NewEngine(db, dlSvc)
-	rssEngine.SetBangumiService(bangumiSvc)
 
 	// 5d. Dashboard / Notification / StreamRule / Settings
 	dashboardSvc := dashboardsvc.New(db, bangumiSvc)
@@ -261,4 +264,22 @@ func initLogger(cfg *config.Config) {
 
 	logger := zap.New(core, zap.AddCaller())
 	zap.ReplaceGlobals(logger)
+}
+
+// applyDBConfigOverrides 把 Setting 表里的可覆盖字段写回 cfg，让后续的 HTTP client
+// 构建都用上用户在 UI 里配置的值。目前只处理代理。
+func applyDBConfigOverrides(db *gorm.DB, cfg *config.Config) {
+	var items []model.Setting
+	if err := db.Where("key IN ?", []string{"http_proxy"}).Find(&items).Error; err != nil {
+		return
+	}
+	for _, it := range items {
+		switch it.Key {
+		case "http_proxy":
+			if it.Value != "" {
+				cfg.HTTPProxy = it.Value
+				zap.L().Info("使用 DB 中配置的 HTTP 代理", zap.String("proxy", it.Value))
+			}
+		}
+	}
 }

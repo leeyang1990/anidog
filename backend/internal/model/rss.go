@@ -17,9 +17,6 @@ type RSSFeed struct {
 	Aggregate bool   `gorm:"default:false" json:"aggregate"`
 	Parser    string `gorm:"default:'mikan'" json:"parser"`
 
-	// AutoDiscover 开启后，feed 中的新 item 如果能解析出未追的番剧名就自动创建追番并下载（AutoBangumi 模式）
-	AutoDiscover bool `gorm:"default:false" json:"auto_discover"`
-
 	Rules []RSSRule `gorm:"foreignKey:RSSFeedID;constraint:OnDelete:CASCADE" json:"rules,omitempty"`
 }
 
@@ -51,7 +48,7 @@ type RSSEntry struct {
 	Downloaded  bool       `gorm:"default:false" json:"downloaded"`
 	RSSFeedID   uint       `gorm:"index;not null" json:"rss_feed_id"`
 
-	// 解析后字段（Phase 4 自动发现用）
+	// 解析后字段（用于诊断/筛选）
 	ParsedAnime   *string `json:"parsed_anime,omitempty"`
 	ParsedEpisode *int    `json:"parsed_episode,omitempty"`
 	ParsedGroup   *string `json:"parsed_group,omitempty"`
@@ -69,7 +66,6 @@ type RSSFeedCreate struct {
 	CheckInterval *int    `json:"check_interval"`
 	Aggregate     *bool   `json:"aggregate"`
 	Parser        *string `json:"parser"`
-	AutoDiscover  *bool   `json:"auto_discover"`
 }
 
 // RSSFeedUpdate 更新RSS订阅源请求
@@ -81,7 +77,6 @@ type RSSFeedUpdate struct {
 	CheckInterval *int    `json:"check_interval"`
 	Aggregate     *bool   `json:"aggregate"`
 	Parser        *string `json:"parser"`
-	AutoDiscover  *bool   `json:"auto_discover"`
 }
 
 // RSSRuleCreate 创建RSS规则请求

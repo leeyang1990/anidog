@@ -37,7 +37,6 @@ func (h *RSSHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	g.POST("/test", h.TestRSS)
 	g.GET("/:id/items", h.GetItems)
 	g.POST("/:id/refresh", h.RefreshFeed)
-	g.POST("/backfill", h.Backfill)
 }
 
 func (h *RSSHandler) List(c *gin.Context) {
@@ -90,9 +89,6 @@ func (h *RSSHandler) Create(c *gin.Context) {
 	if req.Parser != nil {
 		feed.Parser = *req.Parser
 	}
-	if req.AutoDiscover != nil {
-		feed.AutoDiscover = *req.AutoDiscover
-	}
 
 	if err := h.rssCrud.CreateFeed(c.Request.Context(), &feed); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建RSS订阅源失败"})
@@ -135,9 +131,6 @@ func (h *RSSHandler) Update(c *gin.Context) {
 	}
 	if req.Parser != nil {
 		updates["parser"] = *req.Parser
-	}
-	if req.AutoDiscover != nil {
-		updates["auto_discover"] = *req.AutoDiscover
 	}
 
 	feed, err := h.rssCrud.UpdateFeed(c.Request.Context(), id, updates)
@@ -367,21 +360,4 @@ func parseUintID(s string) (uint, bool) {
 		return 0, false
 	}
 	return uint(n), true
-}
-
-// Backfill POST /rss/backfill
-// 扫描所有 rss_auto 来源的番剧，用 Bangumi 搜索补全元数据（海报、集数、评分等）。
-// 适用场景：auto_discover 初次开启前已入库的番剧缺元数据。
-func (h *RSSHandler) Backfill(c *gin.Context) {
-	if h.rssEngine == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "RSS 引擎不可用"})
-		return
-	}
-	// 异步跑，避免阻塞
-	go func() {
-		if _, err := h.rssEngine.BackfillAutoDiscovered(context.Background()); err != nil {
-			zap.L().Error("RSS 元数据回填失败", zap.Error(err))
-		}
-	}()
-	c.JSON(http.StatusAccepted, gin.H{"message": "已触发元数据回填"})
 }

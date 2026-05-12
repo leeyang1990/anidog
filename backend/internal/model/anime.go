@@ -68,7 +68,7 @@ type Anime struct {
 	SourceHealthAt     *time.Time `json:"source_health_at"`
 
 	// 来源入口（信息展示用，不影响调度）
-	// "bangumi" / "bt_search" / "rss_auto" / "manual"
+	// "bangumi" / "bt_search" / "manual"
 	SourceOrigin string `json:"source_origin" gorm:"default:''"`
 
 	// per-anime 偏好覆盖（nil/空 = 继承全局）

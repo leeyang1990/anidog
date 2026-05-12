@@ -15,7 +15,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 核心能力：
 - **多源下载编排**：Orchestrator 定时扫描订阅番剧，按用户偏好从 BT Indexer / RSS feed / 流媒体中挑最优源自动下载
-- **AutoBangumi 式 RSS 自动发现**：订阅 Mikan MyBangumi 等聚合 feed，自动解析标题 → 调 Bangumi API 补全元数据 → 创建追番条目 → 下载
 - **智能标题解析**：自写 titleparse 模块提取字幕组/番名/集数/分辨率/语言
 - **Plex 式目录组织**：下载文件按 `<番剧名 (年份)>/Season NN` 归档
 
@@ -72,7 +71,7 @@ internal/
     download/       下载编排（Task / Executor / QBit provider 同步）
     indexer/        BT 聚合搜索（Mikan / Dmhy / BangumiMoe / Nyaa）
     orchestrator/   剧集驱动的多源调度器（核心）
-    rss/            RSS 解析 + 自动发现 + 匹配
+    rss/            RSS 解析 + 规则匹配
     scheduler/      定时任务调度器
     setting/        全局设置（Key-Value）
     stream/         流媒体规则执行 + ffmpeg 下载
@@ -106,16 +105,14 @@ src/
 ### 数据流核心
 
 ```
-追番添加（三种入口）：
+追番添加（两种入口）：
   Bangumi 详情页 "追番"   → source_origin="bangumi"
   BT 搜索结果 "追这部番" → source_origin="bt_search"
-  RSS 自动发现          → source_origin="rss_auto"
                               ↓
                       anime 表（is_subscribed=true）
                               ↓
 Orchestrator 定时扫描（30 min）：
   对缺失集按 priority 跑 BT/Stream/RSS
-  rss_auto 只走 RSS（避免与 RSS job 冲突）
                               ↓
                      download 表（source=bt/rss/stream）
                               ↓
@@ -130,7 +127,7 @@ Orchestrator 定时扫描（30 min）：
 - `docker-compose.dev.yml` — 开发环境编排（源码挂载 + 热重载）
 - `docker-compose.yml` — 生产环境编排（镜像构建）
 - `backend/internal/service/orchestrator/orchestrator.go` — 调度核心
-- `backend/internal/service/rss/engine.go` — RSS 解析 + 自动发现
+- `backend/internal/service/rss/engine.go` — RSS 解析 + 规则匹配下载
 - `backend/internal/service/indexer/` — BT 聚合搜索
 - `frontend/src/components/Anime/EpisodeGrid.vue` — 剧集网格
 - `frontend/src/views/Settings/DownloadPrefs.vue` — 下载偏好

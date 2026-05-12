@@ -141,17 +141,9 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 
 // tryDownloadEpisode 按优先级尝试每个源下载指定集，成功（入队）即返回 true。
 func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anime, ep int, pref Preference) bool {
-	// 来源意图约束：RSS 自动发现的番剧只走 RSS，不主动 BT/Stream 搜索；
-	// 用户若想扩展，应在 AnimeDetail 手动触发 BT 搜索（手动下载会记录为 source=manual）。
-	rssAutoOnly := anime != nil && anime.SourceOrigin == "rss_auto"
-
 	for _, srcType := range pref.Priority {
 		if pref.IsSourceDisabled(srcType) {
 			o.recordDiag(anime.ID, ep, srcType, 0, 0, "源已禁用", "", 0)
-			continue
-		}
-		if rssAutoOnly && srcType != SourceRSS {
-			o.recordDiag(anime.ID, ep, srcType, 0, 0, "RSS 自动发现的番剧仅走 RSS 源", "", 0)
 			continue
 		}
 

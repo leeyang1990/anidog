@@ -146,16 +146,6 @@
         </div>
 
         <div class="space-y-2">
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" v-model="formValue.auto_discover" class="accent-primary h-4 w-4" />
-            <span class="text-sm font-medium">自动发现番剧（AutoBangumi 模式）</span>
-          </label>
-          <p class="text-xs text-muted-foreground pl-6">
-            开启后，feed 中的新 item 若是未追的番剧会自动创建追番条目并下载
-          </p>
-        </div>
-
-        <div class="space-y-2">
           <label class="text-sm font-medium">过滤规则</label>
           <div class="flex flex-wrap gap-2">
             <span
@@ -296,7 +286,6 @@ const formValue = reactive({
   url: '',
   enabled: true,
   parser: 'mikan',
-  auto_discover: false,
   filter_rules: []
 })
 
@@ -435,7 +424,6 @@ const resetForm = () => {
   formValue.url = ''
   formValue.enabled = true
   formValue.parser = 'mikan'
-  formValue.auto_discover = false
   formValue.filter_rules = []
   testResult.value = null
 }

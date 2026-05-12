@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -31,7 +33,11 @@ func (h *CalendarHandler) RefreshCalendar(c *gin.Context) {
 }
 
 func (h *CalendarHandler) GetCalendar(c *gin.Context) {
-	bangumiCalendar, err := h.bangumiSvc.GetCalendar(c.Request.Context())
+	// Bangumi API 抖/默认规则失败时会层层 fallback，最坏情况拖到 40+ 秒。
+	// 给它 5 秒硬截止，超时就走本地 DB，避免前端卡到网关吐 500。
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	bangumiCalendar, err := h.bangumiSvc.GetCalendar(ctx)
 	if err != nil {
 		zap.L().Warn("获取 Bangumi 日历失败，使用本地数据", zap.Error(err))
 	}

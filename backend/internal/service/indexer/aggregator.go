@@ -97,6 +97,12 @@ func RankByPreference(cands []Candidate, prefs DownloadPreference, targetEpisode
 			}
 		}
 
+		// 死种硬否决：仅当 indexer 明确报告了种子数时才能判"死种"，
+		// Mikan 等不暴露 seeders 的源不会被误杀。
+		if c.SeedersReported && c.Seeders <= 0 {
+			continue
+		}
+
 		score, reason := scoreOne(c, prefs)
 		out = append(out, ScoredCandidate{
 			Candidate: c,
@@ -194,10 +200,19 @@ func scoreOne(c Candidate, p DownloadPreference) (float64, []string) {
 		}
 	}
 
-	// 种子数（log10 加分，避免大数值过度加权）
-	if c.Seeders > 0 {
-		add := math.Log10(float64(c.Seeders)+1) * 5
-		score += add
+	// 种子数（已报告种子数的候选才参与；死种在 RankByPreference 前就被否决）
+	if c.SeedersReported {
+		switch {
+		case c.Seeders >= 3:
+			score += math.Log10(float64(c.Seeders)+1) * 20
+			reasons = append(reasons, "活种充足")
+		case c.Seeders >= 1:
+			score -= 30
+			reasons = append(reasons, "活种稀少 -30")
+		}
+	} else if c.Seeders > 0 {
+		// indexer 没标 SeedersReported 但碰巧有 Seeders（兜底）
+		score += math.Log10(float64(c.Seeders)+1) * 5
 	}
 
 	return score, reasons

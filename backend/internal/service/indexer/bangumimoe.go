@@ -84,6 +84,7 @@ func (b *BangumiMoeIndexer) Search(ctx context.Context, keyword string) ([]Candi
 			Size:       parseHumanSize(t.Size),
 			Seeders:    t.Seeders,
 			Leechers:   t.Leechers,
+			SeedersReported: true,
 			SourceName: "bangumimoe",
 			DetailURL:  b.BaseURL + "/torrent/" + t.ID,
 		}

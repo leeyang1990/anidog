@@ -90,6 +90,7 @@ func (n *NyaaIndexer) Search(ctx context.Context, keyword string) ([]Candidate, 
 			Size:       parseHumanSize(it.Size),
 			Seeders:    parseIntSafe(it.Seeders),
 			Leechers:   parseIntSafe(it.Leechers),
+			SeedersReported: true,
 			SourceName: "nyaa",
 			DetailURL:  it.GUID,
 		}

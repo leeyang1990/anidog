@@ -118,6 +118,7 @@ func parseDmhyRow(row *html.Node, baseURL string) Candidate {
 	if len(tds) >= 7 {
 		c.Seeders = parseIntSafe(strings.TrimSpace(htmlquery.InnerText(tds[5])))
 		c.Leechers = parseIntSafe(strings.TrimSpace(htmlquery.InnerText(tds[6])))
+		c.SeedersReported = true
 	}
 
 	return c

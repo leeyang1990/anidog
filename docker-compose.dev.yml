@@ -16,7 +16,7 @@ services:
     networks:
       - anidog-dev-network
 
-  # qBittorrent 下载器服务（开发环境，不暴露端口）
+  # qBittorrent 下载器服务（开发环境）
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
     container_name: anidog-qbittorrent-dev
@@ -30,6 +30,10 @@ services:
       - qbittorrent_config:/config
       # 与 backend 共享同一宿主机目录，实现统一下载位置 + 宿主机直接访问
       - ./downloads:/downloads
+    ports:
+      # BT 监听端口必须映射到宿主机，否则外部 peer 无法连进来，种子卡 metaDL
+      - "6881:6881"
+      - "6881:6881/udp"
     networks:
       - anidog-dev-network
 

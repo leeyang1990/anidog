@@ -30,6 +30,10 @@ type Candidate struct {
 	Size       int64                    `json:"size"`  // 字节
 	Seeders    int                      `json:"seeders"`
 	Leechers   int                      `json:"leechers"`
+	// SeedersReported 表示 Seeders 字段是否为来自 indexer 的真实数据。
+	// 有的 indexer（例如 Mikan 搜索页）不暴露种子数，此时 Seeders=0 是"未知"而非"无种"。
+	// 只有 SeedersReported=true 时才能把 Seeders==0 作为"死种"硬否决依据。
+	SeedersReported bool                 `json:"seeders_reported"`
 	SourceName string                   `json:"source_name"` // indexer name
 	DetailURL  string                   `json:"detail_url"`  // 种子详情页，给用户跳转
 }

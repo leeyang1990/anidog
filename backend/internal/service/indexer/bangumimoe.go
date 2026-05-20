@@ -76,15 +76,17 @@ func (b *BangumiMoeIndexer) Search(ctx context.Context, keyword string) ([]Candi
 
 	out := make([]Candidate, 0, len(payload.Torrents))
 	for _, t := range payload.Torrents {
+		// bangumi.moe API v2 在搜索接口里不返回有效 seeders/leechers（永远是 0），
+		// 不能当成"已知 0 活种"硬否决；交给 scrape 探活去判断。
 		c := Candidate{
 			Title:      t.Title,
 			MagnetURL:  t.Magnet,
 			InfoHash:   strings.ToUpper(t.InfoHash),
 			PubDate:    t.PublishTime,
 			Size:       parseHumanSize(t.Size),
-			Seeders:    t.Seeders,
-			Leechers:   t.Leechers,
-			SeedersReported: true,
+			Seeders:    0,
+			Leechers:   0,
+			SeedersReported: false,
 			SourceName: "bangumimoe",
 			DetailURL:  b.BaseURL + "/torrent/" + t.ID,
 		}

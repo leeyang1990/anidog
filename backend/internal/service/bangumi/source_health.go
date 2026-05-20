@@ -93,6 +93,21 @@ func (s *SourceHealthService) updateRuleHealth(ctx context.Context) {
 			default:
 				status = SourceHealthy
 			}
+			// 防"翻牌"：之前已是 broken 的规则，至少需要 3 条最近成功才能翻 healthy。
+			// 不然只要清掉失败历史 + 1 条偶发 manual 成功就能让规则被重新调度。
+			if status == SourceHealthy && rule.HealthStatus != nil && *rule.HealthStatus == SourceBroken {
+				if completed < 3 {
+					status = SourceDegraded
+					note += "（曾标 broken，需累计 ≥3 完成才能恢复 healthy）"
+				}
+			}
+		} else if rule.HealthStatus != nil && *rule.HealthStatus != "" {
+			// total=0：24h 内没有任何样本。保持原状态，不要把 broken 抹成空字符串
+			// 让 Orchestrator 误以为可用。
+			status = *rule.HealthStatus
+			if rule.HealthNote != nil {
+				note = *rule.HealthNote
+			}
 		}
 
 		s.db.WithContext(ctx).Model(rule).Updates(map[string]interface{}{

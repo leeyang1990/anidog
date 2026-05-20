@@ -79,12 +79,38 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	}
 
 	updated := 0
+	orphaned := 0
 	for _, dl := range downloads {
 		if dl.InfoHash == nil {
 			continue
 		}
 		qt, ok := byHash[strings.ToUpper(*dl.InfoHash)]
 		if !ok {
+			// qBit 里找不到这个 hash —— 大概率是 qBit 容器重启/数据丢失。
+			// 仅把"还在进行中"的状态翻成 failed，让 Orchestrator 下一轮重新挑源。
+			// 已 completed / failed / paused 的不动。
+			// 保护：刚创建 < 60s 的任务给 qBit 一点时间索引，跳过；
+			// >= 60s 还找不到才认定为孤儿。
+			if (dl.Status == model.DownloadStatusDownloading ||
+				dl.Status == model.DownloadStatusPending) &&
+				time.Since(dl.CreatedAt) > time.Minute {
+				if err := s.db.Model(&model.Download{}).
+					Where("id = ?", dl.ID).
+					Updates(map[string]interface{}{
+						"status":         model.DownloadStatusFailed,
+						"download_speed": 0,
+						"eta":            nil,
+					}).Error; err != nil {
+					zap.L().Warn("标记孤儿下载为 failed 失败",
+						zap.Uint("id", dl.ID), zap.Error(err))
+					continue
+				}
+				orphaned++
+				zap.L().Info("下载任务在 qBit 中已不存在，置为 failed",
+					zap.Uint("id", dl.ID),
+					zap.String("info_hash", *dl.InfoHash),
+					zap.String("name", dl.Name))
+			}
 			continue
 		}
 		updates := map[string]interface{}{}
@@ -115,6 +141,23 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 					updates["completed_at"] = &now
 				}
 			}
+			// metaDL/stalledDL 长时间无种子无进度 —— 视为死种，置 failed 让 Orchestrator 重选
+			if (state == "metaDL" || state == "stalledDL") &&
+				time.Since(dl.CreatedAt) > 6*time.Hour {
+				numComplete, _ := qt["num_complete"].(float64)
+				numSeeds, _ := qt["num_seeds"].(float64)
+				dlspeed, _ := qt["dlspeed"].(float64)
+				progress, _ := qt["progress"].(float64)
+				if numComplete <= 0 && numSeeds <= 0 && dlspeed <= 0 && progress <= 0 {
+					updates["status"] = model.DownloadStatusFailed
+					updates["download_speed"] = 0
+					updates["eta"] = nil
+					zap.L().Info("BT 任务长时间无种子无元数据，置 failed",
+						zap.Uint("id", dl.ID),
+						zap.String("info_hash", *dl.InfoHash),
+						zap.String("state", state))
+				}
+			}
 		}
 
 		if len(updates) > 0 {
@@ -129,9 +172,10 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		}
 	}
 
-	if updated > 0 {
+	if updated > 0 || orphaned > 0 {
 		zap.L().Info("qBit 同步完成",
 			zap.Int("matched", updated),
+			zap.Int("orphaned_to_failed", orphaned),
 			zap.Int("qbit_total", len(torrents)),
 			zap.Int("db_total", len(downloads)))
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -184,10 +185,23 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep int
 	if o.streamMgr == nil {
 		return false, 0, "stream manager 未就绪"
 	}
+	// 去重 / 失败冷却（避免每 30min 重复创建同一个失败的 stream 任务）
+	if o.isDuplicate(ctx, anime.ID, ep, SourceStream) {
+		return false, 0, "该集已有 stream 记录或在失败冷却期内，跳过"
+	}
 
 	var rule model.StreamRule
 	if err := o.db.WithContext(ctx).First(&rule, *anime.StreamRuleID).Error; err != nil {
 		return false, 0, fmt.Sprintf("找不到规则 id=%d", *anime.StreamRuleID)
+	}
+	// 规则被健康检查标 broken/degraded 跳过 —— 不要再用一个已知坏/烂的源浪费请求
+	if rule.HealthStatus != nil {
+		switch *rule.HealthStatus {
+		case "broken":
+			return false, 0, "stream 规则状态 broken，跳过"
+		case "degraded":
+			return false, 0, "stream 规则状态 degraded，跳过"
+		}
 	}
 
 	episodes, err := o.streamMgr.GetEpisodes(ctx, &rule, *anime.StreamDetailURL)
@@ -266,6 +280,90 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 		return false, resultCount, rankedOut, "所有候选均不符合偏好（集数不匹配/分辨率不符/字幕组不符）", "", 0
 	}
 
+	// 否决曾经失败过的 InfoHash —— 防止把已知没活种的 magnet 反复入队
+	// （Mikan 等不上报 seeders 的源在 RankByPreference 那里无法过滤死种，得在这兜底）
+	rankedFiltered := ranked[:0]
+	for _, c := range ranked {
+		if c.InfoHash != "" && o.hasHistoricalFailure(ctx, c.InfoHash) {
+			rankedOut++
+			continue
+		}
+		rankedFiltered = append(rankedFiltered, c)
+	}
+	ranked = rankedFiltered
+	if len(ranked) == 0 {
+		return false, resultCount, rankedOut, "所有候选 InfoHash 均有历史失败记录，跳过", "", 0
+	}
+
+	// 死种探活：对每个候选并发 scrape UDP tracker，3s 超时。
+	// 行为：scrape 成功且 seeders=0 → 剔除；scrape 失败（超时/UDP 不通） → 保留（fail-open）。
+	// 这样在没法 scrape 的网络环境下不会把所有候选都误杀。
+	scrapeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	type scrapedCand struct {
+		c       indexer.ScoredCandidate
+		ok      bool // scrape 收到回包
+		seeders int
+	}
+	scrapedCh := make(chan scrapedCand, len(ranked))
+	var swg sync.WaitGroup
+	for i := range ranked {
+		c := ranked[i]
+		magnet := c.MagnetURL
+		if magnet == "" {
+			magnet = c.InfoHash
+		}
+		if magnet == "" {
+			scrapedCh <- scrapedCand{c: c, ok: false} // 缺 hash 不能 scrape，保留
+			continue
+		}
+		swg.Add(1)
+		go func() {
+			defer swg.Done()
+			r := indexer.ScrapeMagnet(scrapeCtx, magnet)
+			scrapedCh <- scrapedCand{c: c, ok: r.OK, seeders: r.Seeders}
+		}()
+	}
+	go func() { swg.Wait(); close(scrapedCh); cancel() }()
+
+	alive := make([]indexer.ScoredCandidate, 0, len(ranked))
+	scrapedDead := 0
+	scrapedNoResponse := 0
+	for sc := range scrapedCh {
+		switch {
+		case sc.ok && sc.seeders > 0:
+			// 探活成功且有活种
+			sc.c.Seeders = sc.seeders
+			sc.c.SeedersReported = true
+			alive = append(alive, sc.c)
+		case sc.ok && sc.seeders == 0:
+			// 探活成功但无活种 → 死种
+			scrapedDead++
+		default:
+			// scrape 没回包：保留（fail-open）
+			scrapedNoResponse++
+			alive = append(alive, sc.c)
+		}
+	}
+	rankedOut += scrapedDead
+	if len(alive) == 0 {
+		return false, resultCount, rankedOut,
+			fmt.Sprintf("所有候选经 UDP scrape 探活均无活种（剔除 %d 个）", scrapedDead),
+			"", 0
+	}
+	if scrapedDead > 0 || scrapedNoResponse > 0 {
+		zap.L().Info("BT 候选 scrape 结果",
+			zap.Int("alive", len(alive)),
+			zap.Int("dead", scrapedDead),
+			zap.Int("no_response", scrapedNoResponse))
+	}
+	// 全员无回包 → UDP egress 大概率被代理/防火墙拦了，scrape 功能实际禁用
+	// （典型现象：开发机 Clash 在 macOS Docker 下劫持 DNS 不代理 UDP）
+	if scrapedNoResponse == len(ranked)+scrapedDead && scrapedNoResponse > 0 {
+		zap.L().Warn("所有候选 UDP scrape 均无回包，疑似 UDP 出站被拦截，本轮 scrape 实际禁用（fail-open）",
+			zap.Int("candidates", scrapedNoResponse))
+	}
+	ranked = alive
+
 	top := ranked[0]
 	bestTitle = top.Title
 	bestScore = top.Score
@@ -286,6 +384,11 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 	// 去重 2：同一个 anime 下同一 URL 已经提交过（批量包场景：01-12 Fin 不要为每集重复入队）
 	if o.isDuplicateURL(ctx, anime.ID, url) {
 		return true, resultCount, rankedOut, "合集种子已入队（当前集在批量包内）", bestTitle, bestScore
+	}
+	// 去重 3：同 anime 下同 InfoHash 已经存在记录（含 failed/completed），不论 source/episode。
+	// 防止 sync 误标 failed 后 Orchestrator 再次拿同 magnet 入队产生双胞胎。
+	if o.isDuplicateInfoHash(ctx, anime.ID, top.InfoHash) {
+		return false, resultCount, rankedOut, "该 InfoHash 已存在历史记录，跳过", bestTitle, bestScore
 	}
 
 	// 入队（使用 magnet，走 torrent 执行器）
@@ -369,7 +472,11 @@ func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map
 	return out
 }
 
-// isDuplicate 判断 (anime_id, ep, source_type) 是否已有 downloading/completed 的下载
+// isDuplicate 判断 (anime_id, ep, source_type) 是否应该跳过本轮入队。
+// 跳过条件：
+//   1. 已存在 downloading/completed/pending 记录（同集同源）
+//   2. 累计 failed 次数 ≥ 3 —— 该源对该集多次失败，永久跳过（避免无意义重试）
+//   3. 最近 6 小时内有 failed 记录 —— 短期冷却
 func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, sourceType string) bool {
 	var count int64
 	o.db.WithContext(ctx).
@@ -381,10 +488,58 @@ func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, so
 			model.DownloadStatusPending,
 		}).
 		Count(&count)
+	if count > 0 {
+		return true
+	}
+	// 累计失败 ≥ 3 次：永久放弃该源
+	var totalFailed int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND source = ?", animeID, ep, sourceType).
+		Where("status = ?", model.DownloadStatusFailed).
+		Count(&totalFailed)
+	if totalFailed >= 3 {
+		return true
+	}
+	// 最近 6 小时 failed 冷却（指数退避近似）
+	var recentFailed int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND source = ?", animeID, ep, sourceType).
+		Where("status = ?", model.DownloadStatusFailed).
+		Where("created_at > ?", time.Now().Add(-6*time.Hour)).
+		Count(&recentFailed)
+	return recentFailed > 0
+}
+
+// isDuplicateInfoHash 判断同一 anime + InfoHash 是否已存在记录（任何状态）。
+// 用于 BT 入队前的硬保护：避免 sync 误判把任务标 failed 后，下一轮 Orchestrator
+// 拿同一个 magnet 又开一行（典型现象：1268 与 1286 同 hash 双胞胎）。
+func (o *Orchestrator) isDuplicateInfoHash(ctx context.Context, animeID uint, infoHash string) bool {
+	if infoHash == "" {
+		return false
+	}
+	var count int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND info_hash = ?", animeID, strings.ToUpper(infoHash)).
+		Count(&count)
 	return count > 0
 }
 
-// isDuplicateURL 判断同一 URL（通常是 magnet）是否已为同一 anime 提交过任何集。
+// hasHistoricalFailure 判断某个 InfoHash 是否在 download 表里有过 failed 记录（不限 anime）。
+// 用于在排序后剔除"已知没活种"的 magnet：5/11 试过失败的 hash，5/18 再被 mikan 排第一时不应再用。
+func (o *Orchestrator) hasHistoricalFailure(ctx context.Context, infoHash string) bool {
+	if infoHash == "" {
+		return false
+	}
+	var count int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("info_hash = ? AND status = ?", strings.ToUpper(infoHash), model.DownloadStatusFailed).
+		Count(&count)
+	return count > 0
+}
 // 用于批量包（Fin 合集）场景：同一个 magnet 不应为每一集都重复入队。
 func (o *Orchestrator) isDuplicateURL(ctx context.Context, animeID uint, url string) bool {
 	if url == "" {

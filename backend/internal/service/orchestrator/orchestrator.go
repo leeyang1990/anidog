@@ -527,16 +527,20 @@ func (o *Orchestrator) isDuplicateInfoHash(ctx context.Context, animeID uint, in
 	return count > 0
 }
 
-// hasHistoricalFailure 判断某个 InfoHash 是否在 download 表里有过 failed 记录（不限 anime）。
-// 用于在排序后剔除"已知没活种"的 magnet：5/11 试过失败的 hash，5/18 再被 mikan 排第一时不应再用。
+// hasHistoricalFailure 判断某个 InfoHash 是否在黑名单（abandoned_torrent）里。
+// 用于在排序后剔除"已知没活种"的 magnet：例如 qbit_sync 把超过 6h 仍 0 元数据
+// 的种子写入黑名单后，Orchestrator 下一轮看到同 hash 的候选就直接跳过。
+//
+// 注意：之前这里查的是 download.status='failed'，会被各种瞬时失败误伤
+// （比如 qBit 短暂连不上、用户手动删除等）；现在仅查"已确诊死种"的黑名单。
 func (o *Orchestrator) hasHistoricalFailure(ctx context.Context, infoHash string) bool {
 	if infoHash == "" {
 		return false
 	}
 	var count int64
 	o.db.WithContext(ctx).
-		Model(&model.Download{}).
-		Where("info_hash = ? AND status = ?", strings.ToUpper(infoHash), model.DownloadStatusFailed).
+		Model(&model.AbandonedTorrent{}).
+		Where("info_hash = ?", strings.ToUpper(infoHash)).
 		Count(&count)
 	return count > 0
 }

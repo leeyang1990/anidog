@@ -95,6 +95,7 @@ func Init(cfg *config.Config) *gorm.DB {
 		&model.StreamRule{},
 		&model.Setting{},
 		&model.OrchestratorDiagnosis{},
+		&model.AbandonedTorrent{},
 	); err != nil {
 		zap.L().Fatal("数据库迁移失败", zap.Error(err))
 	}

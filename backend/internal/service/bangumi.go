@@ -605,7 +605,47 @@ func (s *BangumiService) GetCharacterDetail(ctx context.Context, characterID int
 	return &detail, nil
 }
 
-// GetCalendar 获取每周新番日历
+// BangumiEpisode 单集元信息（来自 Bangumi /v0/episodes）
+type BangumiEpisode struct {
+	Sort     float64 `json:"sort"`     // 序号（可能是浮点：12.5 = OVA）
+	Ep       int     `json:"ep"`       // 集号（正片）
+	Name     string  `json:"name"`     // 日文标题
+	NameCN   string  `json:"name_cn"`  // 中文标题
+	AirDate  string  `json:"airdate"`  // YYYY-MM-DD
+	Duration string  `json:"duration"` // "00:23:50"
+}
+
+// GetEpisodes 拉取某 anime 的全部正片集（type=0）。
+// 返回值按 Bangumi API 原始顺序（通常按 sort 升序）。失败/无数据返回空切片。
+//
+// 用途：让 anidog 知道每一集的实际播出时间，区分"未下载"和"待发布（air_date
+// 在未来）"两种状态——避免 Orchestrator 反复对未播出的集去做无谓搜索，
+// 也让前端可以给"还没发布"的格子打上日期标注。
+func (s *BangumiService) GetEpisodes(ctx context.Context, bangumiID int) ([]BangumiEpisode, error) {
+	cacheKey := fmt.Sprintf("episodes:%d", bangumiID)
+	if cached, ok := s.getCached(cacheKey); ok {
+		return cached.([]BangumiEpisode), nil
+	}
+
+	// type=0 正片，limit=200 一次拉完（一季番不可能超过 200 集）
+	path := fmt.Sprintf("/v0/episodes?subject_id=%d&type=0&limit=200", bangumiID)
+	data, err := s.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Total int              `json:"total"`
+		Data  []BangumiEpisode `json:"data"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("解析 Bangumi episodes 失败: %w", err)
+	}
+	// 缓存 1 小时——播出时间表不会频繁变
+	s.setCache(cacheKey, resp.Data, time.Hour)
+	return resp.Data, nil
+}
+
+
 func (s *BangumiService) GetCalendar(ctx context.Context) ([]BangumiCalendarDay, error) {
 	cacheKey := "calendar"
 	if cached, ok := s.getCached(cacheKey); ok {

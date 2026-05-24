@@ -8,6 +8,7 @@
           {{ completedCount }} / {{ effectiveCount }} 集
           <span v-if="!episodeCount && effectiveCount > 0" class="text-amber-500 text-xs">（集数未知，按已下载动态显示）</span>
           <span v-if="downloadingCount > 0" class="text-primary">· 下载中 {{ downloadingCount }}</span>
+          <span v-if="upcomingCount > 0" class="text-sky-500">· 待发布 {{ upcomingCount }}</span>
           <span v-if="noResourceCount > 0" class="text-amber-500">· 未命中 {{ noResourceCount }}</span>
         </span>
       </div>
@@ -26,25 +27,33 @@
 
     <!-- 格子 -->
     <div v-if="effectiveCount > 0" class="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2">
-      <button v-for="n in effectiveCount" :key="n"
+      <button v-for="ep in episodeStatusList" :key="ep.episode_number"
         class="aspect-square rounded-md border flex flex-col items-center justify-center text-xs transition-colors relative"
-        :class="cellClass(n)"
-        :title="tooltipText(n)"
-        @click="openDetail(n)">
-        <span class="font-mono font-medium">{{ String(n).padStart(2, '0') }}</span>
+        :class="cellClass(ep)"
+        :title="tooltipText(ep)"
+        @click="openDetail(ep.episode_number)">
+        <span class="font-mono font-medium">{{ String(ep.episode_number).padStart(2, '0') }}</span>
         <!-- 状态图标 -->
-        <n-icon v-if="statusOf(n) === 'completed'" size="12" class="absolute top-0.5 right-0.5 text-emerald-600">
+        <n-icon v-if="ep.status === 'completed'" size="12" class="absolute top-0.5 right-0.5 text-emerald-600">
           <CheckmarkCircleOutline />
         </n-icon>
-        <n-icon v-else-if="statusOf(n) === 'downloading'" size="12" class="absolute top-0.5 right-0.5 text-primary animate-pulse">
+        <n-icon v-else-if="ep.status === 'downloading' || ep.status === 'pending'" size="12" class="absolute top-0.5 right-0.5 text-primary animate-pulse">
           <CloudDownloadOutline />
         </n-icon>
-        <n-icon v-else-if="statusOf(n) === 'no_resource'" size="12" class="absolute top-0.5 right-0.5 text-amber-500">
+        <n-icon v-else-if="ep.status === 'no_resource'" size="12" class="absolute top-0.5 right-0.5 text-amber-500">
           <AlertCircleOutline />
         </n-icon>
+        <n-icon v-else-if="ep.status === 'upcoming'" size="12" class="absolute top-0.5 right-0.5 text-sky-500">
+          <TimeOutline />
+        </n-icon>
         <!-- 来源 badge -->
-        <span v-if="statusOf(n) === 'completed'" class="absolute bottom-0.5 right-0.5 text-[9px] font-bold opacity-60">
-          {{ sourceBadge(n) }}
+        <span v-if="ep.status === 'completed'" class="absolute bottom-0.5 right-0.5 text-[9px] font-bold opacity-60">
+          {{ sourceBadge(ep) }}
+        </span>
+        <!-- 待发布日期 -->
+        <span v-else-if="ep.status === 'upcoming' && ep.air_date"
+          class="absolute bottom-0.5 left-1/2 -translate-x-1/2 text-[9px] text-sky-600 dark:text-sky-400 whitespace-nowrap">
+          {{ shortDate(ep.air_date) }}
         </span>
       </button>
     </div>
@@ -61,6 +70,7 @@
       :episode="selectedEp"
       :downloads="downloadsByEp[selectedEp] || []"
       :diagnosis="diagnosisByEp[selectedEp]"
+      :ep-meta="epMetaByEp[selectedEp]"
       @refresh="refresh"
       @manual-search="openManualSearch"
     />
@@ -80,7 +90,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useMessage, NIcon } from 'naive-ui'
 import {
-  CheckmarkCircleOutline, CloudDownloadOutline, AlertCircleOutline,
+  CheckmarkCircleOutline, CloudDownloadOutline, AlertCircleOutline, TimeOutline,
 } from '@vicons/ionicons5'
 import { get, post } from '@/utils/api'
 import EpisodeDetailDrawer from './EpisodeDetailDrawer.vue'
@@ -94,8 +104,9 @@ const props = defineProps({
 
 const message = useMessage()
 
-const downloads = ref([]) // 该 anime 的所有 download 记录
+const downloads = ref([]) // 该 anime 的所有 download 记录（详情抽屉要用）
 const diagnosis = ref([]) // 诊断数据 { episode_number, sources: {bt: {...}, ...} }
+const episodeStatus = ref([]) // /anime/:id/episode-status 返回的统一数组
 const triggering = ref(false)
 
 const showDrawer = ref(false)
@@ -106,7 +117,6 @@ const manualSearchEp = ref(0)
 
 let pollTimer = null
 
-// 按 episode_number 分组下载
 const downloadsByEp = computed(() => {
   const map = {}
   for (const d of downloads.value) {
@@ -125,93 +135,64 @@ const diagnosisByEp = computed(() => {
   return map
 })
 
-// 有效显示集数：优先 Bangumi 的 episode_count；缺则用"已见过的最大集数"动态扩展。
-// 用这个避免 "0/0 集" 的糟糕体验（当 Bangumi 没收录集数时）
-const effectiveCount = computed(() => {
-  const fromBangumi = props.episodeCount || 0
-  let maxEpFromDl = 0
-  for (const d of downloads.value) {
-    if (d.episode_number && d.episode_number > maxEpFromDl) maxEpFromDl = d.episode_number
+const epMetaByEp = computed(() => {
+  const map = {}
+  for (const e of episodeStatus.value) {
+    map[e.episode_number] = e
   }
-  for (const dg of diagnosis.value) {
-    if (dg.episode_number && dg.episode_number > maxEpFromDl) maxEpFromDl = dg.episode_number
-  }
-  // 连一集都没见过 → 默认 12（一季番常见长度），给个占位
-  if (fromBangumi <= 0 && maxEpFromDl <= 0) return 12
-  return Math.max(fromBangumi, maxEpFromDl)
+  return map
 })
 
-const completedCount = computed(() => {
-  let n = 0
-  for (let i = 1; i <= effectiveCount.value; i++) {
-    if (statusOf(i) === 'completed') n++
-  }
-  return n
-})
+const episodeStatusList = computed(() => episodeStatus.value)
 
-const downloadingCount = computed(() => {
-  let n = 0
-  for (let i = 1; i <= effectiveCount.value; i++) {
-    if (statusOf(i) === 'downloading') n++
-  }
-  return n
-})
+const effectiveCount = computed(() => episodeStatus.value.length)
 
-const noResourceCount = computed(() => {
-  let n = 0
-  for (let i = 1; i <= effectiveCount.value; i++) {
-    if (statusOf(i) === 'no_resource') n++
-  }
-  return n
-})
+const completedCount = computed(() => episodeStatus.value.filter(e => e.status === 'completed').length)
+const downloadingCount = computed(() => episodeStatus.value.filter(e => e.status === 'downloading' || e.status === 'pending').length)
+const upcomingCount = computed(() => episodeStatus.value.filter(e => e.status === 'upcoming').length)
+const noResourceCount = computed(() => episodeStatus.value.filter(e => e.status === 'no_resource').length)
 
-function statusOf(n) {
-  const dls = downloadsByEp.value[n] || []
-  if (dls.some(d => d.status === 'completed')) return 'completed'
-  if (dls.some(d => d.status === 'downloading' || d.status === 'pending')) return 'downloading'
-  // 有诊断且无下载 → no_resource
-  if (diagnosisByEp.value[n]) return 'no_resource'
-  return 'idle'
-}
-
-function cellClass(n) {
-  const s = statusOf(n)
-  switch (s) {
+function cellClass(ep) {
+  switch (ep.status) {
     case 'completed':
       return 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 cursor-pointer'
     case 'downloading':
+    case 'pending':
       return 'bg-primary/10 border-primary/30 text-primary hover:bg-primary/20 cursor-pointer'
     case 'no_resource':
       return 'bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400 hover:bg-amber-500/20 cursor-pointer'
+    case 'upcoming':
+      return 'bg-sky-500/5 border-sky-500/30 text-sky-700 dark:text-sky-400 hover:bg-sky-500/10 cursor-pointer'
     default:
       return 'bg-background border-border text-muted-foreground hover:border-primary/50 hover:bg-accent/30 cursor-pointer'
   }
 }
 
-function sourceBadge(n) {
-  const dls = downloadsByEp.value[n] || []
-  const completed = dls.find(d => d.status === 'completed')
-  if (!completed) return ''
+function sourceBadge(ep) {
   const map = { bt: 'BT', stream: 'Str', rss: 'RSS', bangumi: 'Str', manual: '手' }
-  return map[completed.source] || ''
+  return map[ep.source] || ''
 }
 
-function tooltipText(n) {
-  const s = statusOf(n)
-  const dls = downloadsByEp.value[n] || []
-  switch (s) {
-    case 'completed': {
-      const d = dls.find(x => x.status === 'completed')
-      return `第 ${n} 集 · 已下载\n来源：${sourceName(d?.source)}\n点击查看详情`
-    }
-    case 'downloading': {
-      const d = dls.find(x => x.status === 'downloading' || x.status === 'pending')
-      return `第 ${n} 集 · 下载中 ${Math.round((d?.progress || 0) * 10) / 10}%`
-    }
+function shortDate(d) {
+  // YYYY-MM-DD → MM/DD
+  if (!d || d.length < 10) return d
+  return `${d.slice(5, 7)}/${d.slice(8, 10)}`
+}
+
+function tooltipText(ep) {
+  const titleHint = ep.name_cn || ep.title ? `\n${ep.name_cn || ep.title}` : ''
+  switch (ep.status) {
+    case 'completed':
+      return `第 ${ep.episode_number} 集 · 已下载${titleHint}\n来源：${sourceName(ep.source)}\n点击查看详情`
+    case 'downloading':
+    case 'pending':
+      return `第 ${ep.episode_number} 集 · 下载中${titleHint}`
     case 'no_resource':
-      return `第 ${n} 集 · 暂未命中\n点击查看原因`
+      return `第 ${ep.episode_number} 集 · 暂未命中${titleHint}\n点击查看原因`
+    case 'upcoming':
+      return `第 ${ep.episode_number} 集 · 待发布（${ep.air_date || '日期未定'}）${titleHint}`
     default:
-      return `第 ${n} 集 · 等待检查`
+      return `第 ${ep.episode_number} 集 · 未下载${titleHint}`
   }
 }
 
@@ -243,7 +224,7 @@ async function triggerSearch() {
 }
 
 async function refresh() {
-  await Promise.all([fetchDownloads(), fetchDiagnosis()])
+  await Promise.all([fetchDownloads(), fetchDiagnosis(), fetchEpisodeStatus()])
 }
 
 async function fetchDownloads() {
@@ -266,12 +247,24 @@ async function fetchDiagnosis() {
   }
 }
 
+async function fetchEpisodeStatus() {
+  try {
+    const resp = await get(`/anime/${props.animeId}/episode-status`)
+    episodeStatus.value = resp.episodes || []
+  } catch {
+    episodeStatus.value = []
+  }
+}
+
 watch(() => props.animeId, () => {
   if (props.animeId) refresh()
 }, { immediate: true })
 
 onMounted(() => {
-  pollTimer = setInterval(fetchDownloads, 5000)
+  pollTimer = setInterval(() => {
+    fetchDownloads()
+    fetchEpisodeStatus()
+  }, 5000)
 })
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
@@ -279,3 +272,5 @@ onUnmounted(() => {
 
 defineExpose({ refresh })
 </script>
+</content>
+</invoke>

@@ -30,6 +30,7 @@ import (
 	bangumisvc "github.com/anidog/anidog-go/internal/service/bangumi"
 	dashboardsvc "github.com/anidog/anidog-go/internal/service/dashboard"
 	dlservice "github.com/anidog/anidog-go/internal/service/download"
+	"github.com/anidog/anidog-go/internal/service/episode"
 	notifsvc "github.com/anidog/anidog-go/internal/service/notification"
 	"github.com/anidog/anidog-go/internal/service/network"
 	"github.com/anidog/anidog-go/internal/service/orchestrator"
@@ -105,6 +106,10 @@ func main() {
 	// 5d2. Orchestrator：多源剧集填坑调度器（替代旧的 bangumi.CheckAllSubscribed）
 	orch := orchestrator.New(db, dlSvc, streamManager, settingSvc, nil, mediaRoot)
 
+	// 5d3. Episode 同步：从 Bangumi 拉取每集的播出时间，让前端能区分
+	// "未下载" 和 "待发布"，让 Orchestrator 不去搜未播出的集
+	episodeSvc := episode.NewService(db, bangumiSvc)
+
 	// Seed 内置 Kazumi 默认规则 (仅在数据库为空时)
 	if err := streamRuleSvc.SeedDefaultRules(context.Background()); err != nil {
 		zap.L().Warn("Seed 默认规则失败", zap.Error(err))
@@ -125,6 +130,8 @@ func main() {
 	// 追番更新检查（每 30 分钟）
 	// 番剧更新检查：改为由 Orchestrator 驱动多源下载
 	sched.Register(scheduler.NewBangumiCheckJob(orch), 30*time.Minute, false)
+	// 剧集元数据同步（每 6h）：拉 Bangumi /v0/episodes 更新 air_date
+	sched.Register(episodeSvc, 6*time.Hour, true)
 	// 源健康检测（每 3 分钟）
 	sourceHealthSvc := bangumisvc.NewSourceHealthService(db)
 	sched.Register(scheduler.NewSourceHealthJob(sourceHealthSvc), 3*time.Minute, true)

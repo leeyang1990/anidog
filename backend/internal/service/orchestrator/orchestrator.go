@@ -12,6 +12,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/model"
 	dlservice "github.com/anidog/anidog-go/internal/service/download"
+	"github.com/anidog/anidog-go/internal/service/episode"
 	"github.com/anidog/anidog-go/internal/service/indexer"
 	"github.com/anidog/anidog-go/internal/service/setting"
 	"github.com/anidog/anidog-go/internal/service/stream"
@@ -114,13 +115,29 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 	// 已下载的集（跨所有 source_type）
 	downloaded := o.downloadedEpisodes(ctx, anime.ID)
 
+	// 各集播出时间（来自 animeepisode.air_date，由 episode.Service 同步自 Bangumi）
+	airDates := o.episodeAirDates(ctx, anime.ID)
+	now := time.Now()
+
 	missing := make([]int, 0, expected)
+	skippedUnaired := make([]int, 0)
 	for ep := 1; ep <= expected; ep++ {
-		if !downloaded[ep] {
-			missing = append(missing, ep)
+		if downloaded[ep] {
+			continue
 		}
+		if ad, has := airDates[ep]; has && !episode.IsAired(ad, now) {
+			// 还没播出 —— 不要去搜，省掉无意义的请求和"未命中"诊断
+			skippedUnaired = append(skippedUnaired, ep)
+			continue
+		}
+		missing = append(missing, ep)
 	}
 	if len(missing) == 0 {
+		if len(skippedUnaired) > 0 {
+			zap.L().Debug("orchestrator: 番剧无可下载集（剩余均为待发布）",
+				zap.String("title", anime.Title),
+				zap.Ints("upcoming", skippedUnaired))
+		}
 		return
 	}
 
@@ -128,6 +145,7 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 		zap.String("title", anime.Title),
 		zap.Uint("anime_id", anime.ID),
 		zap.Ints("missing_episodes", missing),
+		zap.Ints("upcoming_episodes", skippedUnaired),
 	)
 
 	for _, ep := range missing {
@@ -467,6 +485,22 @@ func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map
 	for _, r := range rows {
 		if r.EpisodeNumber != nil {
 			out[*r.EpisodeNumber] = true
+		}
+	}
+	return out
+}
+
+// episodeAirDates 查询某 anime 各集的播出日期（YYYY-MM-DD），来自 animeepisode 表。
+// 由 episode.Service 定时从 Bangumi /v0/episodes 同步。
+func (o *Orchestrator) episodeAirDates(ctx context.Context, animeID uint) map[int]string {
+	var rows []model.AnimeEpisode
+	o.db.WithContext(ctx).
+		Where("anime_id = ? AND air_date IS NOT NULL AND air_date <> ''", animeID).
+		Find(&rows)
+	out := make(map[int]string, len(rows))
+	for _, r := range rows {
+		if r.AirDate != nil && *r.AirDate != "" {
+			out[r.EpisodeNumber] = *r.AirDate
 		}
 	}
 	return out

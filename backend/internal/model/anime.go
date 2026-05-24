@@ -86,15 +86,17 @@ func (Anime) TableName() string { return "anime" }
 // AnimeEpisode 番剧集数数据库模型
 type AnimeEpisode struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
-	EpisodeNumber int       `gorm:"index;not null" json:"episode_number"`
+	EpisodeNumber int       `gorm:"index;not null;uniqueIndex:idx_animeepisode_anime_ep,priority:2" json:"episode_number"`
 	Title         *string   `json:"title"`
+	NameCN        *string   `json:"name_cn"`
+	AirDate       *string   `gorm:"index" json:"air_date"` // YYYY-MM-DD（来自 Bangumi /v0/episodes）
 	FilePath      *string   `json:"file_path"`
 	FileSize      *int64    `json:"file_size"`
 	Downloaded    bool      `gorm:"index;default:false" json:"downloaded"`
 	DownloadID    *string   `json:"download_id"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
-	AnimeID       uint      `gorm:"index;not null" json:"anime_id"`
+	AnimeID       uint      `gorm:"index;not null;uniqueIndex:idx_animeepisode_anime_ep,priority:1" json:"anime_id"`
 	Anime         *Anime    `gorm:"foreignKey:AnimeID" json:"-"`
 }
 

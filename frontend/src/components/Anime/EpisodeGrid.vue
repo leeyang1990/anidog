@@ -272,5 +272,3 @@ onUnmounted(() => {
 
 defineExpose({ refresh })
 </script>
-</content>
-</invoke>

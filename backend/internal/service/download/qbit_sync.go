@@ -16,16 +16,18 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/notification"
 )
 
 // QBitSyncer 从 qBit 同步 BT 下载的真实进度/大小到 DB。
 // 设计为 scheduler.Job，可定时调用。
 type QBitSyncer struct {
-	db      *gorm.DB
-	baseURL string
-	user    string
-	pass    string
-	client  *http.Client
+	db       *gorm.DB
+	baseURL  string
+	user     string
+	pass     string
+	client   *http.Client
+	notifSvc *notification.Service // 可空：未配置时不发通知
 }
 
 func NewQBitSyncer(db *gorm.DB, cfg *config.Config) *QBitSyncer {
@@ -37,6 +39,13 @@ func NewQBitSyncer(db *gorm.DB, cfg *config.Config) *QBitSyncer {
 		pass:    cfg.DownloaderPassword,
 		client:  &http.Client{Jar: jar, Timeout: 15 * time.Second},
 	}
+}
+
+// SetNotificationService 注入通知服务（main.go 在 wiring 阶段调用）。
+// 拆出来是因为 notification 依赖 model 而 download 也依赖 model，
+// 走 setter 注入避免构造函数循环膨胀，未注入时 notify() 直接 no-op。
+func (s *QBitSyncer) SetNotificationService(n *notification.Service) {
+	s.notifSvc = n
 }
 
 func (s *QBitSyncer) Name() string { return "qbit_sync" }
@@ -140,13 +149,49 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil {
 					now := time.Now()
 					updates["completed_at"] = &now
+					// 状态从非 completed 翻成 completed，且本次同步前还没标完成 →
+					// 是这一轮新发现的"完成事件"，触发通知。
+					// 放在循环里发是 fire-and-forget，不阻塞同步主流程。
+					s.notifyCompletion(ctx, &dl)
 				}
 			}
-			// metaDL/stalledDL 长时间无种子无元数据 —— 视为永久死种。
-			// 行为：写黑名单 + 从 qBit 删除 + 从 DB 删除（不再保留 failed 行）。
-			// 这样下载列表 UI 不会被僵尸 failed 任务污染，Orchestrator 也不会
-			// 因为 hasHistoricalFailure 命中而把同 hash 的候选反复重抓。
-			if (state == "metaDL" || state == "stalledDL" || state == "missingFiles") &&
+			// 死种快速放弃 —— 分三档：
+			//
+			//  A. metaDL 卡住 ≥ 90s：DHT 找不到任何 peer，连元数据都拉不到，是死种最强信号。
+			//     正常种子 5-15s 内就会进入 stalledDL/downloading；超过 90s 还停在 metaDL
+			//     基本就是 magnet 没活种 + DHT 网络也搜不到（即便 BT 端口暴露 6881）。
+			//
+			//  B. stalledDL + has_metadata + 进度 <1% + 0 seeders 持续 5min：
+			//     swarm 里看似还有残骸（DHT 能 announce 出来一些 leechers），但没有任何完整源，
+			//     拼不起来。典型现象：seen_complete 是任务刚加进去那几秒，之后就一直停在 0.x%。
+			//     注入公共 tracker 后还救不活就放弃，让 orchestrator 换 mikan_rss 下一名次的种。
+			//
+			//  C. stalledDL/missingFiles 持续 6h 且 0 元数据 0 做种 0 进度：兜底。
+			//     这一档专门收"漏掉的边角情况"——比如 has_metadata=false 但状态被映射成 stalledDL。
+			//
+			// 命中任一档：写黑名单 + 从 qBit 删除 + 从 DB 删除
+			// （Orchestrator 下一轮就会从剩下的 mikan_rss 候选里挑下一名次的种）。
+			if state == "metaDL" && time.Since(dl.CreatedAt) > 90*time.Second {
+				if s.abandonDeadTorrent(ctx, &dl, "metaDL 超 90s 无元数据，DHT 找不到任何 peer，判死种") {
+					abandoned++
+				}
+				continue
+			}
+			if state == "stalledDL" && time.Since(dl.CreatedAt) > 5*time.Minute {
+				hasMeta, _ := qt["has_metadata"].(bool)
+				numSeeds, _ := qt["num_seeds"].(float64)
+				progress, _ := qt["progress"].(float64)
+				dlspeed, _ := qt["dlspeed"].(float64)
+				// has_metadata=true 的种子才适用这条快速判定（已拿到 .torrent 信息但找不到完整源）
+				// progress < 0.01 即 < 1%；同时 num_seeds=0 且 dlspeed=0 → 5min 内未恢复
+				if hasMeta && numSeeds <= 0 && dlspeed <= 0 && progress < 0.01 {
+					if s.abandonDeadTorrent(ctx, &dl, "stalledDL 超 5min 无 seeder 无进度（swarm 里全是不完整副本），判死种") {
+						abandoned++
+					}
+					continue
+				}
+			}
+			if (state == "stalledDL" || state == "missingFiles") &&
 				time.Since(dl.CreatedAt) > 6*time.Hour {
 				numComplete, _ := qt["num_complete"].(float64)
 				numSeeds, _ := qt["num_seeds"].(float64)
@@ -182,6 +227,57 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			zap.Int("db_total", len(downloads)))
 	}
 	return nil
+}
+
+// notifyCompletion 在某条 download 翻成 completed 时推一条通知。
+//
+// 设计：
+//   - notifSvc 没注入 → 直接 no-op，不影响同步主流程
+//   - 信息组装尽量"宽容"：anime 关联可能为空（手动下载没绑番），那时就用 dl.Name 当标题
+//   - 异步发送：开 goroutine + 独立 timeout，避免 sync 主循环被 HTTP 拖慢
+//   - 用独立 ctx：sync 主 ctx 一旦完成会被 cancel，会把还没发完的请求中断掉
+func (s *QBitSyncer) notifyCompletion(ctx context.Context, dl *model.Download) {
+	if s.notifSvc == nil {
+		return
+	}
+
+	info := &notification.NotificationInfo{}
+
+	// 优先用关联 anime 的 official_title / season，没绑番就用下载名兜底
+	if dl.AnimeID != nil && *dl.AnimeID > 0 {
+		var a model.Anime
+		if err := s.db.WithContext(ctx).First(&a, *dl.AnimeID).Error; err == nil {
+			if a.OfficialTitle != nil && *a.OfficialTitle != "" {
+				info.OfficialTitle = *a.OfficialTitle
+			} else {
+				info.OfficialTitle = a.Title
+			}
+			if a.Season != nil {
+				info.Season = *a.Season
+			} else {
+				info.Season = 1
+			}
+			if a.CoverURL != nil && *a.CoverURL != "" {
+				info.CoverURL = *a.CoverURL
+			}
+		}
+	}
+	if info.OfficialTitle == "" {
+		info.OfficialTitle = dl.Name
+	}
+	if info.Season == 0 {
+		info.Season = 1
+	}
+	if dl.EpisodeNumber != nil {
+		info.Episode = *dl.EpisodeNumber
+	}
+
+	go func(info *notification.NotificationInfo) {
+		// 给所有渠道总共 30s 时间发完
+		sendCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s.notifSvc.Broadcast(sendCtx, info)
+	}(info)
 }
 
 // abandonDeadTorrent 永久放弃一个死种：

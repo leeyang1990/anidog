@@ -206,7 +206,13 @@ async function fetchChannels() {
   loading.value = true
   try {
     const data = await get('/notifications')
-    channels.value = data.items || []
+    // 后端 GET /notifications 直接返回数组（不是 { items: [] } 包装）
+    // 兼容两种形态：直接数组 / { items } 包装
+    if (Array.isArray(data)) {
+      channels.value = data
+    } else {
+      channels.value = data?.items || []
+    }
   } catch { message.error('获取通知渠道失败') }
   finally { loading.value = false }
 }

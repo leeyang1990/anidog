@@ -6,9 +6,11 @@ import (
 	"strconv"
 	"time"
 
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/indexer"
 )
 
 type Service struct {
@@ -81,7 +83,53 @@ func (s *Service) Subscribe(ctx context.Context, id uint) (*model.Anime, error) 
 		s.db.WithContext(ctx).Model(anime).Update("is_subscribed", true)
 		anime.IsSubscribed = true
 	}
+	// 反查 Mikan bangumiId（用于后续 BT 走 Mikan RSS 而非低召回率的关键词搜索）
+	// 已存在则跳过；查不到也不阻塞订阅。
+	s.ensureMikanBangumiID(ctx, anime)
 	return anime, nil
+}
+
+// ensureMikanBangumiID 在 anime.MikanBangumiID 为空时，用 Title / OriginalTitle 反查 Mikan，
+// 命中后写入数据库。失败/无结果不报错（indexer 自动回退到关键词搜索）。
+func (s *Service) ensureMikanBangumiID(ctx context.Context, anime *model.Anime) {
+	if anime == nil {
+		return
+	}
+	if anime.MikanBangumiID != nil && *anime.MikanBangumiID > 0 {
+		return
+	}
+	season := 1
+	if anime.Season != nil && *anime.Season > 0 {
+		season = *anime.Season
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	keywords := []string{anime.Title}
+	if anime.OriginalTitle != nil && *anime.OriginalTitle != "" && *anime.OriginalTitle != anime.Title {
+		keywords = append(keywords, *anime.OriginalTitle)
+	}
+	for _, kw := range keywords {
+		mid, mtitle, err := indexer.LookupMikanBangumiID(lookupCtx, kw, season)
+		if err != nil {
+			zap.L().Debug("Mikan 反查失败",
+				zap.String("anime", anime.Title),
+				zap.String("keyword", kw),
+				zap.Error(err))
+			continue
+		}
+		if mid > 0 {
+			anime.MikanBangumiID = &mid
+			s.db.WithContext(ctx).Model(anime).Update("mikan_bangumi_id", mid)
+			zap.L().Info("Mikan 反查命中",
+				zap.String("anime", anime.Title),
+				zap.String("matched_title", mtitle),
+				zap.Int("mikan_bangumi_id", mid))
+			return
+		}
+	}
+	zap.L().Debug("Mikan 反查无结果，BT 将退回关键词搜索",
+		zap.String("anime", anime.Title))
 }
 
 func (s *Service) Unsubscribe(ctx context.Context, id uint) (*model.Anime, error) {

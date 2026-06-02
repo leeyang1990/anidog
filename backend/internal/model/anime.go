@@ -53,6 +53,11 @@ type Anime struct {
 	BangumiRating *float64 `json:"bangumi_rating"`
 	IsSubscribed  bool     `gorm:"index;default:false" json:"is_subscribed"`
 
+	// Mikan Project 番剧 ID（与 BangumiID 不同体系）
+	// 订阅时由 Mikan Search 反查后写入；之后 BT indexer 走 Mikan RSS（按 bangumiId 推送）
+	// 而非低召回率的关键词搜索。空 = 未反查 / 反查失败，indexer 退回搜索。
+	MikanBangumiID *int `gorm:"index" json:"mikan_bangumi_id"`
+
 	// 流媒体源偏好
 	StreamRuleID    *uint   `json:"stream_rule_id" gorm:"index"`
 	StreamDetailURL *string `json:"stream_detail_url"`

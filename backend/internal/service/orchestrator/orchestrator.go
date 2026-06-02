@@ -16,6 +16,7 @@ import (
 	"github.com/anidog/anidog-go/internal/service/indexer"
 	"github.com/anidog/anidog-go/internal/service/setting"
 	"github.com/anidog/anidog-go/internal/service/stream"
+	"github.com/anidog/anidog-go/internal/service/titleparse"
 )
 
 // Source constants for Download.Source field
@@ -31,8 +32,9 @@ type Orchestrator struct {
 	dlSvc      *dlservice.Service
 	streamMgr  *stream.StreamManager
 	settingSvc *setting.Service
-	indexers   map[string]indexer.Indexer // Name() -> instance
-	mediaRoot  string                     // BT 下载根目录（容器内路径）
+	indexers   map[string]indexer.Indexer  // Name() -> instance
+	mikanRSS   *indexer.MikanRSSFetcher    // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
+	mediaRoot  string                      // BT 下载根目录（容器内路径）
 }
 
 // New 构造 Orchestrator。
@@ -63,8 +65,73 @@ func New(
 		streamMgr:  streamMgr,
 		settingSvc: settingSvc,
 		indexers:   indexers,
+		mikanRSS:   indexer.NewMikanRSSFetcher(),
 		mediaRoot:  mediaRoot,
 	}
+}
+
+// collectBTCandidates 汇总 BT 候选。
+//
+// 策略（关键：Mikan RSS 召回率远超关键词搜索，这是 ep1/ep4 等小众集数被漏掉的根因）：
+//  1. 若 anime.MikanBangumiID 已反查并写入 → 走 /RSS/Bangumi?bangumiId=X
+//     一次性拉到该番所有字幕组的所有集（典型 30-300 条），InfoHash 直接在 link 末段。
+//  2. 同时也跑关键词 Aggregate（Dmhy / BangumiMoe / Nyaa 等其他源仍要参与）。
+//  3. 按 InfoHash 去重，Mikan RSS 的条目优先。
+//  4. 给所有条目补 Parsed 字段。
+//
+// 失败处理：Mikan RSS 拿不到不阻塞，回退到关键词搜索。
+func (o *Orchestrator) collectBTCandidates(ctx context.Context, anime *model.Anime, enabled []indexer.Indexer) []indexer.Candidate {
+	var rssCands []indexer.Candidate
+	if anime.MikanBangumiID != nil && *anime.MikanBangumiID > 0 && o.mikanRSS != nil {
+		rssCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		items, err := o.mikanRSS.Fetch(rssCtx, *anime.MikanBangumiID)
+		cancel()
+		if err != nil {
+			zap.L().Warn("Mikan RSS 拉取失败，回退关键词搜索",
+				zap.String("anime", anime.Title),
+				zap.Int("mikan_bangumi_id", *anime.MikanBangumiID),
+				zap.Error(err))
+		} else {
+			for i := range items {
+				items[i].Parsed = titleparse.Parse(items[i].Title)
+			}
+			rssCands = items
+			zap.L().Info("Mikan RSS 命中",
+				zap.String("anime", anime.Title),
+				zap.Int("mikan_bangumi_id", *anime.MikanBangumiID),
+				zap.Int("count", len(items)))
+		}
+	}
+
+	// 关键词搜索路径（其他 indexer 仍要参与）
+	kwCands := indexer.Aggregate(ctx, enabled, anime.Title)
+
+	// 合并去重（InfoHash 优先；空则用 Title）
+	seen := make(map[string]bool, len(rssCands)+len(kwCands))
+	merged := make([]indexer.Candidate, 0, len(rssCands)+len(kwCands))
+	for _, c := range rssCands {
+		key := c.InfoHash
+		if key == "" {
+			key = c.Title
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		merged = append(merged, c)
+	}
+	for _, c := range kwCands {
+		key := c.InfoHash
+		if key == "" {
+			key = c.Title
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		merged = append(merged, c)
+	}
+	return merged
 }
 
 // Run 实现 scheduler.Job 接口：定时对所有订阅番剧逐个跑 CheckAnime。
@@ -286,7 +353,7 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 		return false, 0, 0, "无启用的 BT indexer", "", 0
 	}
 
-	cands := indexer.Aggregate(ctx, enabled, anime.Title)
+	cands := o.collectBTCandidates(ctx, anime, enabled)
 	resultCount = len(cands)
 	if resultCount == 0 {
 		return false, 0, 0, "所有 indexer 均无结果", "", 0

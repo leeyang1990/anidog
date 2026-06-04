@@ -96,6 +96,10 @@ func main() {
 	streamRuleSvc := streamrulesvc.NewService(db, streamManager)
 	settingSvc := settingsvc.NewService(cfg, db)
 
+	// 把通知服务注入下载服务：所有下载完成事件（BT/Stream/手动）走 updateStatus 时
+	// 都会触发一次通知。这个调用得放在 dlSvc 创建之后，看上面 5b 阶段。
+	dlSvc.SetNotificationService(notifSvc)
+
 	// 下载根目录：BT/RSS 都按 <mediaRoot>/<番剧名 (年份)>/Season NN 组织
 	mediaRoot := cfg.MediaRoot
 	if mediaRoot == "" {

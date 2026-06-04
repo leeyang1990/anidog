@@ -12,6 +12,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/notification"
 	"github.com/anidog/anidog-go/internal/ws"
 )
 
@@ -22,6 +23,7 @@ type Service struct {
 	cfg       *config.Config
 	hub       *ws.Hub
 	executors map[string]Executor
+	notifSvc  *notification.Service // 可空：未注入时不发通知
 }
 
 // NewService creates a new unified download service.
@@ -37,6 +39,13 @@ func NewService(db *gorm.DB, cfg *config.Config, hub *ws.Hub) *Service {
 // RegisterExecutor registers an executor for a download type (e.g. "torrent", "stream").
 func (s *Service) RegisterExecutor(downloadType string, exec Executor) {
 	s.executors[downloadType] = exec
+}
+
+// SetNotificationService 注入通知服务。
+// 这是唯一的通知收口：所有下载完成事件（不管是 BT/Stream/Manual 哪条路径触发）
+// 都从 updateStatus → notifyCompletion 走，避免在多处事件源各自接钩子导致漏发或重发。
+func (s *Service) SetNotificationService(n *notification.Service) {
+	s.notifSvc = n
 }
 
 // Create creates a Download record and starts async execution.
@@ -435,6 +444,11 @@ func (s *Service) migrateStreamRoadName(ctx context.Context) {
 }
 
 func (s *Service) updateStatus(dlID uint, status string, extra map[string]interface{}) {
+	// 在 UPDATE 之前先读旧状态：只有"原本不是 completed"翻成"现在是 completed"
+	// 才发通知（防止重复推送）。读失败不影响主流程。
+	var prev model.Download
+	hadRow := s.db.First(&prev, dlID).Error == nil
+
 	updates := map[string]interface{}{"status": status}
 	if status == model.DownloadStatusCompleted {
 		now := time.Now()
@@ -448,11 +462,17 @@ func (s *Service) updateStatus(dlID uint, status string, extra map[string]interf
 			zap.Uint("id", dlID),
 			zap.String("status", status),
 			zap.Error(err))
+		return
 	}
 
 	// stream 下载完成时，更新 anime 的 current_episode 为最大集数
 	if status == model.DownloadStatusCompleted {
 		s.updateAnimeProgress(dlID)
+
+		// 首次翻成 completed 才发通知（去重核心：prev.Status != completed）
+		if hadRow && prev.Status != model.DownloadStatusCompleted {
+			s.notifyCompletion(dlID)
+		}
 	}
 }
 
@@ -492,6 +512,61 @@ func (s *Service) updateAnimeProgress(dlID uint) {
 		zap.Uint("anime_id", *dl.AnimeID),
 		zap.Int("current_episode", maxEpisode),
 		zap.Any("updates", updates))
+}
+
+// notifyCompletion 在某条 download 翻成 completed 时推一条通知。
+//
+// 设计：
+//   - notifSvc 没注入 → 直接 no-op
+//   - 异步 fire-and-forget：开 goroutine + 30s 独立超时 ctx，避免阻塞 updateStatus
+//   - 信息组装"宽容"：anime 关联可能为空（手动下载没绑番），那时就用 dl.Name 当标题
+//   - 调用方需保证 dlID 已在 DB 存在（updateStatus 里 UPDATE 成功后才走到这里）
+func (s *Service) notifyCompletion(dlID uint) {
+	if s.notifSvc == nil {
+		return
+	}
+
+	// 同步读 dl 拿最新字段（completed_at 等已写入），构造 NotificationInfo
+	var dl model.Download
+	if err := s.db.First(&dl, dlID).Error; err != nil {
+		zap.L().Warn("查询下载用于发通知失败", zap.Uint("id", dlID), zap.Error(err))
+		return
+	}
+
+	info := &notification.NotificationInfo{}
+	if dl.AnimeID != nil && *dl.AnimeID > 0 {
+		var a model.Anime
+		if err := s.db.First(&a, *dl.AnimeID).Error; err == nil {
+			if a.OfficialTitle != nil && *a.OfficialTitle != "" {
+				info.OfficialTitle = *a.OfficialTitle
+			} else {
+				info.OfficialTitle = a.Title
+			}
+			if a.Season != nil {
+				info.Season = *a.Season
+			} else {
+				info.Season = 1
+			}
+			if a.CoverURL != nil && *a.CoverURL != "" {
+				info.CoverURL = *a.CoverURL
+			}
+		}
+	}
+	if info.OfficialTitle == "" {
+		info.OfficialTitle = dl.Name
+	}
+	if info.Season == 0 {
+		info.Season = 1
+	}
+	if dl.EpisodeNumber != nil {
+		info.Episode = *dl.EpisodeNumber
+	}
+
+	go func(info *notification.NotificationInfo) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s.notifSvc.Broadcast(ctx, info)
+	}(info)
 }
 
 // generateTorrentID produces a consistent, type-prefixed ID.

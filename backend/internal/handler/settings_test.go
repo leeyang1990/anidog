@@ -10,7 +10,8 @@ import (
 
 func setupSettingsHandler() (*SettingsHandler, string) {
 	cfg := testutil.TestConfig()
-	svc := setting.NewService(cfg)
+	db := testutil.InitTestDB()
+	svc := setting.NewService(cfg, db)
 
 	// Settings doesn't need auth, but for consistency
 	return NewSettingsHandler(svc), ""

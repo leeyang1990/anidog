@@ -84,7 +84,7 @@ func TestRSSRefreshJob(t *testing.T) {
 	var called atomic.Bool
 	mockEngine := &mockRSSRefresher{fn: func(ctx context.Context) { called.Store(true) }}
 
-	job := NewRSSRefreshJob(mockEngine)
+	job := NewRSSRefreshJob(mockEngine, nil)
 	if job.Name() != "rss_refresh" {
 		t.Errorf("Name = %q; want rss_refresh", job.Name())
 	}
@@ -106,6 +106,6 @@ func (m *mockRSSRefresher) RefreshAll(ctx context.Context) {
 }
 
 func TestRSSRefreshJob_NilEngine(t *testing.T) {
-	job := NewRSSRefreshJob(nil)
+	job := NewRSSRefreshJob(nil, nil)
 	job.Run(context.Background()) // should not panic
 }

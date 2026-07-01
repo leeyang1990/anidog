@@ -1,281 +1,225 @@
 <template>
   <div>
-    <PageHeader title="仪表盘" subtitle="番剧下载管理概览" />
+    <AcPageHeader title="🏝️ 仪表盘" subtitle="番剧下载管理概览">
+      <template #actions>
+        <AcButton variant="outline" size="md" :loading="loading" @click="fetchDashboardData">
+          <template #icon><RefreshOutline class="size-4" /></template>
+          刷新
+        </AcButton>
+      </template>
+    </AcPageHeader>
 
     <!-- Loading -->
-    <div v-if="loading" class="flex items-center justify-center py-20">
-      <n-spin size="large" />
+    <div v-if="loading && !stats.animeCount" class="flex items-center justify-center py-20">
+      <AcSpinner :size="48" />
     </div>
 
     <!-- Error -->
     <div v-else-if="error" class="flex flex-col items-center justify-center py-20 text-center">
-      <p class="text-lg text-muted-foreground mb-4">{{ error }}</p>
-      <button class="h-10 px-6 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors" @click="fetchDashboardData">重试</button>
+      <p class="text-base text-muted-foreground mb-4">{{ error }}</p>
+      <AcButton variant="primary" @click="fetchDashboardData">重试</AcButton>
     </div>
 
     <template v-else>
-      <!-- Stats: 4 cards grid -->
+      <!-- Stats: 4 cards -->
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div v-for="stat in statCards" :key="stat.label" class="bg-card text-card-foreground rounded-lg border p-6">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="h-8 w-8 rounded-md bg-primary/10 flex items-center justify-center">
-              <n-icon size="16" class="text-primary"><component :is="stat.icon" /></n-icon>
+        <AcCard v-for="stat in statCards" :key="stat.label" hoverable padding="md" rounded="2xl">
+          <div class="flex items-center gap-2 mb-3">
+            <div class="size-9 rounded-2xl flex items-center justify-center" :class="stat.iconBg">
+              <component :is="stat.icon" class="size-5" :class="stat.iconColor" />
             </div>
-            <span class="text-sm font-medium text-muted-foreground">{{ stat.label }}</span>
+            <span class="text-sm font-bold text-muted-foreground">{{ stat.label }}</span>
           </div>
-          <div class="text-2xl font-bold tracking-tight">{{ stat.value }}</div>
-        </div>
+          <div class="text-3xl font-bold tracking-tight font-num text-foreground">{{ stat.value }}</div>
+          <div v-if="stat.sub" class="text-xs text-muted-foreground mt-1">{{ stat.sub }}</div>
+        </AcCard>
       </div>
 
-      <!-- Charts: 2/3 + 1/3 bento grid -->
+      <!-- Charts -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-        <div class="lg:col-span-2 bg-card text-card-foreground rounded-lg border p-6">
-          <h3 class="text-lg font-semibold tracking-tight mb-4">最近7天下载统计</h3>
+        <AcCard padding="lg" rounded="2xl" class="lg:col-span-2">
+          <h3 class="text-base font-bold tracking-tight mb-4 text-foreground">📈 最近 7 天下载</h3>
           <div class="h-64">
             <Line v-if="chartData" :data="chartData" :options="chartOptions" />
           </div>
-        </div>
-        <div class="bg-card text-card-foreground rounded-lg border p-6">
-          <h3 class="text-lg font-semibold tracking-tight mb-4">下载状态分布</h3>
+        </AcCard>
+        <AcCard padding="lg" rounded="2xl">
+          <h3 class="text-base font-bold tracking-tight mb-4 text-foreground">🍩 状态分布</h3>
           <div class="h-64 flex items-center justify-center">
-            <Doughnut v-if="doughnutData" :data="doughnutData" :options="doughnutOptions" />
+            <Doughnut v-if="doughnutData && hasAnyDownload" :data="doughnutData" :options="doughnutOptions" />
+            <AcEmpty v-else title="暂无下载" description="还没有任何下载记录哦~" />
           </div>
-        </div>
+        </AcCard>
       </div>
 
-      <!-- Recent downloads table -->
-      <div class="bg-card text-card-foreground rounded-lg border">
-        <div class="p-6 pb-0">
-          <h3 class="text-lg font-semibold tracking-tight">最近下载</h3>
+      <!-- Recent downloads -->
+      <AcCard padding="none" rounded="2xl">
+        <div class="px-6 pt-5 pb-3 flex items-center justify-between">
+          <h3 class="text-base font-bold tracking-tight text-foreground">🌱 最近下载</h3>
+          <router-link to="/downloads" class="text-xs text-ac-grass-dark hover:underline font-bold">
+            查看全部 →
+          </router-link>
         </div>
-        <div class="mt-4">
+        <div class="overflow-x-auto">
           <table class="w-full">
             <thead>
-              <tr class="border-b text-left text-sm text-muted-foreground">
-                <th class="pb-3 pl-6 font-medium">文件名</th>
-                <th class="pb-3 font-medium">大小</th>
-                <th class="pb-3 font-medium">状态</th>
-                <th class="pb-3 pr-6 font-medium">更新时间</th>
+              <tr class="border-y-2 border-dashed border-ac-sand text-left text-xs text-muted-foreground bg-ac-sand/30">
+                <th class="py-3 pl-6 font-bold">名称</th>
+                <th class="py-3 font-bold">来源</th>
+                <th class="py-3 font-bold">大小</th>
+                <th class="py-3 font-bold">状态</th>
+                <th class="py-3 pr-6 font-bold">更新时间</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="dl in recentDownloads" :key="dl.id || dl.filename" class="border-b last:border-0 hover:bg-muted/50 transition-colors">
-                <td class="py-3 pl-6 text-sm">{{ dl.name || dl.filename }}</td>
-                <td class="py-3 text-sm text-muted-foreground">{{ dl.size }}</td>
-                <td class="py-3 text-sm">
-                  <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium"
-                    :class="statusBadgeClass(dl.status)">
-                    {{ statusText(dl.status) }}
-                  </span>
+              <tr v-for="dl in recentDownloads" :key="dl.id" class="border-b-2 border-dashed border-ac-sand last:border-0 hover:bg-ac-cream/50 transition-colors">
+                <td class="py-3 pl-6 text-sm max-w-[360px]">
+                  <div class="truncate" :title="dl.name">{{ dl.name }}</div>
                 </td>
-                <td class="py-3 pr-6 text-sm text-muted-foreground">{{ formatTime(dl.updated_at) }}</td>
+                <td class="py-3 text-sm">
+                  <AcTag variant="wood">{{ sourceShort(dl) }}</AcTag>
+                </td>
+                <td class="py-3 text-sm text-muted-foreground whitespace-nowrap font-num">{{ formatSize(dl.total_bytes || dl.downloaded_bytes) }}</td>
+                <td class="py-3 text-sm">
+                  <AcTag :variant="statusVariant(dl.status)">{{ statusText(dl.status) }}</AcTag>
+                </td>
+                <td class="py-3 pr-6 text-xs text-muted-foreground whitespace-nowrap font-num">{{ formatTime(dl.updated_at) }}</td>
               </tr>
             </tbody>
           </table>
-          <div v-if="!recentDownloads.length" class="py-8 text-center text-sm text-muted-foreground">暂无下载记录</div>
+          <AcEmpty v-if="!recentDownloads.length" title="还没有下载记录" description="快去番剧库挑一部追起来吧 🐾" class="py-8" />
         </div>
-      </div>
+      </AcCard>
     </template>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useMessage, NIcon, NSpin } from 'naive-ui'
+import { useToast } from '../composables/useToast'
 import {
-  FilmOutline,
-  LogoRss,
-  DownloadOutline,
-  CheckmarkCircleOutline
+  FilmOutline, LogoRss, DownloadOutline, CheckmarkCircleOutline, RefreshOutline,
 } from '@vicons/ionicons5'
-
 import { Line, Doughnut } from 'vue-chartjs'
 import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-  ArcElement
+  Chart as ChartJS, CategoryScale, LinearScale, PointElement,
+  LineElement, Title, Tooltip, Legend, ArcElement,
 } from 'chart.js'
 import dayjs from 'dayjs'
 import { get } from '@/utils/api'
-import PageHeader from '@/components/Common/PageHeader.vue'
+import { AcPageHeader, AcCard, AcButton, AcSpinner, AcTag, AcEmpty } from '../components/ac'
 
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-  ArcElement
-)
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, ArcElement)
 
-const CHART_COLORS = {
-  primary: '#667eea',
-  chart2: '#10b981',
-  chart3: '#f59e0b',
-  chart4: '#f43f5e',
-  chart5: '#8b5cf6'
+const CHART = {
+  grass: '#7CB342',
+  sun: '#FFB74D',
+  sky: '#81D4FA',
+  heart: '#E57373',
+  leaf: '#66BB6A',
+  wood: '#8D6E63',
 }
 
 const loading = ref(false)
 const error = ref(null)
-const stats = ref({})
+const stats = ref({ animeCount: 0, rssFeedCount: 0, downloading: 0, completed: 0, pending: 0, failed: 0, paused: 0, total: 0 })
 const recentDownloads = ref([])
-
-const message = useMessage()
+const toast = useToast()
 
 const chartData = ref(null)
 const doughnutData = ref(null)
 
+const hasAnyDownload = computed(() => stats.value.total > 0)
+
 const chartOptions = {
   responsive: true,
   maintainAspectRatio: false,
-  plugins: {
-    legend: {
-      display: false
-    }
-  },
-  scales: {
-    y: {
-      beginAtZero: true,
-      ticks: {
-        stepSize: 1
-      }
-    }
-  }
+  plugins: { legend: { display: false } },
+  scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
 }
-
 const doughnutOptions = {
   responsive: true,
   maintainAspectRatio: false,
-  plugins: {
-    legend: {
-      position: 'bottom'
-    }
-  }
+  plugins: { legend: { position: 'bottom' } },
 }
 
 const statCards = computed(() => [
-  {
-    label: '动画数量',
-    value: stats.value.animeCount || 0,
-    icon: FilmOutline
-  },
-  {
-    label: 'RSS 订阅',
-    value: stats.value.rssCount || 0,
-    icon: LogoRss
-  },
-  {
-    label: '正在下载',
-    value: stats.value.downloadingCount || 0,
-    icon: DownloadOutline
-  },
-  {
-    label: '已完成下载',
-    value: stats.value.completedCount || 0,
-    icon: CheckmarkCircleOutline
-  }
+  { label: '番剧数量',     value: stats.value.animeCount,   icon: FilmOutline,             iconBg: 'bg-ac-grass-light/40', iconColor: 'text-ac-grass-dark', sub: '' },
+  { label: 'RSS 订阅',     value: stats.value.rssFeedCount, icon: LogoRss,                 iconBg: 'bg-ac-sun/30',         iconColor: 'text-ac-sun-dark',   sub: '' },
+  { label: '正在下载',     value: stats.value.downloading,  icon: DownloadOutline,         iconBg: 'bg-ac-sky/40',         iconColor: 'text-ac-sky-dark',   sub: stats.value.pending ? `等待 ${stats.value.pending}` : '' },
+  { label: '已完成',       value: stats.value.completed,    icon: CheckmarkCircleOutline,  iconBg: 'bg-ac-leaf/30',        iconColor: 'text-ac-leaf-dark',  sub: stats.value.failed ? `失败 ${stats.value.failed}` : '' },
 ])
 
-function statusBadgeClass(status) {
-  const map = {
-    completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
-    downloading: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-    waiting: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-    failed: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
-  }
-  return map[status] || 'bg-secondary text-secondary-foreground'
+function statusVariant(status) {
+  return { completed: 'leaf', downloading: 'sky', pending: 'sun', paused: 'wood', failed: 'heart' }[status] || 'default'
 }
-
 function statusText(status) {
-  const map = {
-    completed: '已完成',
-    downloading: '下载中',
-    waiting: '等待中',
-    failed: '已失败'
-  }
-  return map[status] || status
+  return { completed: '已完成', downloading: '下载中', pending: '等待中', paused: '已暂停', failed: '已失败' }[status] || status
 }
-
-function formatTime(time) {
-  if (!time) return '—'
-  return dayjs(time).format('YYYY-MM-DD HH:mm')
+function sourceShort(dl) {
+  if (dl.download_type === 'stream') return 'Stream'
+  if (dl.download_type === 'torrent') return 'BT'
+  return dl.source || '—'
+}
+function formatTime(t) { return t ? dayjs(t).format('MM-DD HH:mm') : '—' }
+function formatSize(b) {
+  if (!b || b <= 0) return '—'
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), u.length - 1)
+  return (b / Math.pow(1024, i)).toFixed(1) + ' ' + u[i]
 }
 
 async function fetchDashboardData() {
   loading.value = true
   error.value = null
-
   try {
     const data = await get('/dashboard')
-
-    stats.value = data.stats || {}
-
-    if (data.downloadStats && Array.isArray(data.downloadStats.dates)) {
-      chartData.value = {
-        labels: data.downloadStats.dates,
-        datasets: [{
-          label: '下载数量',
-          data: data.downloadStats.counts || [],
-          fill: false,
-          borderColor: CHART_COLORS.primary,
-          backgroundColor: CHART_COLORS.primary + '33',
-          tension: 0.1
-        }]
-      }
-    } else {
-      chartData.value = {
-        labels: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
-        datasets: [{
-          label: '下载数量',
-          data: [0, 0, 0, 0, 0, 0, 0],
-          fill: false,
-          borderColor: CHART_COLORS.primary,
-          backgroundColor: CHART_COLORS.primary + '33',
-          tension: 0.1
-        }]
-      }
+    const rawStats = data.stats || {}
+    const ds = rawStats.download_stats || {}
+    stats.value = {
+      animeCount: rawStats.anime_count || 0,
+      rssFeedCount: rawStats.rss_feed_count || 0,
+      total: ds.total || 0,
+      pending: ds.pending || 0,
+      downloading: ds.downloading || 0,
+      completed: ds.completed || 0,
+      failed: ds.failed || 0,
+      paused: ds.paused || 0,
     }
-
-    if (data.stats) {
-      doughnutData.value = {
-        labels: ['等待中', '下载中', '已完成', '已失败'],
-        datasets: [{
-          data: [
-            data.stats.waitingCount || 0,
-            data.stats.downloadingCount || 0,
-            data.stats.completedCount || 0,
-            data.stats.failedCount || 0
-          ],
-          backgroundColor: [
-            CHART_COLORS.chart3,
-            CHART_COLORS.primary,
-            CHART_COLORS.chart2,
-            CHART_COLORS.chart4
-          ]
-        }]
-      }
+    const points = Array.isArray(data.downloadStats) ? data.downloadStats : []
+    chartData.value = {
+      labels: points.map(p => dayjs(p.date).format('MM-DD')),
+      datasets: [{
+        label: '下载数量',
+        data: points.map(p => p.count || 0),
+        fill: true,
+        borderColor: CHART.grass,
+        backgroundColor: CHART.grass + '33',
+        tension: 0.4,
+        pointRadius: 4,
+        pointBackgroundColor: CHART.grass,
+        pointBorderColor: '#fff',
+        pointBorderWidth: 2,
+      }],
     }
-
-    recentDownloads.value = data.recentDownloads || []
+    doughnutData.value = {
+      labels: ['等待中', '下载中', '已完成', '已暂停', '已失败'],
+      datasets: [{
+        data: [stats.value.pending, stats.value.downloading, stats.value.completed, stats.value.paused, stats.value.failed],
+        backgroundColor: [CHART.sun, CHART.sky, CHART.leaf, CHART.wood, CHART.heart],
+        borderWidth: 4,
+        borderColor: 'hsl(var(--card))',
+      }],
+    }
+    recentDownloads.value = Array.isArray(data.recentDownloads) ? data.recentDownloads : []
   } catch (err) {
-    const errorMsg = err.message || '加载数据失败'
-    error.value = errorMsg
-    message.error(errorMsg)
+    const msg = err.message || '加载数据失败'
+    error.value = msg
+    toast.error(msg)
   } finally {
     loading.value = false
   }
 }
 
-onMounted(() => {
-  fetchDashboardData()
-})
+onMounted(fetchDashboardData)
 </script>

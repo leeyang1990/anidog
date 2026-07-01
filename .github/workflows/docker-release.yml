@@ -1,0 +1,154 @@
+name: Publish Docker images (Multi-arch)
+
+# 仅在 push tag 时构建并发布镜像。
+#   git tag v1.2.3 && git push origin v1.2.3
+# 也支持手动触发（workflow_dispatch），但需要手动填一个已存在的 tag。
+# 不会在普通 push / PR 上触发。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已存在的 tag 名（例如 v1.2.3）'
+        required: true
+        type: string
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) 按 (component × arch) 在原生 runner 上分别构建并 push 单架构镜像
+  #    backend / frontend 各 2 个架构，共 4 个 job 并行
+  # ---------------------------------------------------------------------------
+  build_single_arch:
+    name: Build & push ${{ matrix.component }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: backend
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - component: backend
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+          - component: frontend
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - component: frontend
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && 0 || 1 }}
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::Tag '$TAG' 不存在"
+              exit 1
+            fi
+          else
+            TAG=${GITHUB_REF#refs/tags/}
+          fi
+          echo "TAG=${TAG}" >> $GITHUB_ENV
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Building ${{ matrix.component }} tag ${TAG} for ${{ matrix.arch }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push (single-arch)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          file: ./${{ matrix.component }}/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          # 只有 backend 需要 VERSION build-arg；frontend 忽略未知 arg 不报错
+          build-args: |
+            VERSION=${{ env.TAG }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/anidog-${{ matrix.component }}:${{ env.TAG }}-${{ matrix.arch }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/anidog-${{ matrix.component }}:latest-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}-${{ matrix.arch }}
+          provenance: false
+          sbom: false
+
+      - name: Image summary
+        run: |
+          echo "### ${{ matrix.component }} (${{ matrix.arch }})" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ secrets.DOCKERHUB_USERNAME }}/anidog-${{ matrix.component }}:${TAG}-${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # 2) 把每个 component 的 amd64 + arm64 合成多架构 manifest
+  # ---------------------------------------------------------------------------
+  create_manifests:
+    name: Create multi-arch manifest (${{ matrix.component }})
+    needs: [build_single_arch]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [backend, frontend]
+
+    steps:
+      - name: Set tag
+        run: echo "TAG=${{ needs.build_single_arch.outputs.tag }}" >> $GITHUB_ENV
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create & push manifest (versioned)
+        run: |
+          IMG=${{ secrets.DOCKERHUB_USERNAME }}/anidog-${{ matrix.component }}
+          docker buildx imagetools create \
+            -t ${IMG}:${TAG} \
+            ${IMG}:${TAG}-amd64 \
+            ${IMG}:${TAG}-arm64
+
+      - name: Create & push manifest (latest)
+        run: |
+          IMG=${{ secrets.DOCKERHUB_USERNAME }}/anidog-${{ matrix.component }}
+          docker buildx imagetools create \
+            -t ${IMG}:latest \
+            ${IMG}:latest-amd64 \
+            ${IMG}:latest-arm64
+
+      - name: Manifest summary
+        run: |
+          IMG=${{ secrets.DOCKERHUB_USERNAME }}/anidog-${{ matrix.component }}
+          echo "### Multi-arch manifest: ${{ matrix.component }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          docker buildx imagetools inspect ${IMG}:${TAG} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

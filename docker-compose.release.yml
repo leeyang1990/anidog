@@ -1,0 +1,109 @@
+# AniDog 生产部署 —— 拉取 Docker Hub 多架构镜像，开箱即用
+#
+# 使用：
+#   1. cp .env.example .env  并填好密码/密钥
+#   2. export DOCKERHUB_USERNAME=<你的 Docker Hub 用户名>   # 也可写进 .env
+#      export TAG=v1.0.0                                    # 缺省 latest
+#   3. docker compose -f docker-compose.release.yml up -d
+#   4. 浏览器访问 http://<host>:3002
+#
+# 镜像由 GitHub Actions 在 push tag 时自动构建发布（amd64 + arm64）。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: anidog-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-anidog}
+      POSTGRES_USER: ${POSTGRES_USER:-anidog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-anidog}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - anidog-network
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: anidog-qbittorrent
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-Asia/Shanghai}
+      WEBUI_PORT: 8080
+    volumes:
+      - qbittorrent_config:/config
+      - ./downloads:/downloads
+    ports:
+      - "8080:8080"      # qBit Web UI
+      - "6881:6881"      # BT 连接
+      - "6881:6881/udp"  # DHT
+    networks:
+      - anidog-network
+
+  backend:
+    image: ${DOCKERHUB_USERNAME:?需要设置 DOCKERHUB_USERNAME}/anidog-backend:${TAG:-latest}
+    container_name: anidog-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qbittorrent:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-anidog}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-anidog}?sslmode=disable
+
+      DOWNLOADER_TYPE: qbittorrent
+      DOWNLOADER_HOST: http://qbittorrent:8080
+      DOWNLOADER_USERNAME: ${DOWNLOADER_USERNAME:-admin}
+      DOWNLOADER_PASSWORD: ${DOWNLOADER_PASSWORD:-adminadmin}
+
+      SECRET_KEY: ${SECRET_KEY:-CHANGE_ME_TO_RANDOM_32_BYTES}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      RSS_CHECK_INTERVAL: ${RSS_CHECK_INTERVAL:-30}
+
+      # 前端从浏览器以 http://<host>:3002 访问，CORS 放行同源即可
+      CORS_HOSTS: ${CORS_HOSTS:-http://localhost:3002}
+
+      ENABLE_NOTIFICATIONS: "${ENABLE_NOTIFICATIONS:-false}"
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      TMDB_LANGUAGE: ${TMDB_LANGUAGE:-zh-CN}
+      TMDB_BASE_URL: ${TMDB_BASE_URL:-https://api.themoviedb.org/3}
+    volumes:
+      - ./downloads:/downloads
+    networks:
+      - anidog-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8088/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    image: ${DOCKERHUB_USERNAME:?需要设置 DOCKERHUB_USERNAME}/anidog-frontend:${TAG:-latest}
+    container_name: anidog-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3002}:80"   # nginx 反代 /api 与 /ws 到 backend:8088
+    networks:
+      - anidog-network
+
+volumes:
+  postgres_data:
+    driver: local
+  qbittorrent_config:
+    driver: local
+
+networks:
+  anidog-network:
+    driver: bridge

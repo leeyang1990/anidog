@@ -9,6 +9,18 @@ const (
 	DownloadStatusPaused      = "paused"
 )
 
+// 失败种类（FailureKind）—— 用来区分"可重试"与"永久失败"。
+//   - transient：临时故障，由 RetryFailedJob 按退避节奏自动重试
+//       例：流媒体 m3u8 签名链接过期（IO error: End of file / 403）
+//           BT 死种：DHT 短期找不到 peer（meta_dl 超时）—— 等下一轮新 hash
+//   - permanent：永久失败，不再重试
+//       例：磁盘满、文件 IO 错、格式不支持
+//   - "" （空）：尚未分类（旧记录或代码未覆盖路径）—— 走原逻辑
+const (
+	FailureKindTransient = "transient"
+	FailureKindPermanent = "permanent"
+)
+
 // 下载类型常量
 const (
 	DownloadTypeTorrent = "torrent"
@@ -45,6 +57,16 @@ type Download struct {
 
 	// BT 专属：info_hash 用于匹配 qBit 中的种子，同步真实大小/进度
 	InfoHash *string `gorm:"index" json:"info_hash"`
+
+	// 失败重试相关（参见 FailureKindTransient/Permanent）。
+	// RetryCount：已经尝试重试的次数（不含首次执行）。
+	// LastError：最近一次失败的 stderr 摘要或错误消息，给前端展示。
+	// FailureKind：'transient' 可重试 / 'permanent' 放弃 / ''（旧逻辑）。
+	// NextRetryAt：下一次允许重试的最早时间；RetryFailedJob 会扫这个字段。
+	RetryCount  int        `gorm:"default:0" json:"retry_count"`
+	LastError   string     `gorm:"type:text" json:"last_error"`
+	FailureKind string     `gorm:"index;type:varchar(20)" json:"failure_kind"`
+	NextRetryAt *time.Time `gorm:"index" json:"next_retry_at"`
 }
 
 func (Download) TableName() string { return "download" }

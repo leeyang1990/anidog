@@ -49,7 +49,7 @@ func main() {
 
 	// 2. 初始化日志
 	initLogger(cfg)
-	zap.L().Info(fmt.Sprintf("启动 %s v%s...", cfg.ProjectName, cfg.ProjectVersion))
+	zap.L().Info(fmt.Sprintf("启动 %s %s...", cfg.ProjectName, cfg.ProjectVersion))
 
 	// 3. 初始化数据库
 	db := database.Init(cfg)
@@ -125,7 +125,13 @@ func main() {
 	if rssInterval <= 0 {
 		rssInterval = 30 * time.Minute
 	}
-	sched.Register(scheduler.NewRSSRefreshJob(rssEngine), rssInterval, true)
+	// RSS 是否启用：每轮 Run 之前从 setting 读取 download.source_enabled.rss，
+	// 关闭时直接跳过 RefreshAll（实现"动森设置 → RSS 开关"的纯被动语义）。
+	rssEnabled := func(ctx context.Context) bool {
+		pref := orchestrator.LoadGlobal(ctx, settingSvc)
+		return pref.RSSEnabled
+	}
+	sched.Register(scheduler.NewRSSRefreshJob(rssEngine, rssEnabled), rssInterval, true)
 	renameInterval := time.Duration(cfg.RenameInterval) * time.Second
 	if renameInterval <= 0 {
 		renameInterval = 300 * time.Second
@@ -136,6 +142,14 @@ func main() {
 	sched.Register(scheduler.NewBangumiCheckJob(orch), 30*time.Minute, false)
 	// 剧集元数据同步（每 6h）：拉 Bangumi /v0/episodes 更新 air_date
 	sched.Register(episodeSvc, 6*time.Hour, true)
+	// 失败重试（每 5min）：扫 transient 失败行，到点触发对应 anime 的 orchestrator 重排
+	retryConductor := scheduler.RetryConductor(&orchRetryAdapter{orch: orch})
+	retryPrefLoader := func(ctx context.Context) interface{} {
+		return orchestrator.LoadGlobal(ctx, settingSvc)
+	}
+	sched.Register(scheduler.NewRetryFailedJob(db, retryConductor, retryPrefLoader), 5*time.Minute, false)
+	// 死种黑名单 TTL 清理（每 6h 一次，14 天过期）
+	sched.Register(scheduler.NewAbandonedTorrentTTLJob(db, 14*24*time.Hour), 6*time.Hour, true)
 	// 源健康检测（每 3 分钟）
 	sourceHealthSvc := bangumisvc.NewSourceHealthService(db)
 	sched.Register(scheduler.NewSourceHealthJob(sourceHealthSvc), 3*time.Minute, true)
@@ -180,7 +194,22 @@ func main() {
 	handler.NewAnimeHandler(animeSvc, bangumiAutoDL).RegisterRoutes(v1)
 	handler.NewRSSHandler(rssCrudSvc, rssEngine).RegisterRoutes(v1)
 	handler.NewDownloadHandler(dlSvc).RegisterRoutes(v1)
-	handler.NewSettingsHandler(settingSvc).RegisterRoutes(v1)
+	handler.NewSettingsHandler(settingSvc).
+		WithSystemDeps(handler.SystemInfoDeps{
+			DB: db,
+			QBitPing: func(ctx context.Context) (bool, string) {
+				if qbitClient == nil {
+					return false, ""
+				}
+				// 用 GetTorrentInfo 当 ping —— 能返回（即便空列表）即视为在线。
+				// qbit provider 未暴露版本 API，版本字段留空。
+				if _, err := qbitClient.GetTorrentInfo(ctx, ""); err != nil {
+					return false, ""
+				}
+				return true, ""
+			},
+		}).
+		RegisterRoutes(v1)
 	handler.NewDashboardHandler(dashboardSvc).RegisterRoutes(v1)
 	handler.NewSearchHandler(bangumiSvc).RegisterRoutes(v1)
 	handler.NewNotificationHandler(notifSvc).RegisterRoutes(v1)
@@ -250,6 +279,26 @@ func main() {
 	}
 
 	zap.L().Info("服务器已关闭")
+}
+
+// orchRetryAdapter 把 *orchestrator.Orchestrator.CheckAnime（接受 typed
+// orchestrator.Preference）适配到 scheduler.RetryConductor 的 interface{} 形参，
+// 避免 scheduler 包反向 import orchestrator 造成循环依赖。
+type orchRetryAdapter struct {
+	orch *orchestrator.Orchestrator
+}
+
+func (a *orchRetryAdapter) CheckAnime(ctx context.Context, anime *model.Anime, prefAny interface{}) {
+	pref, ok := prefAny.(orchestrator.Preference)
+	if !ok {
+		// 兜底：让 orchestrator 自己 reload（性能不会差，5min 一次）
+		// nil 也走 reload，毕竟我们没法在调用前看出"准确的 pref"是啥
+		// 由 orchestrator 内部 LoadGlobal 解决
+		zap.L().Debug("retry: 未提供 Preference，orchestrator 内部 reload")
+		// CheckAnime 本身要 Preference 类型，无法传 nil；用 Defaults 兜底
+		pref = orchestrator.Defaults()
+	}
+	a.orch.CheckAnime(ctx, anime, pref)
 }
 
 func initLogger(cfg *config.Config) {

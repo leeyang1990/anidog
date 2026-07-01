@@ -2,37 +2,41 @@
   <div class="relative" ref="containerRef">
     <!-- 触发器 -->
     <button
-      class="w-full flex items-center gap-2 h-9 px-3 rounded-md border border-input bg-background text-sm text-left hover:border-primary/50 focus:outline-none focus:ring-2 focus:ring-ring"
+      type="button"
+      class="w-full flex items-center gap-2 h-10 px-3 rounded-2xl border-2 border-ac-sand bg-card text-sm text-left hover:border-ac-grass focus:outline-none focus:ring-4 focus:ring-ac-grass/20 transition-colors"
       @click="toggle"
     >
-      <n-icon size="14" class="text-muted-foreground shrink-0"><FolderOutline /></n-icon>
-      <span class="flex-1 truncate font-mono text-xs">{{ displayPath }}</span>
-      <n-icon size="12" class="text-muted-foreground shrink-0 transition-transform" :class="open ? 'rotate-180' : ''"><ChevronDownOutline /></n-icon>
+      <FolderOutline class="size-4 text-ac-wood-dark shrink-0" />
+      <span class="flex-1 truncate font-num text-xs text-foreground">{{ displayPath }}</span>
+      <ChevronDownOutline class="size-3 text-muted-foreground shrink-0 transition-transform" :class="open ? 'rotate-180' : ''" />
     </button>
 
     <!-- 下拉目录列表 -->
-    <div v-if="open" class="absolute z-50 left-0 right-0 mt-1 rounded-md border bg-background shadow-lg overflow-hidden" style="max-height: 300px">
+    <div v-if="open" class="absolute z-50 left-0 right-0 mt-2 rounded-2xl border-2 border-ac-sand bg-card shadow-lg overflow-hidden" style="max-height: 320px">
       <!-- 顶栏：当前浏览路径 + 选中此目录 -->
-      <div class="flex items-center gap-2 px-3 py-2 border-b bg-muted/30 text-xs">
-        <span class="text-muted-foreground">浏览:</span>
-        <span class="font-mono flex-1 truncate">/{{ currentPath || '' }}</span>
-        <button class="px-2 py-0.5 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90"
+      <div class="flex items-center gap-2 px-3 py-2 border-b-2 border-dashed border-ac-sand bg-ac-sand/30 text-xs">
+        <span class="text-muted-foreground font-bold">浏览:</span>
+        <span class="font-num flex-1 truncate text-foreground">/{{ currentPath || '' }}</span>
+        <button type="button"
+          class="px-2.5 py-1 rounded-full bg-ac-grass text-white text-xs font-bold hover:bg-ac-grass-dark transition-colors"
           @click.stop="confirmSelect">选中</button>
       </div>
 
-      <div class="overflow-y-auto" style="max-height: 240px">
-        <div v-if="loading" class="py-4 text-center text-xs text-muted-foreground">加载中...</div>
+      <div class="overflow-y-auto" style="max-height: 260px">
+        <div v-if="loading" class="py-6 flex justify-center"><AcSpinner :size="24" /></div>
         <template v-else>
           <button v-if="currentPath"
-            class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-accent transition-colors text-muted-foreground"
+            type="button"
+            class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-ac-sand/40 transition-colors text-muted-foreground"
             @click.stop="goUp">
-            <n-icon size="14"><ArrowUpOutline /></n-icon>
+            <ArrowUpOutline class="size-4" />
             <span>..</span>
           </button>
           <button v-for="d in directories" :key="d.path"
-            class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-accent transition-colors"
+            type="button"
+            class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-ac-sand/40 transition-colors"
             @click.stop="enter(d)">
-            <n-icon size="14" class="text-muted-foreground"><FolderOutline /></n-icon>
+            <FolderOutline class="size-4 text-ac-sun-dark" />
             <span class="truncate">{{ d.name }}</span>
           </button>
           <div v-if="!directories.length" class="py-4 text-center text-xs text-muted-foreground">空目录</div>
@@ -44,15 +48,16 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { NIcon, useMessage } from 'naive-ui'
 import { FolderOutline, ChevronDownOutline, ArrowUpOutline } from '@vicons/ionicons5'
 import { post } from '@/utils/api'
+import { useToast } from '../../composables/useToast'
+import { AcSpinner } from '../ac'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
 })
 const emit = defineEmits(['update:modelValue'])
-const message = useMessage()
+const toast = useToast()
 
 const containerRef = ref(null)
 const open = ref(false)
@@ -66,7 +71,6 @@ const displayPath = computed(() => props.modelValue || '/')
 function toggle() {
   open.value = !open.value
   if (open.value) {
-    // 每次打开从当前选中路径开始浏览（不写入）
     const start = (props.modelValue || '').replace(/^\//, '')
     fetchDir(start)
   }
@@ -79,27 +83,20 @@ async function fetchDir(path) {
     directories.value = (data.children || []).filter(x => x.is_dir)
     currentPath.value = data.path || ''
     parentPath.value = data.parent_path || ''
-    // 不在这里 emit，避免浏览就改父组件值
   } catch (e) {
-    // 路径不存在就回到 root
     if (path) {
       fetchDir('')
       return
     }
-    message.error(e.message || '读取目录失败')
+    toast.error(e.message || '读取目录失败')
     directories.value = []
   } finally {
     loading.value = false
   }
 }
 
-function enter(d) {
-  fetchDir(d.path)
-}
-
-function goUp() {
-  fetchDir(parentPath.value)
-}
+function enter(d) { fetchDir(d.path) }
+function goUp() { fetchDir(parentPath.value) }
 
 function confirmSelect() {
   emit('update:modelValue', '/' + (currentPath.value || ''))

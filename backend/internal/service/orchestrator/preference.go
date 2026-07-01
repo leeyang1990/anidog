@@ -1,4 +1,9 @@
-// Package orchestrator 统一调度 Stream / BT / RSS 三种下载源，按每集填坑。
+// Package orchestrator 统一调度 Stream / BT 两种下载源（按每集填坑）。
+//
+// 关于 RSS：RSS 是被动订阅 + 规则匹配的独立通道，由 RSSRefreshJob + 用户配置的
+// rssrule 触发下载。orchestrator 不再把 RSS 作为"主动找资源"的一档，避免与
+// BT 现场搜索重复。RSSEnabled 字段被保留，但语义改为"是否启用 RSS 定时刷新
+// 与规则下载"，由 RSSRefreshJob 在每轮 Run 之前读取并判断是否跳过。
 package orchestrator
 
 import (
@@ -22,18 +27,19 @@ type Preference struct {
 	MaxSizeMB int
 
 	// 源启用
-	StreamEnabled     bool
-	BTEnabled         bool
-	RSSEnabled        bool
-	EnabledIndexers   []string // BT 启用的 indexers
-	DisabledForAnime  []string // 该 anime 关闭的 source_type
+	StreamEnabled    bool
+	BTEnabled        bool
+	RSSEnabled       bool     // 仅控制 RSSRefreshJob 是否执行；orchestrator 不再读取此字段
+	EnabledIndexers  []string // BT 启用的 indexers
+	DisabledForAnime []string // 该 anime 关闭的 source_type
 
 	// 调度
-	Priority      []string // ["bt","stream","rss"]
+	Priority      []string // ["bt","stream"]（不再包含 rss）
 	CheckInterval int      // 分钟
 }
 
 // IsSourceDisabled 判断某 source_type 对当前 anime 是否禁用。
+// 注意：rss 不再是 orchestrator 的主动源，传 "rss" 永远视为禁用。
 func (p Preference) IsSourceDisabled(srcType string) bool {
 	for _, s := range p.DisabledForAnime {
 		if s == srcType {
@@ -46,7 +52,7 @@ func (p Preference) IsSourceDisabled(srcType string) bool {
 	case "bt":
 		return !p.BTEnabled
 	case "rss":
-		return !p.RSSEnabled
+		return true
 	}
 	return true
 }
@@ -74,7 +80,7 @@ func Defaults() Preference {
 		BTEnabled:       true,
 		RSSEnabled:      true,
 		EnabledIndexers: []string{"mikan", "dmhy", "bangumimoe"},
-		Priority:        []string{"bt", "stream", "rss"},
+		Priority:        []string{"bt", "stream"},
 		CheckInterval:   30,
 	}
 }
@@ -150,11 +156,19 @@ func LoadGlobal(ctx context.Context, svc *setting.Service) Preference {
 		p.EnabledIndexers = ixEnabled
 	}
 
-	// 优先级
+	// 优先级（旧设置可能含 "rss"，过滤掉）
 	if v := get("download.priority"); v != "" {
 		var arr []string
 		if err := json.Unmarshal([]byte(v), &arr); err == nil && len(arr) > 0 {
-			p.Priority = arr
+			filtered := arr[:0]
+			for _, s := range arr {
+				if s != "rss" {
+					filtered = append(filtered, s)
+				}
+			}
+			if len(filtered) > 0 {
+				p.Priority = filtered
+			}
 		}
 	}
 

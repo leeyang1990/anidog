@@ -6,7 +6,7 @@
 
   <!-- searching: 自动匹配中 -->
   <div v-else-if="phase === 'searching'" class="py-12 text-center">
-    <n-spin size="large" />
+    <AcSpinner :size="48" />
     <p class="text-sm text-muted-foreground mt-4">正在匹配下载源...</p>
   </div>
 
@@ -59,9 +59,7 @@
             <!-- 多选勾选框 -->
             <div class="w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors"
               :class="isCandidateSelected(r) ? 'bg-primary border-primary' : 'border-border bg-background'">
-              <n-icon v-if="isCandidateSelected(r)" size="12" class="text-primary-foreground">
-                <CheckmarkCircleOutline />
-              </n-icon>
+              <CheckmarkCircleOutline v-if="isCandidateSelected(r)" class="size-3 text-primary-foreground" />
             </div>
             <div class="flex-1 min-w-0">
               <div class="text-sm font-medium truncate">
@@ -120,7 +118,7 @@
   <div v-else-if="phase === 'ready'" class="space-y-4">
     <!-- 当前已应用配置 -->
     <div class="flex items-center gap-2 flex-wrap bg-primary/5 border border-primary/20 rounded-md px-4 py-3 text-sm">
-      <n-icon size="16" class="text-primary shrink-0"><CheckmarkCircleOutline /></n-icon>
+      <CheckmarkCircleOutline class="size-4 text-primary shrink-0" />
       <span class="text-muted-foreground">已追:</span>
       <span class="font-medium">{{ appliedRuleName || '—' }}</span>
       <span class="text-muted-foreground">/</span>
@@ -138,7 +136,7 @@
       <span v-else-if="healthStatus === 'healthy'"
         class="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
         :title="healthNote">
-        <n-icon size="12"><CheckmarkCircleOutline /></n-icon> 源健康
+        <CheckmarkCircleOutline class="size-3" /> 源健康
       </span>
     </div>
 
@@ -155,9 +153,7 @@
               : 'bg-background text-foreground border-border hover:border-primary/50'"
           @click="switchSource(m)"
           :disabled="switchingRoad">
-          <n-icon v-if="activeMatch?.rule_id === m.rule_id && !isDraftChanged('source', m.rule_id)" size="12">
-            <CheckmarkCircleOutline />
-          </n-icon>
+          <CheckmarkCircleOutline v-if="activeMatch?.rule_id === m.rule_id && !isDraftChanged('source', m.rule_id)" class="size-3" />
           {{ m.rule_name }}
           <span class="opacity-70">({{ m.results.length }})</span>
         </button>
@@ -177,9 +173,7 @@
               : 'bg-background text-foreground border-border hover:border-primary/50'"
           @click="switchCandidate(r)"
           :disabled="switchingRoad">
-          <n-icon v-if="selectedCandidate?.url === r.url && !isDraftChanged('candidate', r.url)" size="12">
-            <CheckmarkCircleOutline />
-          </n-icon>
+          <CheckmarkCircleOutline v-if="selectedCandidate?.url === r.url && !isDraftChanged('candidate', r.url)" class="size-3" />
           {{ seasonLabel(r.name) }}
         </button>
       </div>
@@ -198,9 +192,7 @@
               : 'bg-background text-foreground border-border hover:border-primary/50'"
           @click="selectedRoadIndex = idx"
           :disabled="switchingRoad">
-          <n-icon v-if="selectedRoadIndex === idx && !isDraftChanged('road', road.name)" size="12">
-            <CheckmarkCircleOutline />
-          </n-icon>
+          <CheckmarkCircleOutline v-if="selectedRoadIndex === idx && !isDraftChanged('road', road.name)" class="size-3" />
           {{ road.name }}
           <span class="opacity-70">({{ road.episodes.length }}集)</span>
         </button>
@@ -240,7 +232,7 @@
         @click="downloadSingle(ep, idx + 1)"
       >
         <span class="font-mono">{{ String(idx + 1).padStart(2, '0') }}</span>
-        <n-icon v-if="isDownloaded(idx + 1)" size="14" class="mt-0.5"><CheckmarkCircleOutline /></n-icon>
+        <CheckmarkCircleOutline v-if="isDownloaded(idx + 1)" class="size-3.5 mt-0.5" />
       </button>
     </div>
   </div>
@@ -248,7 +240,8 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
-import { useMessage, NIcon, NSpin } from 'naive-ui'
+import { useToast } from '@/composables/useToast'
+import { AcSpinner } from '@/components/ac'
 import { CheckmarkCircleOutline, RefreshOutline } from '@vicons/ionicons5'
 import { get, post, put } from '@/utils/api'
 
@@ -258,7 +251,7 @@ const props = defineProps({
   subscribed: { type: Boolean, default: false },
 })
 
-const message = useMessage()
+const toast = useToast()
 
 // 状态机: idle → searching → selecting → ready
 const phase = ref('idle')
@@ -583,7 +576,7 @@ async function startAutoMatch() {
       }
     }
   } catch (e) {
-    message.error('搜索源失败')
+    toast.error('搜索源失败')
   } finally {
     isSearching.value = false
     phase.value = 'selecting'
@@ -750,7 +743,7 @@ async function confirmAndDownload() {
       candidate_name: selectedCandidate.value.name || '',
       road_name: roads.value[selectedRoadIndex.value]?.name || '',
     }
-    message.success(
+    toast.success(
       candidates.length > 1
         ? `已添加 ${totalQueued} 个下载任务（覆盖 ${candidates.length} 个季度）`
         : `已添加 ${totalQueued} 个下载任务`
@@ -758,7 +751,7 @@ async function confirmAndDownload() {
     phase.value = 'ready'
     isSwitchingSource.value = false
   } catch (e) {
-    message.error(e.message || '操作失败')
+    toast.error(e.message || '操作失败')
   } finally {
     confirming.value = false
   }
@@ -775,9 +768,9 @@ async function downloadSingle(ep, number) {
       anime_id: props.animeId,
     })
     downloadedSet.value = new Set([...downloadedSet.value, number])
-    message.success(`已添加下载: 第${number}集`)
+    toast.success(`已添加下载: 第${number}集`)
   } catch (e) {
-    message.error(e.message || '下载失败')
+    toast.error(e.message || '下载失败')
   }
 }
 
@@ -840,7 +833,7 @@ async function applyConfig() {
   if (!props.animeId || !activeMatch.value || !selectedCandidate.value) return
   const road = roads.value[selectedRoadIndex.value]
   if (!road) {
-    message.error('请选择清单')
+    toast.error('请选择清单')
     return
   }
 
@@ -863,10 +856,10 @@ async function applyConfig() {
       road_name: road.name,
     }
 
-    message.success('已更新配置，开始下载')
+    toast.success('已更新配置，开始下载')
     await fetchDownloadStatus()
   } catch (e) {
-    message.error(e.message || '应用配置失败')
+    toast.error(e.message || '应用配置失败')
   } finally {
     switchingRoad.value = false
   }

@@ -3,63 +3,53 @@
     <!-- 头部：进度 + 操作 -->
     <div class="flex items-center justify-between flex-wrap gap-2">
       <div class="text-sm">
-        <span class="font-medium">剧集进度</span>
-        <span class="text-muted-foreground ml-2">
+        <span class="font-bold">📺 剧集进度</span>
+        <span class="text-muted-foreground ml-2 font-num">
           {{ completedCount }} / {{ effectiveCount }} 集
-          <span v-if="!episodeCount && effectiveCount > 0" class="text-amber-500 text-xs">（集数未知，按已下载动态显示）</span>
-          <span v-if="downloadingCount > 0" class="text-primary">· 下载中 {{ downloadingCount }}</span>
-          <span v-if="upcomingCount > 0" class="text-sky-500">· 待发布 {{ upcomingCount }}</span>
-          <span v-if="noResourceCount > 0" class="text-amber-500">· 未命中 {{ noResourceCount }}</span>
+          <span v-if="!episodeCount && effectiveCount > 0" class="text-ac-sun-dark text-xs">（集数未知，按已下载动态显示）</span>
+          <span v-if="downloadingCount > 0" class="text-ac-sky-dark">· 下载中 {{ downloadingCount }}</span>
+          <span v-if="upcomingCount > 0" class="text-ac-sky-dark">· 待发布 {{ upcomingCount }}</span>
+          <span v-if="noResourceCount > 0" class="text-ac-sun-dark">· 未命中 {{ noResourceCount }}</span>
         </span>
       </div>
       <div class="flex items-center gap-2">
-        <span class="text-xs text-muted-foreground">自动模式 <span class="text-emerald-600 font-medium">ON</span></span>
-        <button @click="openManualSearch(0)"
-          class="h-7 px-3 rounded-md border border-input bg-background hover:bg-accent text-xs font-medium transition-colors inline-flex items-center gap-1">
+        <span class="text-xs text-muted-foreground font-bold">自动模式 <span class="text-ac-grass-dark">ON</span></span>
+        <AcButton size="sm" variant="outline" @click="openManualSearch(0)">
           🔍 手动选种
-        </button>
-        <button @click="triggerSearch" :disabled="triggering"
-          class="h-7 px-3 rounded-md border border-input bg-background hover:bg-accent text-xs font-medium transition-colors disabled:opacity-50">
+        </AcButton>
+        <AcButton size="sm" variant="outline" :loading="triggering" @click="triggerSearch">
           {{ triggering ? '搜索中...' : '立即全量搜索' }}
-        </button>
+        </AcButton>
       </div>
     </div>
 
     <!-- 格子 -->
     <div v-if="effectiveCount > 0" class="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2">
       <button v-for="ep in episodeStatusList" :key="ep.episode_number"
-        class="aspect-square rounded-md border flex flex-col items-center justify-center text-xs transition-colors relative"
+        class="aspect-square rounded-xl border-2 flex flex-col items-center justify-center text-xs transition-all relative hover:-translate-y-0.5"
         :class="cellClass(ep)"
         :title="tooltipText(ep)"
         @click="openDetail(ep.episode_number)">
-        <span class="font-mono font-medium">{{ String(ep.episode_number).padStart(2, '0') }}</span>
+        <span class="font-num font-bold">{{ String(ep.episode_number).padStart(2, '0') }}</span>
         <!-- 状态图标 -->
-        <n-icon v-if="ep.status === 'completed'" size="12" class="absolute top-0.5 right-0.5 text-emerald-600">
-          <CheckmarkCircleOutline />
-        </n-icon>
-        <n-icon v-else-if="ep.status === 'downloading' || ep.status === 'pending'" size="12" class="absolute top-0.5 right-0.5 text-primary animate-pulse">
-          <CloudDownloadOutline />
-        </n-icon>
-        <n-icon v-else-if="ep.status === 'no_resource'" size="12" class="absolute top-0.5 right-0.5 text-amber-500">
-          <AlertCircleOutline />
-        </n-icon>
-        <n-icon v-else-if="ep.status === 'upcoming'" size="12" class="absolute top-0.5 right-0.5 text-sky-500">
-          <TimeOutline />
-        </n-icon>
+        <CheckmarkCircleOutline v-if="ep.status === 'completed'" class="size-3 absolute top-0.5 right-0.5 text-ac-leaf-dark" />
+        <CloudDownloadOutline v-else-if="ep.status === 'downloading' || ep.status === 'pending'" class="size-3 absolute top-0.5 right-0.5 text-ac-sky-dark animate-pulse" />
+        <AlertCircleOutline v-else-if="ep.status === 'no_resource'" class="size-3 absolute top-0.5 right-0.5 text-ac-sun-dark" />
+        <TimeOutline v-else-if="ep.status === 'upcoming'" class="size-3 absolute top-0.5 right-0.5 text-ac-sky-dark" />
         <!-- 来源 badge -->
-        <span v-if="ep.status === 'completed'" class="absolute bottom-0.5 right-0.5 text-[9px] font-bold opacity-60">
+        <span v-if="ep.status === 'completed'" class="absolute bottom-0.5 right-0.5 text-[9px] font-bold opacity-70">
           {{ sourceBadge(ep) }}
         </span>
         <!-- 待发布日期 -->
         <span v-else-if="ep.status === 'upcoming' && ep.air_date"
-          class="absolute bottom-0.5 left-1/2 -translate-x-1/2 text-[9px] text-sky-600 dark:text-sky-400 whitespace-nowrap">
+          class="absolute bottom-0.5 left-1/2 -translate-x-1/2 text-[9px] text-ac-sky-dark whitespace-nowrap font-num">
           {{ shortDate(ep.air_date) }}
         </span>
       </button>
     </div>
 
     <div v-else class="text-sm text-muted-foreground py-6 text-center">
-      还没有集数信息
+      还没有集数信息 🌱
     </div>
 
     <!-- 详情抽屉 -->
@@ -88,11 +78,12 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useMessage, NIcon } from 'naive-ui'
 import {
   CheckmarkCircleOutline, CloudDownloadOutline, AlertCircleOutline, TimeOutline,
 } from '@vicons/ionicons5'
 import { get, post } from '@/utils/api'
+import { useToast } from '@/composables/useToast'
+import { AcButton } from '@/components/ac'
 import EpisodeDetailDrawer from './EpisodeDetailDrawer.vue'
 import ManualSearchDialog from './ManualSearchDialog.vue'
 
@@ -102,11 +93,11 @@ const props = defineProps({
   episodeCount: { type: Number, default: 0 },
 })
 
-const message = useMessage()
+const toast = useToast()
 
-const downloads = ref([]) // 该 anime 的所有 download 记录（详情抽屉要用）
-const diagnosis = ref([]) // 诊断数据 { episode_number, sources: {bt: {...}, ...} }
-const episodeStatus = ref([]) // /anime/:id/episode-status 返回的统一数组
+const downloads = ref([])
+const diagnosis = ref([])
+const episodeStatus = ref([])
 const triggering = ref(false)
 
 const showDrawer = ref(false)
@@ -155,16 +146,16 @@ const noResourceCount = computed(() => episodeStatus.value.filter(e => e.status 
 function cellClass(ep) {
   switch (ep.status) {
     case 'completed':
-      return 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/20 cursor-pointer'
+      return 'bg-ac-leaf/15 border-ac-leaf/40 text-ac-leaf-dark hover:bg-ac-leaf/25 cursor-pointer'
     case 'downloading':
     case 'pending':
-      return 'bg-primary/10 border-primary/30 text-primary hover:bg-primary/20 cursor-pointer'
+      return 'bg-ac-sky/15 border-ac-sky/40 text-ac-sky-dark hover:bg-ac-sky/25 cursor-pointer'
     case 'no_resource':
-      return 'bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400 hover:bg-amber-500/20 cursor-pointer'
+      return 'bg-ac-sun/15 border-ac-sun/40 text-ac-sun-dark hover:bg-ac-sun/25 cursor-pointer'
     case 'upcoming':
-      return 'bg-sky-500/5 border-sky-500/30 text-sky-700 dark:text-sky-400 hover:bg-sky-500/10 cursor-pointer'
+      return 'bg-ac-sky/5 border-ac-sky/30 text-ac-sky-dark hover:bg-ac-sky/15 cursor-pointer'
     default:
-      return 'bg-background border-border text-muted-foreground hover:border-primary/50 hover:bg-accent/30 cursor-pointer'
+      return 'bg-card border-ac-sand text-muted-foreground hover:border-ac-grass hover:bg-ac-sand/30 cursor-pointer'
   }
 }
 
@@ -174,7 +165,6 @@ function sourceBadge(ep) {
 }
 
 function shortDate(d) {
-  // YYYY-MM-DD → MM/DD
   if (!d || d.length < 10) return d
   return `${d.slice(5, 7)}/${d.slice(8, 10)}`
 }
@@ -214,10 +204,10 @@ async function triggerSearch() {
   triggering.value = true
   try {
     await post(`/anime/${props.animeId}/orchestrate`)
-    message.success('已触发搜索，10-30 秒后刷新')
+    toast.success('已触发搜索，10-30 秒后刷新')
     setTimeout(refresh, 15000)
   } catch (e) {
-    message.error(e.message || '触发失败')
+    toast.error(e.message || '触发失败')
   } finally {
     triggering.value = false
   }

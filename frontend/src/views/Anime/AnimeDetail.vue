@@ -7,7 +7,7 @@
 
       <!-- 返回按钮（悬浮） -->
       <button
-        class="absolute top-4 left-4 md:top-6 md:left-6 z-20 inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-background/80 backdrop-blur-sm border border-border text-sm font-medium hover:bg-background transition-colors shadow-sm"
+        class="absolute top-4 left-4 md:top-6 md:left-6 z-20 inline-flex items-center gap-1.5 h-9 px-4 rounded-2xl bg-card/85 backdrop-blur-sm border-2 border-ac-sand text-sm font-bold hover:bg-card hover:border-ac-grass transition-colors shadow-md"
         @click="$router.back()"
       >
         ← 返回
@@ -16,12 +16,13 @@
 
     <!-- Content overlapping hero -->
     <div class="-mt-32 relative z-10">
-      <n-spin :show="loading">
+      <div v-if="loading" class="flex justify-center py-20"><AcSpinner :size="48" /></div>
+      <template v-else>
         <div class="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 md:gap-8">
           <!-- Cover -->
           <div class="flex justify-center md:justify-start">
-            <div class="w-40 md:w-full rounded-lg border overflow-hidden shadow-lg">
-              <img :src="toHighResImage(coverImage) || ''" class="w-full aspect-[2/3] object-cover bg-muted" />
+            <div class="w-40 md:w-full rounded-3xl border-2 border-ac-sand overflow-hidden shadow-lg">
+              <img :src="toHighResImage(coverImage) || ''" class="w-full aspect-[2/3] object-cover bg-ac-sand/40" />
             </div>
           </div>
 
@@ -34,35 +35,29 @@
 
             <div class="flex flex-wrap items-center gap-3 text-sm">
               <span v-if="anime.bangumi_rating" class="flex items-center gap-1">
-                <span class="text-amber-500 font-bold text-base">{{ anime.bangumi_rating }}</span>
-                <span class="text-muted-foreground">/ 10</span>
+                <span class="text-ac-sun-dark font-bold text-base font-num">{{ anime.bangumi_rating }}</span>
+                <span class="text-muted-foreground font-num">/ 10</span>
               </span>
-              <span v-if="bangumi.rank" class="text-muted-foreground">#{{ bangumi.rank }}</span>
-              <span v-if="bangumi.platform" class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-primary/10 text-primary">{{ bangumi.platform }}</span>
+              <span v-if="bangumi.rank" class="text-muted-foreground font-num font-bold">#{{ bangumi.rank }}</span>
+              <AcTag v-if="bangumi.platform" variant="grass">{{ bangumi.platform }}</AcTag>
             </div>
 
             <!-- 追番按钮 -->
             <div class="pt-1 flex gap-2 flex-wrap">
-              <button v-if="isSubscribed"
-                class="h-9 px-5 rounded-md bg-primary/10 text-primary text-sm font-medium border border-primary/20 hover:bg-primary/20 transition-colors inline-flex items-center gap-2"
-                :disabled="subscribing" @click="handleUnsubscribe">
-                <n-icon size="16"><CheckmarkCircleOutline /></n-icon>
+              <AcButton v-if="isSubscribed" variant="secondary" :loading="subscribing" @click="handleUnsubscribe">
+                <template #icon><CheckmarkCircleOutline class="size-4" /></template>
                 {{ subscribing ? '处理中...' : '已追番' }}
-              </button>
-              <button v-else
-                class="h-9 px-5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors inline-flex items-center gap-2"
-                :disabled="subscribing" @click="handleSubscribe">
-                <n-icon size="16"><AddOutline /></n-icon>
+              </AcButton>
+              <AcButton v-else variant="primary" :loading="subscribing" @click="handleSubscribe">
+                <template #icon><AddOutline class="size-4" /></template>
                 {{ subscribing ? '追番中...' : '追番' }}
-              </button>
+              </AcButton>
 
               <!-- 检查更新按钮：已追番 + 已有 anime_id 才能用 -->
-              <button v-if="isSubscribed && animeId"
-                class="h-9 px-4 rounded-md border border-input bg-background text-sm font-medium hover:bg-accent transition-colors inline-flex items-center gap-2 disabled:opacity-50"
-                :disabled="checkingUpdates" @click="handleCheckUpdates">
-                <n-icon size="16"><RefreshOutline /></n-icon>
+              <AcButton v-if="isSubscribed && animeId" variant="outline" :loading="checkingUpdates" @click="handleCheckUpdates">
+                <template #icon><RefreshOutline class="size-4" /></template>
                 {{ checkingUpdates ? '检查中...' : '检查更新' }}
-              </button>
+              </AcButton>
             </div>
 
             <!-- Bangumi 原页面链接 -->
@@ -70,9 +65,9 @@
               <a
                 :href="`https://bgm.tv/subject/${anime.bangumi_id}`"
                 target="_blank"
-                class="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+                class="inline-flex items-center gap-1.5 text-sm text-ac-grass-dark hover:underline font-bold"
               >
-                <n-icon><OpenOutline /></n-icon>
+                <OpenOutline class="size-4" />
                 在 Bangumi 查看原页面
               </a>
             </div>
@@ -116,7 +111,7 @@
         </div>
 
         <!-- 追番下载（新版本：源无关剧集网格） -->
-        <div v-if="animeId" class="mt-6 bg-card text-card-foreground rounded-lg border p-6">
+        <div v-if="animeId" class="mt-6 bg-card text-card-foreground rounded-3xl border-2 border-ac-sand p-6 shadow-md">
           <EpisodeGrid
             :anime-id="animeId"
             :anime-title="anime.title || displayTitle"
@@ -125,9 +120,9 @@
         </div>
 
         <!-- 高级：手动源配置（默认折叠，旧版 StreamSetupCard） -->
-        <details class="mt-4 bg-card text-card-foreground rounded-lg border">
-          <summary class="px-6 py-3 cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground select-none flex items-center justify-between">
-            <span>高级：手动源配置 / 流媒体观看</span>
+        <details class="mt-4 bg-card text-card-foreground rounded-3xl border-2 border-ac-sand shadow-md">
+          <summary class="px-6 py-3 cursor-pointer text-sm font-bold text-muted-foreground hover:text-foreground select-none flex items-center justify-between">
+            <span>🔧 高级：手动源配置 / 流媒体观看</span>
             <span class="text-xs text-muted-foreground">点击展开</span>
           </summary>
           <div class="px-6 pb-6 pt-2">
@@ -140,67 +135,67 @@
         </details>
 
         <!-- 概述（单独卡片） -->
-        <div v-if="summary" class="mt-6 bg-card text-card-foreground rounded-lg border p-5">
-          <h2 class="text-base font-semibold mb-3">概述</h2>
+        <div v-if="summary" class="mt-6 bg-card text-card-foreground rounded-3xl border-2 border-ac-sand p-5 shadow-md">
+          <h2 class="text-base font-bold mb-3">📝 概述</h2>
           <p class="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{{ summary }}</p>
         </div>
 
         <!-- 标签 -->
-        <div v-if="bangumi.tags && bangumi.tags.length" class="mt-6 bg-card text-card-foreground rounded-lg border p-5">
-          <h2 class="text-base font-semibold mb-3">标签</h2>
+        <div v-if="bangumi.tags && bangumi.tags.length" class="mt-6 bg-card text-card-foreground rounded-3xl border-2 border-ac-sand p-5 shadow-md">
+          <h2 class="text-base font-bold mb-3">🏷️ 标签</h2>
           <div class="flex flex-wrap gap-2">
             <button v-for="tag in (showAllTags ? bangumi.tags : bangumi.tags.slice(0, 10))" :key="tag"
-              class="px-3 py-1.5 rounded-full text-xs font-medium border transition-colors hover:border-primary/50 hover:bg-primary/5"
+              class="px-3 py-1.5 rounded-full text-xs font-bold border-2 border-ac-sand transition-colors hover:border-ac-grass hover:bg-ac-grass/10"
               @click="searchByTag(tag)">
               {{ tag }}
             </button>
           </div>
           <button v-if="bangumi.tags.length > 10 && !showAllTags"
-            class="mt-3 text-sm text-primary hover:underline" @click="showAllTags = true">
+            class="mt-3 text-sm text-ac-grass-dark hover:underline font-bold" @click="showAllTags = true">
             展开全部 {{ bangumi.tags.length }} 个标签
           </button>
         </div>
 
         <!-- 角色 CV -->
-        <div v-if="characters.length" class="mt-6 bg-card text-card-foreground rounded-lg border p-5">
-          <h2 class="text-base font-semibold mb-4">角色 &amp; 声优</h2>
+        <div v-if="characters.length" class="mt-6 bg-card text-card-foreground rounded-3xl border-2 border-ac-sand p-5 shadow-md">
+          <h2 class="text-base font-bold mb-4">🎭 角色 &amp; 声优</h2>
           <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
             <button v-for="c in (showAllChars ? characters : characters.slice(0, 12))" :key="c.id"
-              class="flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors text-left"
+              class="flex items-center gap-3 p-2 rounded-2xl hover:bg-ac-cream/40 transition-colors text-left"
               @click="showCharacterDetail(c)">
-              <div class="w-12 h-12 rounded-full overflow-hidden bg-muted shrink-0">
+              <div class="size-12 rounded-full overflow-hidden bg-ac-sand/40 shrink-0 border-2 border-ac-sand">
                 <img v-if="c.image" :src="c.image" :alt="c.name" class="w-full h-full object-cover" @error="$event.target.style.display='none'" />
               </div>
               <div class="min-w-0 flex-1">
-                <div class="text-sm font-medium truncate">{{ c.name }}</div>
+                <div class="text-sm font-bold truncate">{{ c.name }}</div>
                 <div class="text-xs text-muted-foreground truncate">{{ c.relation }}<span v-if="c.actor"> · CV {{ c.actor }}</span></div>
               </div>
             </button>
           </div>
           <button v-if="characters.length > 12 && !showAllChars"
-            class="mt-3 text-sm text-primary hover:underline" @click="showAllChars = true">
+            class="mt-3 text-sm text-ac-grass-dark hover:underline font-bold" @click="showAllChars = true">
             展开全部 {{ characters.length }} 个角色
           </button>
         </div>
 
         <!-- 完整制作信息 -->
-        <div v-if="bangumi.infobox && bangumi.infobox.length" class="mt-6 bg-card text-card-foreground rounded-lg border p-5">
-          <h2 class="text-base font-semibold mb-4">详细信息</h2>
+        <div v-if="bangumi.infobox && bangumi.infobox.length" class="mt-6 bg-card text-card-foreground rounded-3xl border-2 border-ac-sand p-5 shadow-md">
+          <h2 class="text-base font-bold mb-4">📋 详细信息</h2>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-sm">
             <div v-for="(kv, i) in visibleInfobox" :key="i" class="flex">
-              <span class="text-muted-foreground w-24 shrink-0">{{ kv.key }}</span>
+              <span class="text-muted-foreground w-24 shrink-0 font-bold">{{ kv.key }}</span>
               <span class="flex-1 break-words">{{ formatValue(kv) }}</span>
             </div>
           </div>
           <button v-if="bangumi.infobox.length > 10 && !showAllInfo"
-            class="mt-3 text-sm text-primary hover:underline" @click="showAllInfo = true">
+            class="mt-3 text-sm text-ac-grass-dark hover:underline font-bold" @click="showAllInfo = true">
             展开全部信息
           </button>
         </div>
 
         <!-- 角色详情弹窗 -->
         <CharacterDetailModal v-model:show="showCharModal" :character="selectedChar" />
-      </n-spin>
+      </template>
     </div>
   </div>
 </template>
@@ -208,17 +203,18 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useMessage, NSpin, NIcon } from 'naive-ui'
+import { useToast } from '@/composables/useToast'
 import { CheckmarkCircleOutline, OpenOutline, AddOutline, RefreshOutline } from '@vicons/ionicons5'
 import { get, post, del } from '@/utils/api'
 import { toHighResImage } from '@/utils/image'
+import { AcButton, AcSpinner, AcTag } from '@/components/ac'
 import CharacterDetailModal from '@/components/Anime/CharacterDetailModal.vue'
 import StreamSetupCard from '@/components/Anime/StreamSetupCard.vue'
 import EpisodeGrid from '@/components/Anime/EpisodeGrid.vue'
 
 const route = useRoute()
 const router = useRouter()
-const message = useMessage()
+const toast = useToast()
 const routeId = route.params.id
 
 // 判断是从哪个路由进入的：/anime-library/:id 是 bangumi 模式，/anime/:id 是 anime 模式
@@ -311,7 +307,7 @@ async function handleSubscribe() {
   subscribing.value = true
   try {
     const resp = await post(`/bangumi/${bgmId}/subscribe`)
-    message.success('追番成功')
+    toast.success('追番成功')
     bangumi.value = { ...bangumi.value, is_subscribed: true }
     if (resp.anime_id) {
       animeId.value = resp.anime_id
@@ -321,7 +317,7 @@ async function handleSubscribe() {
       } catch { /* ignore */ }
     }
   } catch (e) {
-    message.error(e.message || '追番失败')
+    toast.error(e.message || '追番失败')
   } finally { subscribing.value = false }
 }
 
@@ -331,14 +327,14 @@ async function handleUnsubscribe() {
   subscribing.value = true
   try {
     await del(`/bangumi/${bgmId}/subscribe`)
-    message.success('已取消追番')
+    toast.success('已取消追番')
     // 两个源都要更新，因为 isSubscribed 是 bangumi || anime 的 OR
     bangumi.value = { ...bangumi.value, is_subscribed: false }
     if (anime.value) {
       anime.value = { ...anime.value, is_subscribed: false }
     }
   } catch (e) {
-    message.error(e.message || '取消追番失败')
+    toast.error(e.message || '取消追番失败')
   } finally { subscribing.value = false }
 }
 
@@ -347,9 +343,9 @@ async function handleCheckUpdates() {
   checkingUpdates.value = true
   try {
     await post(`/anime/${animeId.value}/check-updates`)
-    message.success('已触发更新检查，几秒后查看剧集状态')
+    toast.success('已触发更新检查，几秒后查看剧集状态')
   } catch (e) {
-    message.error(e.message || '检查更新失败')
+    toast.error(e.message || '检查更新失败')
   } finally {
     // 给后端一点时间处理（搜索+下载是异步的）
     setTimeout(() => { checkingUpdates.value = false }, 2000)
@@ -382,7 +378,7 @@ async function fetchAnimeDetail() {
       }
     }
   } catch {
-    message.error('获取详情失败')
+    toast.error('获取详情失败')
   } finally {
     loading.value = false
   }

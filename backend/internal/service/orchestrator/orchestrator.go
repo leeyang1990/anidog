@@ -247,9 +247,9 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 			ok, diagResultCount, diagReason = o.tryStream(ctx, anime, ep)
 		case SourceBT:
 			ok, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore = o.tryBT(ctx, anime, ep, pref)
-		case SourceRSS:
-			ok, diagResultCount, diagReason = o.tryRSS(ctx, anime, ep)
 		default:
+			// SourceRSS 已不再作为 orchestrator 的主动源（被动通道由 RSSRefreshJob 处理）。
+			// 其他未知 srcType 也忽略。
 			continue
 		}
 
@@ -502,32 +502,10 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 	return true, resultCount, rankedOut, fmt.Sprintf("已从 %s 入队（score=%.1f）", top.SourceName, top.Score), bestTitle, bestScore
 }
 
-// ---- RSS 源适配 ----
-// 查询 rss_entry 表中已关联到该 anime 的 entry，如果存在匹配当前集的未下载记录，
-// 表示 RSS 已抓到该集但尚未触发下载（比如被规则过滤）—— 目前 RSS engine 已自动入队，
-// 所以这里主要用于展示诊断；如需强制下载，未来可扩展 "从该 entry 创建下载"。
-func (o *Orchestrator) tryRSS(ctx context.Context, anime *model.Anime, ep int) (ok bool, resultCount int, reason string) {
-	var entries []model.RSSEntry
-	o.db.WithContext(ctx).
-		Where("matched_anime_id = ?", anime.ID).
-		Find(&entries)
-
-	matching := 0
-	for _, e := range entries {
-		if e.ParsedEpisode != nil && *e.ParsedEpisode == ep {
-			matching++
-			if !e.Downloaded {
-				// 该集的 RSS entry 存在但没下载成功（可能被规则过滤），跳过让其他源接手
-				return false, matching, "RSS entry 存在但未下载（可能被规则过滤）"
-			}
-		}
-	}
-
-	if matching == 0 {
-		return false, 0, "无匹配的 RSS entry（等待 feed 更新）"
-	}
-	return false, matching, "RSS entry 已下载"
-}
+// ---- RSS 源说明 ----
+// RSS 不再是 orchestrator 的主动源。被动通道由 RSSRefreshJob + rssrule 处理：
+// 定时刷新 feeds → 解析入 rssentry 表 → 命中规则即下载。
+// 若需要诊断 RSS 命中情况，请查 rssentry 表，不要在 tryDownloadEpisode 里再开一档。
 
 // ---- 辅助 ----
 
@@ -576,8 +554,13 @@ func (o *Orchestrator) episodeAirDates(ctx context.Context, animeID uint) map[in
 // isDuplicate 判断 (anime_id, ep, source_type) 是否应该跳过本轮入队。
 // 跳过条件：
 //   1. 已存在 downloading/completed/pending 记录（同集同源）
-//   2. 累计 failed 次数 ≥ 3 —— 该源对该集多次失败，永久跳过（避免无意义重试）
+//   2. 累计 failed 次数 ≥ 3 —— 该源对该集多次失败，永久跳过
 //   3. 最近 6 小时内有 failed 记录 —— 短期冷却
+//
+// transient 例外（见 download.classifyError）：
+//   只有 permanent 失败才计入条件 2/3。failure_kind='transient' 的失败由
+//   RetryFailedJob 按退避节奏负责重投，orchestrator 不参与节流 —— 否则
+//   transient 失败也被 6h 冷却锁住会跟自动重试打架。
 func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, sourceType string) bool {
 	var count int64
 	o.db.WithContext(ctx).
@@ -592,25 +575,27 @@ func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, so
 	if count > 0 {
 		return true
 	}
-	// 累计失败 ≥ 3 次：永久放弃该源
-	var totalFailed int64
+	// 累计 permanent 失败 ≥ 3 次：永久放弃该源
+	var totalPermFailed int64
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
 		Where("anime_id = ? AND episode_number = ? AND source = ?", animeID, ep, sourceType).
 		Where("status = ?", model.DownloadStatusFailed).
-		Count(&totalFailed)
-	if totalFailed >= 3 {
+		Where("failure_kind = ? OR failure_kind = ''", model.FailureKindPermanent).
+		Count(&totalPermFailed)
+	if totalPermFailed >= 3 {
 		return true
 	}
-	// 最近 6 小时 failed 冷却（指数退避近似）
-	var recentFailed int64
+	// 最近 6 小时 permanent 失败冷却（transient 不计入）
+	var recentPermFailed int64
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
 		Where("anime_id = ? AND episode_number = ? AND source = ?", animeID, ep, sourceType).
 		Where("status = ?", model.DownloadStatusFailed).
+		Where("failure_kind = ? OR failure_kind = ''", model.FailureKindPermanent).
 		Where("created_at > ?", time.Now().Add(-6*time.Hour)).
-		Count(&recentFailed)
-	return recentFailed > 0
+		Count(&recentPermFailed)
+	return recentPermFailed > 0
 }
 
 // isDuplicateInfoHash 判断同一 anime + InfoHash 是否已存在记录（任何状态）。

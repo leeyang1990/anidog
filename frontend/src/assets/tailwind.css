@@ -2,92 +2,590 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * 动森风设计 token —— 把 shadcn 的 HSL 变量映射到动森色板
+ * 业务代码继续用 bg-card / text-primary / border-border 等命名，零业务改动
+ *
+ * 主题皮肤切换：根元素的 data-skin 属性切换整套 token：
+ *   data-skin="ac-grove"（默认，缺省）—— 动森风
+ *   data-skin="classic"                —— 常规商务风（蓝紫 + 中性灰）
+ *
+ * 切换由 composables/useSkin.js 控制，写在 <html> 上，所以下面的 .dark 仍
+ * 然按"亮 / 暗"二维独立工作 —— 任何皮肤都能 dark。
+ */
 @layer base {
-  :root {
+  :root,
+  :root[data-skin="ac-grove"] {
+    /* 圆角基值（18px，圆润饱满）*/
+    --radius: 1.125rem;
+
+    /* 亮色 · 米白沙地 + 草绿 + 暖橙 + 棕字 */
+    --background: 45 47% 94%;        /* #F7F4E9 ac-cream */
+    --foreground: 16 22% 29%;        /* #5D4037 ac-earth */
+    --card: 47 80% 98%;              /* #FFFDF7 ac-milk */
+    --card-foreground: 16 22% 29%;
+    --popover: 47 80% 98%;
+    --popover-foreground: 16 22% 29%;
+    --primary: 88 49% 48%;           /* #7CB342 ac-grass */
+    --primary-foreground: 47 80% 98%;
+    --secondary: 40 44% 84%;         /* #E8DCC4 ac-sand */
+    --secondary-foreground: 16 22% 29%;
+    --muted: 40 44% 90%;
+    --muted-foreground: 12 18% 47%;  /* #8D6E63 ac-wood */
+    --accent: 35 100% 65%;           /* #FFB74D ac-sun */
+    --accent-foreground: 16 22% 29%;
+    --destructive: 0 69% 67%;        /* #E57373 ac-heart */
+    --destructive-foreground: 47 80% 98%;
+    --border: 40 44% 84%;            /* sand */
+    --input: 40 44% 84%;
+    --ring: 88 49% 48%;              /* grass focus ring */
+
+    /* 图表色板 —— 草绿 / 暖橙 / 天蓝 / 珊瑚 / 嫩芽 */
+    --chart-1: 88 49% 48%;
+    --chart-2: 35 100% 65%;
+    --chart-3: 200 92% 74%;
+    --chart-4: 0 69% 67%;
+    --chart-5: 122 38% 57%;
+
+    /* 侧边栏 —— 沙白底 + 草绿激活 */
+    --sidebar-background: 45 47% 94%;
+    --sidebar-foreground: 16 22% 29%;
+    --sidebar-primary: 88 49% 48%;
+    --sidebar-primary-foreground: 47 80% 98%;
+    --sidebar-accent: 88 52% 88%;          /* 草绿浅淡 */
+    --sidebar-accent-foreground: 88 50% 28%;
+    --sidebar-border: 40 44% 84%;
+    --sidebar-ring: 88 49% 48%;
+    --sidebar-muted-foreground: 12 18% 47%;
+  }
+
+  .dark,
+  :root[data-skin="ac-grove"].dark {
+    /* 暗色 · 夜晚森林 */
+    --background: 13 30% 11%;        /* #1F1B17 */
+    --foreground: 45 47% 94%;
+    --card: 16 22% 17%;              /* #2A2520 */
+    --card-foreground: 45 47% 94%;
+    --popover: 16 22% 17%;
+    --popover-foreground: 45 47% 94%;
+    --primary: 88 52% 60%;           /* #9CCC65 提亮草绿 */
+    --primary-foreground: 13 30% 11%;
+    --secondary: 16 22% 22%;
+    --secondary-foreground: 45 47% 94%;
+    --muted: 16 22% 22%;
+    --muted-foreground: 40 30% 70%;
+    --accent: 35 100% 65%;
+    --accent-foreground: 13 30% 11%;
+    --destructive: 0 69% 67%;
+    --destructive-foreground: 45 47% 94%;
+    --border: 16 22% 27%;
+    --input: 16 22% 27%;
+    --ring: 88 52% 60%;
+
+    --chart-1: 88 52% 60%;
+    --chart-2: 35 100% 65%;
+    --chart-3: 200 92% 74%;
+    --chart-4: 0 69% 67%;
+    --chart-5: 122 38% 57%;
+
+    --sidebar-background: 13 30% 11%;
+    --sidebar-foreground: 45 47% 94%;
+    --sidebar-primary: 88 52% 60%;
+    --sidebar-primary-foreground: 13 30% 11%;
+    --sidebar-accent: 88 30% 22%;
+    --sidebar-accent-foreground: 88 52% 80%;
+    --sidebar-border: 16 22% 22%;
+    --sidebar-ring: 88 52% 60%;
+    --sidebar-muted-foreground: 40 20% 65%;
+  }
+
+  /* ─────────────────────────────────────────────────────────────
+   * Classic 常规皮肤 —— 接近 shadcn 默认（蓝紫 + 中性灰）
+   * 圆角更克制（10px）、阴影更冷、字体不再走 ZCOOL
+   * 只覆盖 HSL token，业务代码不用改一行
+   * ───────────────────────────────────────────────────────────── */
+  :root[data-skin="classic"] {
     --radius: 0.625rem;
 
     --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    --foreground: 222 47% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 229 84% 67%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 229 84% 60%;            /* indigo-500 */
     --primary-foreground: 0 0% 100%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 20%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 8% 46%;
+    --accent: 262 83% 58%;             /* violet-500 */
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 229 84% 60%;
+
+    --chart-1: 229 84% 60%;
+    --chart-2: 262 83% 58%;
+    --chart-3: 173 58% 39%;
+    --chart-4: 32 95% 44%;
+    --chart-5: 0 84% 60%;
+
+    --sidebar-background: 220 14% 98%;
+    --sidebar-foreground: 222 47% 11%;
+    --sidebar-primary: 229 84% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 14% 93%;
+    --sidebar-accent-foreground: 222 47% 11%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 229 84% 60%;
+    --sidebar-muted-foreground: 220 8% 46%;
+  }
+
+  :root[data-skin="classic"].dark {
+    --background: 222 47% 8%;
+    --foreground: 210 20% 96%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 20% 96%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 20% 96%;
+    --primary: 229 84% 67%;
+    --primary-foreground: 222 47% 8%;
+    --secondary: 222 32% 18%;
+    --secondary-foreground: 210 20% 96%;
+    --muted: 222 32% 18%;
+    --muted-foreground: 220 9% 64%;
+    --accent: 262 83% 67%;
+    --accent-foreground: 222 47% 8%;
+    --destructive: 0 72% 60%;
+    --destructive-foreground: 210 20% 96%;
+    --border: 222 32% 22%;
+    --input: 222 32% 22%;
     --ring: 229 84% 67%;
 
     --chart-1: 229 84% 67%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 43 96% 56%;
-    --chart-4: 340 75% 55%;
-    --chart-5: 262 83% 58%;
+    --chart-2: 262 83% 67%;
+    --chart-3: 173 58% 49%;
+    --chart-4: 32 95% 54%;
+    --chart-5: 0 72% 60%;
 
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 0 0% 98%;
+    --sidebar-background: 222 47% 8%;
+    --sidebar-foreground: 210 20% 96%;
     --sidebar-primary: 229 84% 67%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 0 0% 98%;
-    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-primary-foreground: 222 47% 8%;
+    --sidebar-accent: 222 32% 18%;
+    --sidebar-accent-foreground: 210 20% 96%;
+    --sidebar-border: 222 32% 22%;
     --sidebar-ring: 229 84% 67%;
-    --sidebar-muted-foreground: 240 5% 64.9%;
-  }
-
-  .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 229 84% 74%;
-    --primary-foreground: 240 10% 3.9%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 229 84% 74%;
-    --chart-1: 229 84% 74%;
+    --sidebar-muted-foreground: 220 9% 64%;
   }
 
   * {
     border-color: hsl(var(--border));
   }
 
-  body {
-    @apply bg-background text-foreground antialiased;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-                 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica,
-                 Arial, sans-serif;
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'ZCOOL KuaiLe', 'Nunito', 'PingFang SC', 'Hiragino Sans GB',
+                 'Microsoft YaHei', -apple-system, BlinkMacSystemFont,
+                 'Helvetica Neue', sans-serif;
+    /* 数字与英文用 Nunito（在 ZCOOL 之前），中文 fallback 到 ZCOOL */
+    font-feature-settings: "tnum" 1, "kern" 1;
+    letter-spacing: 0.01em;
+  }
+
+  /* classic 皮肤：走系统中性字体，不再用 ZCOOL 圆体 */
+  :root[data-skin="classic"] body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+                 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue',
+                 Arial, sans-serif;
+    letter-spacing: normal;
+  }
+  :root[data-skin="classic"] .font-num,
+  :root[data-skin="classic"] code,
+  :root[data-skin="classic"] kbd,
+  :root[data-skin="classic"] samp {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 600;
+  }
+
+  /* 数字单独走 Nunito，加粗一点配合圆体 */
+  .font-num,
+  code,
+  kbd,
+  samp {
+    font-family: 'Nunito', 'ZCOOL KuaiLe', monospace;
+    font-weight: 700;
+  }
+
+  /* 按钮继承字体 */
+  button,
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+  }
+
+  /* 焦点环：暖橙 sun 色，避免蓝色城市感 */
+  *:focus-visible {
+    outline: 3px solid hsl(var(--accent));
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  /* 滚动条：圆胖、棕色、半透 */
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    @apply bg-muted-foreground/20 rounded-full;
+    background: rgba(141, 110, 99, 0.28);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
   }
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-muted-foreground/40;
+    background: rgba(141, 110, 99, 0.5);
+    background-clip: padding-box;
+    border: 2px solid transparent;
   }
+
+  /* 选中文字 */
+  ::selection {
+    background-color: hsl(var(--accent) / 0.35);
+    color: hsl(var(--foreground));
+  }
+}
+
+/* 路由切换淡入动画（被 App.vue / 各 Layout 使用） */
+@layer components {
+  .ac-fade-enter-active,
+  .ac-fade-leave-active {
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+  .ac-fade-enter-from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  .ac-fade-leave-to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  /* 草地纹理：浅淡草绿圆点 SVG，背景平铺 */
+  .ac-grass-pattern {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'><circle cx='8' cy='12' r='1.4' fill='%237CB342' opacity='0.10'/><circle cx='28' cy='28' r='1.2' fill='%237CB342' opacity='0.08'/><circle cx='34' cy='8' r='1' fill='%23FFB74D' opacity='0.08'/></svg>");
+    background-repeat: repeat;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * classic（清爽）皮肤：业务代码用了 361 处硬编码 ac-* class，本来
+ * 切皮肤只换 4 个 HSL 槽位是不够的。下面这一大段是"在 classic 皮肤
+ * 下整体重写动森 utilities"，零业务代码改动直接换风格。
+ *
+ * 覆盖范围：
+ *   - bg-ac-* / border-ac-* / text-ac-* （含所有 /透明度 变种）
+ *   - rounded-3xl / 2xl / xl —— 把"胖墩墩"圆角拉回克制
+ *   - border-2 —— 双层粗描边拉回单层
+ *   - shadow-md / lg —— 卡片阴影降到淡灰
+ *   - gradient stops (from/to ac-*) —— 渐变退化为单色
+ *   - shadow-ac-button-* —— 按钮"按下凹陷"效果消除
+ *   - ac-grass-pattern —— 草地纹理拆除
+ *
+ * 设计语言：
+ *   主色用 indigo（HSL 变量已经是），其它点缀走 slate/sky/emerald/amber/
+ *   rose 的浅色调，全部贴近 shadcn 默认。
+ * ───────────────────────────────────────────────────────────────────────── */
+:root[data-skin="classic"] {
+  /* ──────── 背景色 ──────── */
+  /* 卡片/容器底色：cream/milk/sand/wood —— 米白沙地 → 纯白/浅灰 */
+  .bg-ac-cream,
+  .bg-ac-cream\/30, .bg-ac-cream\/40, .bg-ac-cream\/50, .bg-ac-cream\/60,
+  .bg-ac-sand, .bg-ac-sand\/30, .bg-ac-sand\/40, .bg-ac-sand\/50,
+  .bg-ac-sand\/60, .bg-ac-sand\/70, .bg-ac-sand-dark,
+  .bg-ac-wood\/20, .bg-ac-wood\/40 { background-color: rgb(241 245 249); } /* slate-100 */
+
+  /* 主色（草绿）→ indigo */
+  .bg-ac-grass,
+  .bg-ac-grass-dark               { background-color: rgb(99 102 241); } /* indigo-500 */
+  .bg-ac-grass-light\/20,
+  .bg-ac-grass-light\/30,
+  .bg-ac-grass-light\/40,
+  .bg-ac-grass-light\/50,
+  .bg-ac-grass\/10                { background-color: rgb(238 242 255); } /* indigo-50 */
+
+  /* 暖橙 sun → amber */
+  .bg-ac-sun, .bg-ac-sun-dark     { background-color: rgb(245 158 11); } /* amber-500 */
+  .bg-ac-sun\/10, .bg-ac-sun\/15,
+  .bg-ac-sun\/25, .bg-ac-sun\/30,
+  .bg-ac-sun\/40                  { background-color: rgb(255 251 235); } /* amber-50 */
+
+  /* 天蓝 sky → sky-500 / sky-50 */
+  .bg-ac-sky, .bg-ac-sky-dark     { background-color: rgb(14 165 233); }
+  .bg-ac-sky\/5, .bg-ac-sky\/15,
+  .bg-ac-sky\/25, .bg-ac-sky\/40  { background-color: rgb(240 249 255); }
+
+  /* 嫩芽 leaf → emerald */
+  .bg-ac-leaf                     { background-color: rgb(16 185 129); }
+  .bg-ac-leaf\/10, .bg-ac-leaf\/15,
+  .bg-ac-leaf\/25, .bg-ac-leaf\/30 { background-color: rgb(236 253 245); } /* emerald-50 */
+
+  /* 珊瑚 heart → rose */
+  .bg-ac-heart, .bg-ac-heart-dark { background-color: rgb(244 63 94); }
+  .bg-ac-heart\/10, .bg-ac-heart\/15,
+  .bg-ac-heart\/25, .bg-ac-heart\/30 { background-color: rgb(255 241 242); } /* rose-50 */
+
+  /* 夜晚遮罩 → slate-900 半透 */
+  .bg-ac-night\/40                { background-color: rgb(15 23 42 / 0.4); }
+
+  /* ──────── 边框色 ──────── */
+  /* 默认沙色描边 → slate-200 */
+  .border-ac-sand, .border-ac-sand-dark,
+  .border-ac-wood                 { border-color: rgb(226 232 240); }
+
+  /* 强调描边色：grass → indigo，sun → amber，sky → sky，leaf → emerald，heart → rose */
+  .border-ac-grass,
+  .border-ac-grass-dark,
+  .border-ac-grass-light,
+  .border-ac-grass\/60            { border-color: rgb(165 180 252); } /* indigo-300 */
+  .border-ac-sun, .border-ac-sun\/40 { border-color: rgb(252 211 77); } /* amber-300 */
+  .border-ac-sky,
+  .border-ac-sky\/30, .border-ac-sky\/40, .border-ac-sky\/70 { border-color: rgb(125 211 252); }
+  .border-ac-leaf,
+  .border-ac-leaf\/40, .border-ac-leaf\/60 { border-color: rgb(110 231 183); }
+  .border-ac-heart,
+  .border-ac-heart-dark,
+  .border-ac-heart\/60            { border-color: rgb(253 164 175); }
+
+  /* ──────── 文字色 ──────── */
+  .text-ac-earth, .text-ac-wood, .text-ac-wood-dark,
+  .text-ac-night                  { color: rgb(30 41 59); } /* slate-800 */
+  .text-ac-grass-dark             { color: rgb(79 70 229); } /* indigo-600 */
+  .text-ac-grass-light,
+  .text-ac-grass\/40              { color: rgb(165 180 252); }
+  .text-ac-sun, .text-ac-sun-dark { color: rgb(217 119 6); } /* amber-600 */
+  .text-ac-sky-dark               { color: rgb(2 132 199); }
+  .text-ac-leaf-dark              { color: rgb(5 150 105); }
+  .text-ac-heart-dark             { color: rgb(225 29 72); }
+
+  /* ──────── 渐变停点（gradient stops）──────── */
+  /* 把 from-ac-* / to-ac-* 当成普通底色处理：渐变变成单色，不再"动森"
+     —— 同色填充即"退化"，CSS 渐变在两端同色时视觉=纯色 */
+  .from-ac-grass-light,
+  .from-ac-night\/70, .from-ac-night\/85,
+  .from-ac-sky, .from-ac-sun, .from-ac-heart {
+    --tw-gradient-from: rgb(241 245 249) var(--tw-gradient-from-position);
+    --tw-gradient-to: rgb(241 245 249 / 0) var(--tw-gradient-to-position);
+    --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+  }
+  .to-ac-grass, .to-ac-heart-dark, .to-ac-sky-dark, .to-ac-sun-dark {
+    --tw-gradient-to: rgb(241 245 249) var(--tw-gradient-to-position);
+  }
+
+  /* ──────── divide / ring ──────── */
+  .divide-ac-sand > :not([hidden]) ~ :not([hidden]) { border-color: rgb(226 232 240); }
+  .ring-ac-grass\/20 { --tw-ring-color: rgb(99 102 241 / 0.2); }
+
+  /* ──────── 形态：圆角拉回克制 ──────── */
+  .rounded-3xl  { border-radius: 0.5rem; }   /* 24px → 8px */
+  .rounded-2xl  { border-radius: 0.5rem; }   /* 16px → 8px */
+  .rounded-xl   { border-radius: 0.375rem; } /* 12px → 6px */
+
+  /* ──────── 形态：双层粗描边 → 单层 ──────── */
+  .border-2     { border-width: 1px; }
+
+  /* ──────── 阴影减弱（标准 Tailwind shadow）──────── */
+  .shadow-md, .shadow-lg {
+    --tw-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+    --tw-shadow-colored: 0 1px 2px 0 var(--tw-shadow-color);
+    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+  }
+
+  /* ──────── 按钮"凹陷"投影 → 标准 button shadow ──────── */
+  .shadow-ac-button,
+  .shadow-ac-button-secondary,
+  .shadow-ac-button-sun,
+  .shadow-ac-button-heart {
+    --tw-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --tw-shadow-colored: 0 1px 2px 0 var(--tw-shadow-color);
+    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+  }
+
+  /* ──────── 草地纹理拆除 ──────── */
+  .ac-grass-pattern { background-image: none; }
+
+  /* ──────── 滚动条：棕色 → 中性灰 ──────── */
+  ::-webkit-scrollbar-thumb {
+    background: rgb(148 163 184 / 0.5);   /* slate-400 半透 */
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(100 116 139 / 0.7);
+  }
+
+  /* ──────── 焦点环：暖橙 → indigo ──────── */
+  *:focus-visible {
+    outline: 2px solid rgb(99 102 241);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+/* ──────── hover / focus / active 变体（必须扁平写）────────
+ * 上面那批选择器只覆盖了"静态 class"（.bg-ac-sand）；伪类变体
+ * `.hover\:bg-ac-grass-light\/30:hover` 是独立规则，得单独覆盖。
+ *
+ * 关键：必须用扁平选择器 `:root[data-skin="classic"] .hover\:...:hover`，
+ * 而不是嵌套写法。嵌套版的浏览器原生解析特异性低于 Tailwind 自身规则，
+ * 鼠标移上去会"漏"回动森原色。
+ */
+
+/* — hover:bg → 浅灰底（菜单项 hover 视觉就在这里） — */
+:root[data-skin="classic"] .hover\:bg-ac-cream\/40:hover,
+:root[data-skin="classic"] .hover\:bg-ac-cream\/50:hover,
+:root[data-skin="classic"] .hover\:bg-ac-cream\/60:hover,
+:root[data-skin="classic"] .hover\:bg-ac-sand:hover,
+:root[data-skin="classic"] .hover\:bg-ac-sand-dark:hover,
+:root[data-skin="classic"] .hover\:bg-ac-sand\/30:hover,
+:root[data-skin="classic"] .hover\:bg-ac-sand\/40:hover,
+:root[data-skin="classic"] .hover\:bg-ac-sand\/60:hover,
+:root[data-skin="classic"] .hover\:bg-ac-wood\/40:hover {
+  background-color: rgb(241 245 249) !important;
+}
+
+/* — hover:bg-ac-grass-* → indigo 浅色（侧栏菜单项 hover 的核心规则） — */
+:root[data-skin="classic"] .hover\:bg-ac-grass-light\/30:hover,
+:root[data-skin="classic"] .hover\:bg-ac-grass\/10:hover {
+  background-color: rgb(238 242 255) !important; /* indigo-50 */
+}
+:root[data-skin="classic"] .hover\:bg-ac-grass-dark:hover {
+  background-color: rgb(79 70 229) !important;   /* indigo-600 */
+}
+
+/* — hover:bg-ac-heart-* → rose — */
+:root[data-skin="classic"] .hover\:bg-ac-heart:hover,
+:root[data-skin="classic"] .hover\:bg-ac-heart-dark:hover {
+  background-color: rgb(244 63 94) !important;
+}
+:root[data-skin="classic"] .hover\:bg-ac-heart\/10:hover,
+:root[data-skin="classic"] .hover\:bg-ac-heart\/15:hover {
+  background-color: rgb(255 241 242) !important;
+}
+
+/* — hover:bg-ac-leaf-* → emerald 浅 — */
+:root[data-skin="classic"] .hover\:bg-ac-leaf\/25:hover {
+  background-color: rgb(236 253 245) !important;
+}
+
+/* — hover:bg-ac-sky-* — */
+:root[data-skin="classic"] .hover\:bg-ac-sky-dark:hover {
+  background-color: rgb(2 132 199) !important;
+}
+:root[data-skin="classic"] .hover\:bg-ac-sky\/15:hover,
+:root[data-skin="classic"] .hover\:bg-ac-sky\/25:hover {
+  background-color: rgb(240 249 255) !important;
+}
+
+/* — hover:bg-ac-sun-* — */
+:root[data-skin="classic"] .hover\:bg-ac-sun-dark:hover {
+  background-color: rgb(217 119 6) !important;
+}
+:root[data-skin="classic"] .hover\:bg-ac-sun\/25:hover {
+  background-color: rgb(255 251 235) !important;
+}
+
+/* — hover:border-* — */
+:root[data-skin="classic"] .hover\:border-ac-grass:hover {
+  border-color: rgb(165 180 252) !important; /* indigo-300 */
+}
+:root[data-skin="classic"] .hover\:border-ac-heart-dark:hover {
+  border-color: rgb(253 164 175) !important;
+}
+
+/* — hover:text-* — */
+:root[data-skin="classic"] .hover\:text-ac-grass-dark:hover {
+  color: rgb(79 70 229) !important;          /* indigo-600 */
+}
+:root[data-skin="classic"] .hover\:text-ac-heart-dark:hover {
+  color: rgb(225 29 72) !important;
+}
+
+/* — focus / active — */
+:root[data-skin="classic"] .focus\:border-ac-grass:focus {
+  border-color: rgb(99 102 241) !important;
+}
+:root[data-skin="classic"] .focus\:ring-ac-grass\/20:focus {
+  --tw-ring-color: rgb(99 102 241 / 0.2) !important;
+}
+:root[data-skin="classic"] .active\:bg-ac-sand:active {
+  background-color: rgb(226 232 240) !important;
+}
+
+/* ── classic + 暗色：hover 改成深色块，避免亮卡浮黑底 ── */
+:root[data-skin="classic"].dark .hover\:bg-ac-cream\/40:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-cream\/50:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-cream\/60:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-sand:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-sand-dark:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-sand\/30:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-sand\/40:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-sand\/60:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-wood\/40:hover {
+  background-color: rgb(51 65 85) !important; /* slate-700 */
+}
+:root[data-skin="classic"].dark .hover\:bg-ac-grass-light\/30:hover,
+:root[data-skin="classic"].dark .hover\:bg-ac-grass\/10:hover {
+  background-color: rgb(49 46 129 / 0.5) !important;
+}
+:root[data-skin="classic"].dark .hover\:text-ac-grass-dark:hover {
+  color: rgb(165 180 252) !important;
+}
+:root[data-skin="classic"].dark .hover\:text-ac-heart-dark:hover {
+  color: rgb(253 164 175) !important;
+}
+
+/* classic 皮肤的暗色模式：再把那些指向 slate-100 / amber-50 / sky-50 等浅底
+ * 的覆盖压暗，否则会"亮卡片浮在黑底"刺眼 */
+:root[data-skin="classic"].dark {
+  .bg-ac-cream,
+  .bg-ac-cream\/30, .bg-ac-cream\/40, .bg-ac-cream\/50, .bg-ac-cream\/60,
+  .bg-ac-sand, .bg-ac-sand\/30, .bg-ac-sand\/40, .bg-ac-sand\/50,
+  .bg-ac-sand\/60, .bg-ac-sand\/70, .bg-ac-sand-dark,
+  .bg-ac-wood\/20, .bg-ac-wood\/40        { background-color: rgb(30 41 59); } /* slate-800 */
+
+  .bg-ac-grass-light\/20,
+  .bg-ac-grass-light\/30,
+  .bg-ac-grass-light\/40,
+  .bg-ac-grass-light\/50,
+  .bg-ac-grass\/10                        { background-color: rgb(49 46 129 / 0.4); }
+  .bg-ac-sun\/10, .bg-ac-sun\/15,
+  .bg-ac-sun\/25, .bg-ac-sun\/30,
+  .bg-ac-sun\/40                          { background-color: rgb(120 53 15 / 0.3); }
+  .bg-ac-sky\/5, .bg-ac-sky\/15,
+  .bg-ac-sky\/25, .bg-ac-sky\/40          { background-color: rgb(12 74 110 / 0.3); }
+  .bg-ac-leaf\/10, .bg-ac-leaf\/15,
+  .bg-ac-leaf\/25, .bg-ac-leaf\/30        { background-color: rgb(6 78 59 / 0.3); }
+  .bg-ac-heart\/10, .bg-ac-heart\/15,
+  .bg-ac-heart\/25, .bg-ac-heart\/30      { background-color: rgb(136 19 55 / 0.3); }
+
+  .border-ac-sand, .border-ac-sand-dark,
+  .border-ac-wood                         { border-color: rgb(51 65 85); } /* slate-700 */
+  .border-ac-grass,
+  .border-ac-grass-dark,
+  .border-ac-grass-light,
+  .border-ac-grass\/60                    { border-color: rgb(99 102 241); }
+
+  .text-ac-earth, .text-ac-wood, .text-ac-wood-dark,
+  .text-ac-night                          { color: rgb(226 232 240); } /* slate-200 */
 }

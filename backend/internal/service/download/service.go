@@ -216,8 +216,28 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	result, err := exec.Execute(ctx, task, progressCB)
 
 	if err != nil {
-		s.updateStatus(dlID, model.DownloadStatusFailed, nil)
-		zap.L().Error("下载失败", zap.String("name", task.Name), zap.Error(err))
+		// 先读 retry_count，分类 + 算下次重试时间，统一写回。
+		var prev model.Download
+		_ = s.db.First(&prev, dlID).Error
+		kind, delay := classifyError(err, prev.RetryCount)
+		extra := map[string]interface{}{
+			"failure_kind": kind,
+			"last_error":   truncateError(err),
+		}
+		if delay > 0 {
+			nextAt := time.Now().Add(delay)
+			extra["next_retry_at"] = &nextAt
+		} else {
+			// permanent / 已用尽重试次数 → 清空 next_retry_at
+			extra["next_retry_at"] = nil
+		}
+		s.updateStatus(dlID, model.DownloadStatusFailed, extra)
+		zap.L().Error("下载失败",
+			zap.String("name", task.Name),
+			zap.String("failure_kind", kind),
+			zap.Duration("retry_after", delay),
+			zap.Int("retry_count", prev.RetryCount),
+			zap.Error(err))
 		return
 	}
 
@@ -560,6 +580,17 @@ func (s *Service) notifyCompletion(dlID uint) {
 	}
 	if dl.EpisodeNumber != nil {
 		info.Episode = *dl.EpisodeNumber
+	}
+
+	// 幂等闸门：按 (anime_id, episode_number) 去重，无论触发路径是
+	// BT 完成、Stream 备援完成、qbit_sync 误标 completed 还是 dl 行被
+	// 删后重建 —— 同一集只发一次。
+	animeID := uint(0)
+	if dl.AnimeID != nil {
+		animeID = *dl.AnimeID
+	}
+	if !claimEpisodeNotification(s.db, animeID, info.Episode, info.Season) {
+		return
 	}
 
 	go func(info *notification.NotificationInfo) {

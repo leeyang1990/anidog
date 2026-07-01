@@ -256,3 +256,6 @@ uploads/
 
 # Playwright MCP 调试截图
 .playwright-mcp/
+
+# 根目录临时截图
+ac-login-*.png

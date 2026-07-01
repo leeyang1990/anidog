@@ -1,0 +1,28 @@
+# 依赖与构建产物（容器内会重新 npm install + build）
+node_modules
+dist
+
+# IDE 与编辑器
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# 日志
+*.log
+npm-debug.log*
+
+# Docker
+Dockerfile
+.dockerignore
+
+# 本地环境
+.env
+.env.local
+.DS_Store

@@ -15,11 +15,19 @@ import (
 )
 
 type SettingsHandler struct {
-	svc *settingsvc.Service
+	svc  *settingsvc.Service
+	deps SystemInfoDeps
 }
 
 func NewSettingsHandler(svc *settingsvc.Service) *SettingsHandler {
 	return &SettingsHandler{svc: svc}
+}
+
+// WithSystemDeps 注入系统信息探针（DB 连接池 + qBit 在线探测）。
+// 可选 —— 不调用时系统信息里的 database/qbittorrent 字段返回"未连接/离线"。
+func (h *SettingsHandler) WithSystemDeps(deps SystemInfoDeps) *SettingsHandler {
+	h.deps = deps
+	return h
 }
 
 func (h *SettingsHandler) RegisterRoutes(rg *gin.RouterGroup) {
@@ -115,7 +123,7 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 }
 
 func (h *SettingsHandler) GetSystemInfo(c *gin.Context) {
-	c.JSON(http.StatusOK, getSystemInfo(h.svc.Config().ProjectVersion))
+	c.JSON(http.StatusOK, getSystemInfo(h.svc.Config().ProjectVersion, h.deps))
 }
 
 // TestProxy 用传入的代理 URL 尝试访问 Bangumi API，验证代理是否可用。

@@ -1,37 +1,36 @@
 <template>
-  <n-modal :show="show" @update:show="$emit('update:show', $event)" preset="card"
-    :style="{ width: '820px' }" :bordered="false"
-    :title="`手动选择种子 · ${animeTitle}${episode ? ' · 第 ' + String(episode).padStart(2,'0') + ' 集' : ''}`">
-
+  <AcModal
+    :show="show"
+    :title="`手动选择种子 · ${animeTitle}${episode ? ' · 第 ' + String(episode).padStart(2,'0') + ' 集' : ''}`"
+    :max-width="'820px'"
+    @update:show="$emit('update:show', $event)"
+  >
     <div class="space-y-3">
       <!-- 搜索栏 -->
       <div class="flex items-center gap-2 flex-wrap">
-        <input v-model="keyword"
-          @keydown.enter="runSearch"
+        <AcInput
+          v-model="keyword"
           placeholder="搜索关键词（番剧名）"
-          class="h-9 flex-1 min-w-[200px] rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+          class="flex-1 min-w-[200px]"
+          @keyup-enter="runSearch"
+        />
 
-        <select v-model="episodeFilter"
-          class="h-9 rounded-md border border-input bg-background px-2 text-sm">
-          <option :value="0">所有集</option>
-          <option v-for="n in 50" :key="n" :value="n">第 {{ String(n).padStart(2,'0') }} 集</option>
-        </select>
+        <AcSelect v-model="episodeFilter" :options="episodeOptions" class="w-32" />
 
-        <button @click="runSearch" :disabled="loading"
-          class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50">
+        <AcButton variant="primary" :loading="loading" @click="runSearch">
           {{ loading ? '搜索中...' : '聚合搜索' }}
-        </button>
+        </AcButton>
       </div>
 
       <!-- 源筛选 chips -->
       <div class="flex flex-wrap gap-2 items-center">
-        <span class="text-xs text-muted-foreground">源:</span>
+        <span class="text-xs text-muted-foreground font-bold">源:</span>
         <button v-for="ix in indexerOptions" :key="ix.value"
           type="button"
-          class="px-2.5 py-1 rounded-full text-xs font-medium border transition-colors"
+          class="px-2.5 py-1 rounded-full text-xs font-bold border-2 transition-colors"
           :class="selectedIndexers.includes(ix.value)
-            ? 'bg-primary text-primary-foreground border-primary'
-            : 'bg-background text-muted-foreground border-border hover:border-primary/50'"
+            ? 'bg-ac-grass text-white border-ac-grass-dark'
+            : 'bg-card text-muted-foreground border-ac-sand hover:border-ac-grass'"
           @click="toggleIndexer(ix.value)">
           {{ ix.label }}
         </button>
@@ -39,45 +38,34 @@
 
       <!-- 结果 -->
       <div v-if="!candidates.length && !loading" class="py-10 text-center text-sm text-muted-foreground">
-        {{ searched ? '未找到结果，换个关键词？' : '点"聚合搜索"开始' }}
+        {{ searched ? '未找到结果，换个关键词？' : '点"聚合搜索"开始 🌱' }}
       </div>
 
-      <n-spin v-else-if="loading" :show="loading">
-        <div class="py-10"></div>
-      </n-spin>
+      <div v-else-if="loading" class="py-10 flex justify-center"><AcSpinner :size="36" /></div>
 
       <div v-else class="max-h-[55vh] overflow-y-auto -mr-2 pr-2 space-y-2">
         <div v-for="(c, idx) in candidates" :key="idx"
-          class="p-3 rounded-md border hover:border-primary/50 transition-colors">
+          class="p-3 rounded-2xl border-2 border-ac-sand hover:border-ac-grass transition-colors">
           <div class="flex items-start gap-3">
             <!-- rank -->
-            <div class="shrink-0 w-8 h-8 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-mono font-bold">
+            <div class="shrink-0 size-8 rounded-full bg-ac-cream text-ac-wood-dark flex items-center justify-center text-xs font-num font-bold border-2 border-ac-sand">
               {{ idx + 1 }}
             </div>
 
             <div class="flex-1 min-w-0 space-y-1">
               <!-- meta -->
               <div class="flex items-center gap-2 flex-wrap text-xs">
-                <span v-if="c.parsed?.group"
-                  class="inline-flex items-center rounded px-1.5 py-0.5 font-bold bg-primary/20 text-primary">
-                  {{ c.parsed.group }}
-                </span>
-                <span v-if="c.parsed?.episode_num"
-                  class="inline-flex items-center rounded px-1.5 py-0.5 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-                  EP {{ String(c.parsed.episode_num).padStart(2,'0') }}
-                </span>
-                <span v-if="c.parsed?.is_batch"
-                  class="inline-flex items-center rounded px-1.5 py-0.5 bg-violet-500/15 text-violet-700 dark:text-violet-400">
-                  合集 {{ c.parsed.batch_start }}–{{ c.parsed.batch_end }}
-                </span>
+                <AcTag v-if="c.parsed?.group" variant="grass" size="sm">{{ c.parsed.group }}</AcTag>
+                <AcTag v-if="c.parsed?.episode_num" variant="leaf" size="sm">EP {{ String(c.parsed.episode_num).padStart(2,'0') }}</AcTag>
+                <AcTag v-if="c.parsed?.is_batch" variant="wood" size="sm">合集 {{ c.parsed.batch_start }}–{{ c.parsed.batch_end }}</AcTag>
                 <span v-if="c.parsed?.quality" class="text-muted-foreground">{{ c.parsed.quality }}</span>
                 <span v-if="c.parsed?.source" class="text-muted-foreground">· {{ c.parsed.source }}</span>
                 <span v-if="c.parsed?.lang?.length" class="text-muted-foreground">
                   · {{ c.parsed.lang.map(l => langLabel(l)).join('/') }}
                 </span>
                 <span class="ml-auto text-muted-foreground inline-flex items-center gap-2">
-                  <span class="uppercase">{{ c.source_name }}</span>
-                  <span v-if="c.score !== 0">· Score {{ c.score.toFixed(1) }}</span>
+                  <span class="uppercase font-bold">{{ c.source_name }}</span>
+                  <span v-if="c.score !== 0" class="font-num">· Score {{ c.score.toFixed(1) }}</span>
                 </span>
               </div>
 
@@ -85,7 +73,7 @@
               <div class="text-sm truncate" :title="c.title">{{ c.title }}</div>
 
               <!-- info -->
-              <div class="flex items-center gap-3 text-xs text-muted-foreground">
+              <div class="flex items-center gap-3 text-xs text-muted-foreground font-num">
                 <span>{{ formatSize(c.size) }}</span>
                 <span v-if="c.seeders > 0">👥 {{ c.seeders }}</span>
                 <span v-if="c.leechers > 0">⬇ {{ c.leechers }}</span>
@@ -94,21 +82,23 @@
             </div>
 
             <!-- action -->
-            <button @click="download(c)" :disabled="downloading === c.info_hash || downloading === c.title"
-              class="shrink-0 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50">
-              {{ downloading === c.info_hash || downloading === c.title ? '下载中...' : '下载' }}
-            </button>
+            <AcButton size="sm" variant="primary"
+              :loading="downloading === c.info_hash || downloading === c.title"
+              @click="download(c)">
+              下载
+            </AcButton>
           </div>
         </div>
       </div>
     </div>
-  </n-modal>
+  </AcModal>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
-import { useMessage, NModal, NSpin } from 'naive-ui'
+import { ref, computed, watch } from 'vue'
 import { get, post } from '@/utils/api'
+import { useToast } from '@/composables/useToast'
+import { AcModal, AcButton, AcInput, AcSelect, AcSpinner, AcTag } from '@/components/ac'
 
 const props = defineProps({
   show: Boolean,
@@ -119,7 +109,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:show', 'downloaded'])
 
-const message = useMessage()
+const toast = useToast()
 
 const keyword = ref('')
 const episodeFilter = ref(0)
@@ -135,6 +125,11 @@ const indexerOptions = [
   { label: 'BangumiMoe', value: 'bangumimoe' },
   { label: 'Nyaa', value: 'nyaa' },
 ]
+
+const episodeOptions = computed(() => [
+  { label: '所有集', value: 0 },
+  ...Array.from({ length: 50 }, (_, i) => ({ label: `第 ${String(i + 1).padStart(2, '0')} 集`, value: i + 1 })),
+])
 
 function toggleIndexer(v) {
   const i = selectedIndexers.value.indexOf(v)
@@ -161,7 +156,7 @@ function formatDate(s) {
 
 async function runSearch() {
   if (!keyword.value.trim()) {
-    message.warning('请输入搜索关键词')
+    toast.warning('请输入搜索关键词')
     return
   }
   loading.value = true
@@ -174,7 +169,7 @@ async function runSearch() {
     })
     candidates.value = resp.candidates || []
   } catch (e) {
-    message.error(e.message || '搜索失败')
+    toast.error(e.message || '搜索失败')
     candidates.value = []
   } finally {
     loading.value = false
@@ -184,7 +179,7 @@ async function runSearch() {
 async function download(c) {
   const url = c.magnet_url || c.torrent_url
   if (!url) {
-    message.error('候选缺少磁链 / 种子 URL')
+    toast.error('候选缺少磁链 / 种子 URL')
     return
   }
   downloading.value = c.info_hash || c.title
@@ -199,12 +194,11 @@ async function download(c) {
       anime_id: props.animeId || undefined,
       episode_number: ep || undefined,
     })
-    message.success('已加入下载队列')
+    toast.success('已加入下载队列')
     emit('downloaded', c)
-    // 轻微延迟再关闭，便于用户看到反馈
     setTimeout(() => emit('update:show', false), 500)
   } catch (e) {
-    message.error(e.message || '下载失败')
+    toast.error(e.message || '下载失败')
   } finally {
     downloading.value = null
   }

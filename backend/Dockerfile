@@ -19,8 +19,14 @@ RUN go mod download
 # 复制源代码
 COPY . .
 
-# 构建应用（禁用 CGO 以减小镜像大小）
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o anidog ./cmd/anidog
+# 版本号由 CI 通过 --build-arg VERSION=<git tag> 注入，缺省 dev
+ARG VERSION=dev
+
+# 构建应用（禁用 CGO 以减小镜像大小；ldflags 注入版本号 + 裁剪符号表）
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags "-s -w -X 'github.com/anidog/anidog-go/internal/config.Version=${VERSION}'" \
+    -o anidog ./cmd/anidog
 
 # ========================================
 # 阶段二：运行时镜像
@@ -48,9 +54,6 @@ WORKDIR /app
 
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/anidog .
-
-# 复制配置文件
-COPY .env.yaml .
 
 # 创建下载目录
 RUN mkdir -p /downloads

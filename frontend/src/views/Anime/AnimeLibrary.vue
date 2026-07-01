@@ -1,111 +1,88 @@
 <template>
   <div>
-    <PageHeader :title="hasFilters ? '筛选结果' : '热门番剧'" :subtitle="hasFilters ? '多维发现番剧' : '来自 Bangumi 的实时热门趋势'" />
+    <AcPageHeader :title="hasFilters ? '🔍 筛选结果' : '🔥 热门番剧'" :subtitle="hasFilters ? '多维发现番剧' : '来自 Bangumi 的实时热门趋势'" />
 
     <!-- 筛选面板 -->
-    <div class="bg-card rounded-lg border p-4 mb-6 space-y-4">
-      <!-- 搜索 -->
-      <div class="flex gap-3">
-        <div class="relative flex-1">
-          <n-icon size="16" class="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"><SearchOutline /></n-icon>
-          <input v-model="filters.keyword" type="text" placeholder="搜索番剧名..."
-            class="h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            @keydown.enter="discover" />
+    <AcCard padding="md" rounded="2xl" class="mb-6">
+      <div class="space-y-4">
+        <!-- 搜索 -->
+        <div class="flex gap-3">
+          <div class="flex-1">
+            <AcInput v-model="filters.keyword" placeholder="搜索番剧名..." size="lg" @keyup-enter="discover">
+              <template #prefix><SearchOutline class="size-4" /></template>
+            </AcInput>
+          </div>
+          <AcButton variant="primary" size="lg" :loading="loading" @click="discover">
+            {{ loading ? '加载中...' : '筛选' }}
+          </AcButton>
         </div>
-        <button class="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md h-10 px-6 text-sm font-medium transition-colors"
-          @click="discover" :disabled="loading">
-          {{ loading ? '加载中...' : '筛选' }}
-        </button>
-      </div>
 
-      <!-- 筛选维度 -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-        <!-- 年份 -->
-        <div>
-          <label class="block text-xs text-muted-foreground mb-1">年份</label>
-          <select v-model="filters.year" class="h-9 w-full rounded-md border border-input bg-background px-2 text-sm">
-            <option :value="0">不限</option>
-            <option v-for="y in years" :key="y" :value="y">{{ y }}</option>
-          </select>
+        <!-- 筛选维度 -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div>
+            <label class="block text-xs text-muted-foreground mb-1 font-bold">年份</label>
+            <AcSelect v-model="filters.year" :options="yearOptions" />
+          </div>
+          <div>
+            <label class="block text-xs text-muted-foreground mb-1 font-bold">季度（可多选）</label>
+            <div class="flex flex-wrap gap-1.5">
+              <button v-for="s in seasonOptions" :key="s.value" type="button"
+                class="px-2.5 py-1 rounded-full text-xs font-bold border-2 transition-colors"
+                :class="filters.seasons.includes(s.value)
+                  ? 'bg-ac-grass text-white border-ac-grass-dark'
+                  : 'bg-card border-ac-sand text-muted-foreground hover:border-ac-grass'"
+                :disabled="!filters.year"
+                :style="!filters.year ? 'opacity:0.5;cursor:not-allowed' : ''"
+                @click="toggleSeason(s.value)">
+                {{ s.label }}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-muted-foreground mb-1 font-bold">排序</label>
+            <AcSelect v-model="filters.sort" :options="sortOptions" />
+          </div>
+          <div>
+            <label class="block text-xs text-muted-foreground mb-1 font-bold">最低评分</label>
+            <AcSelect v-model="filters.min_rating" :options="ratingOptions" />
+          </div>
         </div>
-        <!-- 季度（多选） -->
+
+        <!-- 标签多选 -->
         <div>
-          <label class="block text-xs text-muted-foreground mb-1">季度（可多选）</label>
-          <div class="flex flex-wrap gap-1.5">
-            <button v-for="s in seasonOptions" :key="s.value"
-              type="button"
-              class="px-2.5 py-1 rounded-full text-xs font-medium border transition-colors"
-              :class="filters.seasons.includes(s.value)
-                ? 'bg-primary text-primary-foreground border-primary'
-                : 'bg-background text-muted-foreground border-border hover:border-primary/50'"
-              :disabled="!filters.year"
-              :style="!filters.year ? 'opacity:0.5;cursor:not-allowed' : ''"
-              @click="toggleSeason(s.value)">
-              {{ s.label }}
+          <label class="block text-xs text-muted-foreground mb-2 font-bold">标签（点击切换）</label>
+          <div class="flex flex-wrap gap-2">
+            <button v-for="tag in tagOptions" :key="tag" type="button"
+              class="px-3 py-1 rounded-full text-xs font-bold border-2 transition-colors"
+              :class="filters.tags.includes(tag)
+                ? 'bg-ac-grass text-white border-ac-grass-dark'
+                : 'bg-card border-ac-sand text-muted-foreground hover:border-ac-grass'"
+              @click="toggleTag(tag)">
+              {{ tag }}
             </button>
           </div>
         </div>
-        <!-- 排序 -->
-        <div>
-          <label class="block text-xs text-muted-foreground mb-1">排序</label>
-          <select v-model="filters.sort" class="h-9 w-full rounded-md border border-input bg-background px-2 text-sm">
-            <option value="heat">热度</option>
-            <option value="rank">排名</option>
-            <option value="score">评分</option>
-            <option value="match">匹配度</option>
-          </select>
-        </div>
-        <!-- 评分门槛 -->
-        <div>
-          <label class="block text-xs text-muted-foreground mb-1">最低评分</label>
-          <select v-model.number="filters.min_rating" class="h-9 w-full rounded-md border border-input bg-background px-2 text-sm">
-            <option :value="0">不限</option>
-            <option :value="6">6+ 及格</option>
-            <option :value="7">7+ 良好</option>
-            <option :value="7.5">7.5+ 推荐</option>
-            <option :value="8">8+ 高分</option>
-            <option :value="8.5">8.5+ 神作</option>
-          </select>
-        </div>
-      </div>
 
-      <!-- 标签多选 -->
-      <div>
-        <label class="block text-xs text-muted-foreground mb-2">标签（点击切换）</label>
-        <div class="flex flex-wrap gap-2">
-          <button v-for="tag in tagOptions" :key="tag"
-            class="px-3 py-1 rounded-full text-xs font-medium border transition-colors"
-            :class="filters.tags.includes(tag)
-              ? 'bg-primary text-primary-foreground border-primary'
-              : 'bg-background text-muted-foreground border-border hover:border-primary/50'"
-            @click="toggleTag(tag)">
-            {{ tag }}
-          </button>
+        <div class="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t-2 border-dashed border-ac-sand">
+          <button type="button" class="hover:text-foreground font-bold" @click="resetFilters">🔄 重置筛选</button>
+          <span v-if="total" class="font-num font-bold">共 {{ total }} 部</span>
         </div>
       </div>
-
-      <!-- 快捷操作 -->
-      <div class="flex items-center justify-between text-xs text-muted-foreground pt-1 border-t">
-        <button class="hover:text-foreground" @click="resetFilters">重置筛选</button>
-        <span v-if="total">共 {{ total }} 部</span>
-      </div>
-    </div>
+    </AcCard>
 
     <!-- 结果列表 -->
-    <div v-if="loading" class="flex justify-center py-12"><n-spin size="large" /></div>
+    <div v-if="loading" class="flex justify-center py-12"><AcSpinner :size="48" /></div>
     <div v-else-if="results.length" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
       <AnimeCard v-for="item in results" :key="item.id" :item="item"
         @click="goToDetail(item)" @subscribe="subscribeBangumi(item)" />
     </div>
-    <div v-else class="py-16 text-center text-sm text-muted-foreground">暂无匹配结果</div>
+    <AcEmpty v-else title="暂无匹配结果" description="试试调整一下筛选条件 🌿" class="py-12" />
 
     <!-- 分页 -->
     <div v-if="total > pageSize" class="flex justify-center items-center gap-3 mt-6 text-sm">
-      <button class="h-8 px-3 rounded-md border border-input bg-background hover:bg-accent transition-colors disabled:opacity-50"
-        :disabled="page <= 1" @click="changePage(page - 1)">上一页</button>
-      <span class="text-muted-foreground">第 {{ page }} 页 / 共 {{ totalPages }} 页</span>
-      <button class="h-8 px-3 rounded-md border border-input bg-background hover:bg-accent transition-colors disabled:opacity-50"
-        :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</button>
+      <AcButton size="sm" variant="outline" :disabled="page <= 1" @click="changePage(page - 1)">上一页</AcButton>
+      <span class="text-muted-foreground font-num font-bold">第 {{ page }} 页 / 共 {{ totalPages }} 页</span>
+      <AcButton size="sm" variant="outline" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</AcButton>
     </div>
   </div>
 </template>
@@ -113,15 +90,15 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useMessage, NIcon, NSpin } from 'naive-ui'
+import { useToast } from '@/composables/useToast'
 import { SearchOutline } from '@vicons/ionicons5'
 import { get, post } from '@/utils/api'
-import PageHeader from '@/components/Common/PageHeader.vue'
+import { AcPageHeader, AcCard, AcInput, AcButton, AcSelect, AcSpinner, AcEmpty } from '@/components/ac'
 import AnimeCard from './AnimeCard.vue'
 
 const router = useRouter()
 const route = useRoute()
-const message = useMessage()
+const toast = useToast()
 
 const pageSize = 24
 const page = ref(1)
@@ -131,6 +108,28 @@ const results = ref([])
 
 const currentYear = new Date().getFullYear()
 const years = Array.from({ length: 30 }, (_, i) => currentYear - i)
+
+const yearOptions = computed(() => [
+  { label: '不限', value: 0 },
+  ...years.map(y => ({ label: String(y), value: y })),
+])
+
+const sortOptions = [
+  { label: '热度', value: 'heat' },
+  { label: '排名', value: 'rank' },
+  { label: '评分', value: 'score' },
+  { label: '匹配度', value: 'match' },
+]
+
+const ratingOptions = [
+  { label: '不限', value: 0 },
+  { label: '6+ 及格', value: 6 },
+  { label: '7+ 良好', value: 7 },
+  { label: '7.5+ 推荐', value: 7.5 },
+  { label: '8+ 高分', value: 8 },
+  { label: '8.5+ 神作', value: 8.5 },
+]
+
 const tagOptions = ['日常', '原创', '校园', '搞笑', '奇幻', '百合', '恋爱', '悬疑', '热血', '后宫', '机战', '轻改', '偶像', '治愈', '异世界']
 const seasonOptions = [
   { label: '冬番（1-3月）', value: 'winter' },
@@ -139,23 +138,12 @@ const seasonOptions = [
   { label: '秋番（10-12月）', value: 'autumn' },
 ]
 
-const filters = ref({
-  keyword: '',
-  sort: 'heat',
-  year: 0,
-  seasons: [], // 多选
-  tags: [],
-  min_rating: 0
-})
+const filters = ref({ keyword: '', sort: 'heat', year: 0, seasons: [], tags: [], min_rating: 0 })
 
-// 从 URL query 还原状态（返回时，路由 query 恢复即可还原筛选+页码）
 function restoreFromQuery() {
   const q = route.query
-  // tag（旧兼容，搜索详情页点击标签会传）
   const legacyTag = typeof q.tag === 'string' ? q.tag : ''
-  // 多值 query 可能是 string 或 string[]
   const asArray = (v) => (Array.isArray(v) ? v : v ? [v] : [])
-
   filters.value = {
     keyword: typeof q.keyword === 'string' ? q.keyword : '',
     sort: typeof q.sort === 'string' ? q.sort : 'heat',
@@ -167,7 +155,6 @@ function restoreFromQuery() {
   page.value = q.page ? Number(q.page) || 1 : 1
 }
 
-// 把当前 filters + page 同步到 URL（router.replace，不污染 history）
 function syncToQuery() {
   const f = filters.value
   const q = {}
@@ -181,12 +168,8 @@ function syncToQuery() {
   router.replace({ query: q })
 }
 
-onMounted(() => {
-  restoreFromQuery()
-  discover()
-})
+onMounted(() => { restoreFromQuery(); discover() })
 
-// 判断是否有筛选条件（用来决定走 trending 还是 discover）
 const hasFilters = computed(() => {
   const f = filters.value
   return f.keyword || f.year || f.seasons.length > 0 || f.tags.length > 0 || f.min_rating > 0 || f.sort !== 'heat'
@@ -217,14 +200,12 @@ async function discover() {
   loading.value = true
   try {
     if (!hasFilters.value) {
-      // 无筛选：热门趋势（Kazumi 首页同款）
       const resp = await get('/bangumi/trending', {
         params: { limit: pageSize, offset: (page.value - 1) * pageSize }
       })
       results.value = resp.results || []
       total.value = resp.total || 0
     } else {
-      // 有筛选：多维发现
       const resp = await post('/bangumi/discover', {
         ...filters.value,
         limit: pageSize,
@@ -234,11 +215,9 @@ async function discover() {
       total.value = resp.total || 0
     }
   } catch (e) {
-    message.error('加载失败')
+    toast.error('加载失败')
     results.value = []
-  } finally {
-    loading.value = false
-  }
+  } finally { loading.value = false }
 }
 
 function changePage(p) {
@@ -250,15 +229,10 @@ function changePage(p) {
 async function subscribeBangumi(item) {
   try {
     await post(`/bangumi/${item.id}/subscribe`)
-    message.success('追番成功')
+    toast.success('追番成功')
     item.is_subscribed = true
-  } catch (e) {
-    message.error(e.message || '追番失败')
-  }
+  } catch (e) { toast.error(e.message || '追番失败') }
 }
 
-function goToDetail(item) {
-  router.push(`/anime-library/${item.id}`)
-}
-
+function goToDetail(item) { router.push(`/anime-library/${item.id}`) }
 </script>

@@ -144,7 +144,18 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		// 状态映射
 		if state, ok := qt["state"].(string); ok {
 			newStatus := mapQBitState(state)
-			if newStatus != "" && newStatus != dl.Status {
+			// 防误标：刚入队 < 60s 内不允许翻 completed。qBit 在创建种子的早期
+			// 阶段会瞬时上报 checkingUP/queuedUP/forcedUP 等状态，mapQBitState
+			// 会把它们映射为 completed —— 但此时种子可能还在等元数据，并没有真下完。
+			// 等过 60s 再让 mapQBitState 决定，能消除"种子刚入队就发 S0xExx 已更新"的误推。
+			fakeCompleted := newStatus == model.DownloadStatusCompleted &&
+				time.Since(dl.CreatedAt) < 60*time.Second
+			if fakeCompleted {
+				zap.L().Debug("qbit_sync: 入队 < 60s 期间忽略 completed 状态映射",
+					zap.Uint("id", dl.ID),
+					zap.String("qbit_state", state))
+			}
+			if newStatus != "" && newStatus != dl.Status && !fakeCompleted {
 				updates["status"] = newStatus
 				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil {
 					now := time.Now()
@@ -272,6 +283,15 @@ func (s *QBitSyncer) notifyCompletion(ctx context.Context, dl *model.Download) {
 		info.Episode = *dl.EpisodeNumber
 	}
 
+	// 幂等闸门：见 notification_dedup.go
+	animeID := uint(0)
+	if dl.AnimeID != nil {
+		animeID = *dl.AnimeID
+	}
+	if !claimEpisodeNotification(s.db, animeID, info.Episode, info.Season) {
+		return
+	}
+
 	go func(info *notification.NotificationInfo) {
 		// 给所有渠道总共 30s 时间发完
 		sendCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -310,6 +330,7 @@ func (s *QBitSyncer) abandonDeadTorrent(ctx context.Context, dl *model.Download,
 		AnimeID:     dl.AnimeID,
 		Title:       dl.Name,
 		Reason:      reason,
+		Kind:        model.FailureKindTransient, // 死种判定都是"暂时找不到 peer"，留 TTL 给它复活机会
 		AbandonedAt: time.Now(),
 	}
 	// ON CONFLICT DO NOTHING：同 hash 重复拉黑不报错

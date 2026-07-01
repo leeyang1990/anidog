@@ -9,6 +9,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// Version 由构建时通过 -ldflags 注入：
+//
+//	go build -ldflags "-X 'github.com/anidog/anidog-go/internal/config.Version=v1.2.3'"
+//
+// 默认 "dev"。非 "dev" 时会覆盖配置里的 project_version，让 /system/info
+// 显示真实发布版本（CI 把 git tag 注进来）。
+var Version = "dev"
+
 type Config struct {
 	ProjectName              string
 	ProjectVersion           string
@@ -122,7 +130,7 @@ func Load() *Config {
 
 	cfg := &Config{
 		ProjectName:              viper.GetString("app_name"),
-		ProjectVersion:           viper.GetString("project_version"),
+		ProjectVersion:           resolveVersion(),
 		DatabaseURL:              viper.GetString("database_url"),
 		SecretKey:                viper.GetString("secret_key"),
 		AccessTokenExpireMinutes: viper.GetInt("access_token_expire_minutes"),
@@ -154,4 +162,14 @@ func Load() *Config {
 	cfg.AccessTokenExpireDuration = time.Duration(cfg.AccessTokenExpireMinutes) * time.Minute
 
 	return cfg
+}
+
+// resolveVersion 决定最终展示的版本号：
+// 构建时若用 ldflags 注入了 Version（非 "dev"），优先用它（= git tag）；
+// 否则退回配置文件/默认值里的 project_version。
+func resolveVersion() string {
+	if Version != "" && Version != "dev" {
+		return Version
+	}
+	return viper.GetString("project_version")
 }

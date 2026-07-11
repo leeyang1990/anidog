@@ -8,6 +8,13 @@
 # 镜像由 GitHub Actions 在 push tag 时自动构建发布（amd64 + arm64）。
 # 本地开发请改用 docker-compose.dev.yml（源码挂载 + 热重载，不走镜像）。
 
+# backend 与 qBittorrent 必须看到完全相同的下载路径。
+# 宿主机目录只通过 DOWNLOAD_ROOT 配置一次，避免两个服务的挂载漂移。
+x-download-mount: &download-mount
+  type: bind
+  source: ${DOWNLOAD_ROOT:-./downloads}
+  target: /downloads
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -41,7 +48,7 @@ services:
       WEBUI_PORT: 8080
     volumes:
       - qbittorrent_config:/config
-      - ./downloads:/downloads
+      - *download-mount
     ports:
       - "8080:8080"      # qBit Web UI
       - "6881:6881"      # BT 连接
@@ -75,7 +82,7 @@ services:
       TMDB_LANGUAGE: ${TMDB_LANGUAGE:-zh-CN}
       TMDB_BASE_URL: ${TMDB_BASE_URL:-https://api.themoviedb.org/3}
     volumes:
-      - ./downloads:/downloads
+      - *download-mount
     networks:
       - anidog-network
     healthcheck:

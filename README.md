@@ -99,6 +99,9 @@ git clone https://github.com/leeyang1990/anidog.git && cd anidog
 cp .env.example .env
 $EDITOR .env        # 填 SECRET_KEY / POSTGRES_PASSWORD / DOWNLOADER_PASSWORD
 
+# 可选：将 backend 与 qBittorrent 的共享下载目录指向 NAS
+# DOWNLOAD_ROOT=/mnt/remotes/TRUENAS_nas/anidog
+
 # 3. 启动（默认读 docker-compose.yml，全部拉镜像）
 docker compose up -d
 

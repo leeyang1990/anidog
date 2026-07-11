@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/anidog/anidog-go/internal/config"
+	"github.com/anidog/anidog-go/internal/downloader/providers/mock"
 	authsvc "github.com/anidog/anidog-go/internal/service/auth"
 	dlservice "github.com/anidog/anidog-go/internal/service/download"
-	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/testutil"
 	"github.com/anidog/anidog-go/internal/ws"
 )
@@ -25,6 +27,7 @@ func setupDownloadHandler() (*DownloadHandler, string) {
 	cfg := testutil.TestConfig()
 	hub := ws.NewHub()
 	dlSvc := dlservice.NewService(db, cfg, hub)
+	dlSvc.RegisterExecutor("torrent", dlservice.NewTorrentExecutor(&mock.MockDownloader{}))
 	return NewDownloadHandler(dlSvc), token
 }
 
@@ -64,6 +67,7 @@ func TestDownload_CreateAndGet(t *testing.T) {
 	var created map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&created)
 	id := uint(created["id"].(float64))
+	time.Sleep(20 * time.Millisecond)
 
 	w = testutil.MakeRequest(router, http.MethodGet, "/api/v1/downloads/"+uintToStr(id), nil, token)
 	if w.Code != http.StatusOK {
@@ -86,6 +90,9 @@ func TestDownload_Delete(t *testing.T) {
 	var created map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&created)
 	id := uint(created["id"].(float64))
+	// Create 在 goroutine 中完成 mock torrent；等待状态写回，避免 SQLite 的表级锁
+	// 与紧随其后的 DELETE 竞争。生产 PostgreSQL 不受此限制。
+	time.Sleep(20 * time.Millisecond)
 
 	w = testutil.MakeRequest(router, http.MethodDelete, "/api/v1/downloads/"+uintToStr(id), nil, token)
 	if w.Code != http.StatusOK {
@@ -107,6 +114,7 @@ func TestDownload_Refresh(t *testing.T) {
 	var created map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&created)
 	id := uint(created["id"].(float64))
+	time.Sleep(20 * time.Millisecond)
 
 	w = testutil.MakeRequest(router, http.MethodPut, "/api/v1/downloads/"+uintToStr(id)+"/refresh", nil, token)
 	if w.Code != http.StatusOK {

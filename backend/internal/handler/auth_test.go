@@ -84,9 +84,10 @@ func TestLogin_WrongPassword(t *testing.T) {
 }
 
 func TestLogin_DisabledUser(t *testing.T) {
-	h, _ := setupAuthHandler()
-	// Use raw SQL because GORM ignores IsActive=false (bool zero value → uses DB default true)
 	db := testutil.InitTestDB()
+	svc := authsvc.New(db, "test-secret", 60*1e9)
+	h := NewAuthHandler(svc)
+	// Use raw SQL because GORM ignores IsActive=false (bool zero value → uses DB default true)
 	hash, _ := bcrypt.GenerateFromPassword([]byte("pass123"), bcrypt.DefaultCost)
 	db.Exec("INSERT INTO user (username, email, password_hash, is_admin, is_active) VALUES (?, ?, ?, ?, ?)",
 		"disabled", "d@test.com", string(hash), false, false)

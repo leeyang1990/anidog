@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,10 +18,15 @@ import (
 	"github.com/anidog/anidog-go/internal/model"
 )
 
+var testDBSeq atomic.Uint64
+
 // InitTestDB creates an in-memory SQLite database with all migrations.
 // Each call creates a unique database to avoid cross-test contamination.
 func InitTestDB() *gorm.DB {
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	// file::memory:?cache=shared 会让整个测试进程的所有调用共享同一数据库，
+	// 并发包测试时会互相清表。每次调用使用独立命名的内存库。
+	dsn := fmt.Sprintf("file:anidog-test-%d?mode=memory&cache=shared", testDBSeq.Add(1))
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
@@ -36,6 +43,7 @@ func InitTestDB() *gorm.DB {
 		&model.Download{},
 		&model.NotificationChannel{},
 		&model.StreamRule{},
+		&model.Setting{},
 	)
 
 	// Clean all tables for a fresh start
@@ -46,6 +54,7 @@ func InitTestDB() *gorm.DB {
 	db.Exec("DELETE FROM rssfeed")
 	db.Exec("DELETE FROM notificationchannel")
 	db.Exec("DELETE FROM streamrule")
+	db.Exec("DELETE FROM setting")
 	db.Exec("DELETE FROM anime")
 	db.Exec("DELETE FROM user")
 
@@ -55,24 +64,24 @@ func InitTestDB() *gorm.DB {
 // TestConfig returns a config suitable for tests.
 func TestConfig() *config.Config {
 	return &config.Config{
-		ProjectName:              "测试追番",
-		ProjectVersion:           "0.0.1-test",
-		SecretKey:                "test-secret-key",
-		AccessTokenExpireMinutes: 60,
+		ProjectName:               "测试追番",
+		ProjectVersion:            "0.0.1-test",
+		SecretKey:                 "test-secret-key",
+		AccessTokenExpireMinutes:  60,
 		AccessTokenExpireDuration: 60 * time.Minute,
-		DownloaderType:           "qbittorrent",
-		DownloaderHost:           "http://localhost:8080",
-		DownloaderUsername:       "admin",
-		DownloaderPassword:       "adminadmin",
-		RSSCheckInterval:         30,
-		LogLevel:                 "WARN",
-		EnableNotifications:      true,
-		EnableScheduler:          false,
-		BangumiAPIURL:            "https://api.bgm.tv",
-		FFMPEGPath:               "ffmpeg",
-		StreamMaxConcurrent:      1,
-		RodHeadless:              true,
-		StreamInterceptTimeout:   10,
+		DownloaderType:            "qbittorrent",
+		DownloaderHost:            "http://localhost:8080",
+		DownloaderUsername:        "admin",
+		DownloaderPassword:        "adminadmin",
+		RSSCheckInterval:          30,
+		LogLevel:                  "WARN",
+		EnableNotifications:       true,
+		EnableScheduler:           false,
+		BangumiAPIURL:             "https://api.bgm.tv",
+		FFMPEGPath:                "ffmpeg",
+		StreamMaxConcurrent:       1,
+		RodHeadless:               true,
+		StreamInterceptTimeout:    10,
 	}
 }
 

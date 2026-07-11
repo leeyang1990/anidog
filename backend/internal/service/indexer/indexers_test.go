@@ -159,8 +159,9 @@ func TestBangumiMoeIndexer_Search(t *testing.T) {
 	if !strings.Contains(c.Title, "葬送的芙莉莲") {
 		t.Errorf("Title: %q", c.Title)
 	}
-	if c.Seeders != 5 || c.Leechers != 2 {
-		t.Errorf("Seeders/Leechers: %d/%d", c.Seeders, c.Leechers)
+	// BangumiMoe 搜索接口的活跃数不可信，生产代码故意交给 tracker scrape 探活。
+	if c.Seeders != 0 || c.Leechers != 0 || c.SeedersReported {
+		t.Errorf("expected unknown swarm health, got seeders=%d leechers=%d reported=%v", c.Seeders, c.Leechers, c.SeedersReported)
 	}
 	if c.InfoHash != "53EEE0CDFD694F4DF7EF0549779394C1B4E95CEF" {
 		t.Errorf("InfoHash: %q", c.InfoHash)

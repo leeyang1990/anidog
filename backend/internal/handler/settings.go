@@ -56,7 +56,6 @@ func (h *SettingsHandler) GetSettings(c *gin.Context) {
 		"rss_check_interval":       cfg.RSSCheckInterval,
 		"enable_notifications":     cfg.EnableNotifications,
 		"log_level":                cfg.LogLevel,
-		"cors_hosts":               cfg.CORSHosts,
 		"rename_method":            cfg.RenameMethod,
 		"rename_interval":          cfg.RenameInterval,
 		"language":                 cfg.Language,

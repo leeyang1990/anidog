@@ -47,9 +47,6 @@ type Config struct {
 	// 日志
 	LogLevel string
 
-	// CORS
-	CORSHosts []string
-
 	// 重命名
 	RenameMethod   string
 	RenameInterval int
@@ -103,7 +100,6 @@ func Load() *Config {
 	viper.SetDefault("downloader_password", "adminadmin")
 	viper.SetDefault("rss_check_interval", 30)
 	viper.SetDefault("log_level", "INFO")
-	viper.SetDefault("cors_hosts", []string{"http://localhost:3000", "http://localhost:5173"})
 	viper.SetDefault("tmdb_language", "zh-CN")
 	viper.SetDefault("tmdb_base_url", "https://api.themoviedb.org/3")
 	viper.SetDefault("rename_method", "pn")
@@ -142,7 +138,6 @@ func Load() *Config {
 		DownloaderPassword:        viper.GetString("downloader_password"),
 		RSSCheckInterval:         viper.GetInt("rss_check_interval"),
 		LogLevel:                 viper.GetString("log_level"),
-		CORSHosts:               viper.GetStringSlice("cors_hosts"),
 		RenameMethod:             viper.GetString("rename_method"),
 		RenameInterval:            viper.GetInt("rename_interval"),
 		Language:                 viper.GetString("language"),

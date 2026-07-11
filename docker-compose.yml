@@ -70,9 +70,6 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       RSS_CHECK_INTERVAL: ${RSS_CHECK_INTERVAL:-30}
 
-      # 前端从浏览器以 http://<host>:3002 访问，CORS 放行同源即可
-      CORS_HOSTS: ${CORS_HOSTS:-http://localhost:3002}
-
       ENABLE_NOTIFICATIONS: "${ENABLE_NOTIFICATIONS:-false}"
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_LANGUAGE: ${TMDB_LANGUAGE:-zh-CN}

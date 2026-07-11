@@ -183,7 +183,7 @@ func main() {
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(middleware.Logger())
-	router.Use(middleware.CORS(cfg))
+	router.Use(middleware.CORS())
 	router.Use(middleware.AuthMiddleware(cfg))
 
 	// 9. 注册路由

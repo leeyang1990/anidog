@@ -1,9 +1,3 @@
-cors_hosts:
-  - "http://localhost:3002"
-  - "http://localhost:3033"
-  - "http://localhost:3000"
-  - "http://localhost:5173"
-
 access_token_expire_minutes: 1440
 
 # 下载器（开发环境连 docker 内的 qBittorrent）

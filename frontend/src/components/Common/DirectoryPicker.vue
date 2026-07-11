@@ -13,13 +13,10 @@
 
     <!-- 下拉目录列表 -->
     <div v-if="open" class="absolute z-50 left-0 right-0 mt-2 rounded-2xl border-2 border-ac-sand bg-card shadow-lg overflow-hidden" style="max-height: 320px">
-      <!-- 顶栏：当前浏览路径 + 选中此目录 -->
+      <!-- 顶栏：当前浏览路径 -->
       <div class="flex items-center gap-2 px-3 py-2 border-b-2 border-dashed border-ac-sand bg-ac-sand/30 text-xs">
         <span class="text-muted-foreground font-bold">浏览:</span>
         <span class="font-num flex-1 truncate text-foreground">/{{ currentPath || '' }}</span>
-        <button type="button"
-          class="px-2.5 py-1 rounded-full bg-ac-grass text-white text-xs font-bold hover:bg-ac-grass-dark transition-colors"
-          @click.stop="confirmSelect">选中</button>
       </div>
 
       <div class="overflow-y-auto" style="max-height: 260px">
@@ -102,14 +99,11 @@ async function fetchDir(path) {
   }
 }
 
-function enter(d) { fetchDir(d.path) }
-function goUp() { fetchDir(parentPath.value) }
-
-function confirmSelect() {
-  const selected = currentPath.value ? `${ROOT_PATH}/${currentPath.value}` : ROOT_PATH
-  emit('update:modelValue', selected)
-  open.value = false
+function enter(d) {
+  emit('update:modelValue', `${ROOT_PATH}/${d.path}`)
+  fetchDir(d.path)
 }
+function goUp() { fetchDir(parentPath.value) }
 
 function onClickOutside(e) {
   if (containerRef.value && !containerRef.value.contains(e.target)) {

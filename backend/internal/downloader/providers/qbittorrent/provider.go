@@ -1,7 +1,6 @@
 package qbittorrent
 
 import (
-	
 	"context"
 	"encoding/json"
 	"fmt"
@@ -71,11 +70,12 @@ func (q *QBittorrent) login() error {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("登录失败 status=%d: %s", resp.StatusCode, string(body))
 	}
-	// qBit 登录成功返回 "Ok."，失败返回 "Fails."
-	if !strings.Contains(string(body), "Ok") {
+	// 不同 qBittorrent 版本会返回 200 + "Ok." 或 204 空响应。
+	// 只要是 2xx 且正文没有明确 Fails 就视为成功。
+	if strings.Contains(string(body), "Fails") {
 		return fmt.Errorf("登录失败: %s（检查 username/password）", string(body))
 	}
 

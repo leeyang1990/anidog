@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anidog/anidog-go/internal/model"
 )
 
 type mockJob struct {
@@ -108,4 +110,22 @@ func (m *mockRSSRefresher) RefreshAll(ctx context.Context) {
 func TestRSSRefreshJob_NilEngine(t *testing.T) {
 	job := NewRSSRefreshJob(nil, nil)
 	job.Run(context.Background()) // should not panic
+}
+
+func TestSelectRetryBatchDoesNotConsumeTruncatedRows(t *testing.T) {
+	a1, a2, a3 := uint(1), uint(2), uint(3)
+	rows := []model.Download{
+		{ID: 11, AnimeID: &a1},
+		{ID: 12, AnimeID: &a1},
+		{ID: 21, AnimeID: &a2},
+		{ID: 31, AnimeID: &a3},
+	}
+
+	animeIDs, rowIDs := selectRetryBatch(rows, 2)
+	if len(animeIDs) != 2 || animeIDs[0] != 1 || animeIDs[1] != 2 {
+		t.Fatalf("unexpected anime batch: %v", animeIDs)
+	}
+	if len(rowIDs) != 3 || rowIDs[0] != 11 || rowIDs[1] != 12 || rowIDs[2] != 21 {
+		t.Fatalf("truncated anime rows must remain untouched, got %v", rowIDs)
+	}
 }

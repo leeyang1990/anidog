@@ -35,11 +35,11 @@ type Task struct {
 	Source string
 
 	// Optional relations
-	AnimeID       *uint
-	EpisodeNumber *int
-	StreamRuleID  *uint
-	StreamDetailURL string  // 详情页 URL（同一 anime 不同候选区分用）
-	StreamRoadName string  // 清单名（Plex/Emby 不需要但我们用来区分完成状态）
+	AnimeID         *uint
+	EpisodeNumber   *int
+	StreamRuleID    *uint
+	StreamDetailURL string // 详情页 URL（同一 anime 不同候选区分用）
+	StreamRoadName  string // 清单名（Plex/Emby 不需要但我们用来区分完成状态）
 
 	// Stream-specific: the rule needed by the stream executor.
 	// Set only when DownloadType == "stream".
@@ -47,6 +47,10 @@ type Task struct {
 
 	// Stream-specific: anime name for file naming.
 	AnimeName string
+
+	// RetryCount 是同一番剧/集数失败链已经消耗的重试次数。
+	// Orchestrator 换源创建新记录时必须继承它。
+	RetryCount int
 }
 
 // Validate checks that the Task has all required fields.

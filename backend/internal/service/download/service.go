@@ -41,6 +41,12 @@ func (s *Service) RegisterExecutor(downloadType string, exec Executor) {
 	s.executors[downloadType] = exec
 }
 
+// HasExecutor 返回某种下载类型当前是否具备可执行后端。
+func (s *Service) HasExecutor(downloadType string) bool {
+	_, ok := s.executors[downloadType]
+	return ok
+}
+
 // SetNotificationService 注入通知服务。
 // 这是唯一的通知收口：所有下载完成事件（不管是 BT/Stream/Manual 哪条路径触发）
 // 都从 updateStatus → notifyCompletion 走，避免在多处事件源各自接钩子导致漏发或重发。
@@ -68,6 +74,7 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 		AnimeID:       task.AnimeID,
 		EpisodeNumber: task.EpisodeNumber,
 		Source:        task.Source,
+		RetryCount:    task.RetryCount,
 	}
 	if task.StreamRoadName != "" {
 		rn := task.StreamRoadName
@@ -184,8 +191,18 @@ func (s *Service) Remove(dlID uint, removeFiles bool) error {
 func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	exec, ok := s.executors[task.DownloadType]
 	if !ok {
-		s.updateStatus(dlID, model.DownloadStatusFailed, nil)
-		zap.L().Error("无对应下载执行器", zap.String("type", task.DownloadType))
+		err := fmt.Errorf("无可用的 %s 下载执行器", task.DownloadType)
+		kind, delay := classifyError(err, task.RetryCount)
+		extra := map[string]interface{}{
+			"failure_kind": kind,
+			"last_error":   err.Error(),
+		}
+		if delay > 0 {
+			nextAt := time.Now().Add(delay)
+			extra["next_retry_at"] = &nextAt
+		}
+		s.updateStatus(dlID, model.DownloadStatusFailed, extra)
+		zap.L().Error("无对应下载执行器", zap.String("type", task.DownloadType), zap.String("failure_kind", kind))
 		return
 	}
 

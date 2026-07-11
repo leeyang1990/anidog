@@ -32,9 +32,9 @@ type Orchestrator struct {
 	dlSvc      *dlservice.Service
 	streamMgr  *stream.StreamManager
 	settingSvc *setting.Service
-	indexers   map[string]indexer.Indexer  // Name() -> instance
-	mikanRSS   *indexer.MikanRSSFetcher    // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
-	mediaRoot  string                      // BT 下载根目录（容器内路径）
+	indexers   map[string]indexer.Indexer // Name() -> instance
+	mikanRSS   *indexer.MikanRSSFetcher   // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
+	mediaRoot  string                     // BT 下载根目录（容器内路径）
 }
 
 // New 构造 Orchestrator。
@@ -227,6 +227,7 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 
 // tryDownloadEpisode 按优先级尝试每个源下载指定集，成功（入队）即返回 true。
 func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anime, ep int, pref Preference) bool {
+	retryCount := o.retryCountForEpisode(ctx, anime.ID, ep)
 	for _, srcType := range pref.Priority {
 		if pref.IsSourceDisabled(srcType) {
 			o.recordDiag(anime.ID, ep, srcType, 0, 0, "源已禁用", "", 0)
@@ -244,9 +245,9 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 
 		switch srcType {
 		case SourceStream:
-			ok, diagResultCount, diagReason = o.tryStream(ctx, anime, ep)
+			ok, diagResultCount, diagReason = o.tryStream(ctx, anime, ep, retryCount)
 		case SourceBT:
-			ok, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore = o.tryBT(ctx, anime, ep, pref)
+			ok, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore = o.tryBT(ctx, anime, ep, pref, retryCount)
 		default:
 			// SourceRSS 已不再作为 orchestrator 的主动源（被动通道由 RSSRefreshJob 处理）。
 			// 其他未知 srcType 也忽略。
@@ -263,7 +264,7 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 
 // ---- Stream 源适配 ----
 
-func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep int) (ok bool, resultCount int, reason string) {
+func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, retryCount int) (ok bool, resultCount int, reason string) {
 	if anime.StreamRuleID == nil || anime.StreamDetailURL == nil {
 		return false, 0, "该番剧未配置流媒体源"
 	}
@@ -279,13 +280,12 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep int
 	if err := o.db.WithContext(ctx).First(&rule, *anime.StreamRuleID).Error; err != nil {
 		return false, 0, fmt.Sprintf("找不到规则 id=%d", *anime.StreamRuleID)
 	}
-	// 规则被健康检查标 broken/degraded 跳过 —— 不要再用一个已知坏/烂的源浪费请求
+	// 单线路规则 broken 时跳过。多线路规则即使整体被标 broken，也要允许线路级
+	// fallback 尝试尚未失败的 road；degraded 仅用于排序/告警，不应直接熔断。
 	if rule.HealthStatus != nil {
-		switch *rule.HealthStatus {
-		case "broken":
+		switch {
+		case *rule.HealthStatus == "broken" && !rule.MultiSources:
 			return false, 0, "stream 规则状态 broken，跳过"
-		case "degraded":
-			return false, 0, "stream 规则状态 degraded，跳过"
 		}
 	}
 
@@ -294,27 +294,15 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep int
 		return false, len(episodes), fmt.Sprintf("获取剧集失败: %v", err)
 	}
 
-	roadName := ""
+	preferredRoad := ""
 	if anime.StreamRoadName != nil {
-		roadName = *anime.StreamRoadName
+		preferredRoad = *anime.StreamRoadName
 	}
-	var filtered []stream.EpisodeInfo
-	if roadName != "" {
-		for _, e := range episodes {
-			if e.RoadName == roadName {
-				filtered = append(filtered, e)
-			}
-		}
+	failedRoads := o.failedStreamRoads(ctx, anime.ID, ep)
+	epInfo, roadName, found := selectStreamEpisode(episodes, ep, preferredRoad, failedRoads, rule.MultiSources)
+	if !found {
+		return false, len(episodes), fmt.Sprintf("所有播放线路均无第 %d 集", ep)
 	}
-	if len(filtered) == 0 {
-		filtered = episodes
-	}
-
-	// 取第 ep 集（索引从 0 开始）
-	if ep-1 >= len(filtered) {
-		return false, len(filtered), fmt.Sprintf("清单只有 %d 集，无第 %d 集", len(filtered), ep)
-	}
-	epInfo := filtered[ep-1]
 
 	// 入队
 	epCopy := ep
@@ -330,18 +318,22 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep int
 		StreamRule:      &rule,
 		StreamDetailURL: *anime.StreamDetailURL,
 		StreamRoadName:  roadName,
+		RetryCount:      retryCount,
 	}
 	if _, err := o.dlSvc.Create(ctx, task); err != nil {
-		return false, len(filtered), "创建下载任务失败: " + err.Error()
+		return false, len(episodes), "创建下载任务失败: " + err.Error()
 	}
-	return true, len(filtered), fmt.Sprintf("已入队: %s", epInfo.Name)
+	return true, len(episodes), fmt.Sprintf("已从线路 %s 入队: %s", roadName, epInfo.Name)
 }
 
 // ---- BT 源适配 ----
 
-func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pref Preference) (
+func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pref Preference, retryCount int) (
 	ok bool, resultCount int, rankedOut int, reason, bestTitle string, bestScore float64,
 ) {
+	if o.dlSvc == nil || !o.dlSvc.HasExecutor(model.DownloadTypeTorrent) {
+		return false, 0, 0, "qBittorrent 当前不可用，跳过 BT 入队", "", 0
+	}
 	// 选启用的 indexer
 	enabled := make([]indexer.Indexer, 0, len(pref.EnabledIndexers))
 	for _, name := range pref.EnabledIndexers {
@@ -365,11 +357,13 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 		return false, resultCount, rankedOut, "所有候选均不符合偏好（集数不匹配/分辨率不符/字幕组不符）", "", 0
 	}
 
-	// 否决曾经失败过的 InfoHash —— 防止把已知没活种的 magnet 反复入队
-	// （Mikan 等不上报 seeders 的源在 RankByPreference 那里无法过滤死种，得在这兜底）
+	// 否决黑名单以及本番已经失败过的 InfoHash。必须在选 top 之前过滤，
+	// 否则第一名失败后会每轮都再次选中第一名，并在后面的去重检查处停止，
+	// 永远轮不到第二候选。
 	rankedFiltered := ranked[:0]
 	for _, c := range ranked {
-		if c.InfoHash != "" && o.hasHistoricalFailure(ctx, c.InfoHash) {
+		if c.InfoHash != "" && (o.hasHistoricalFailure(ctx, c.InfoHash) ||
+			o.hasAnimeInfoHashFailure(ctx, anime.ID, c.InfoHash)) {
 			rankedOut++
 			continue
 		}
@@ -488,6 +482,7 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 		AnimeID:       &anime.ID,
 		EpisodeNumber: &epCopy,
 		SavePath:      dlservice.BuildAnimeSavePath(o.mediaRoot, anime),
+		RetryCount:    retryCount,
 	}
 	if _, err := o.dlSvc.Create(ctx, task); err != nil {
 		return false, resultCount, rankedOut, "创建下载任务失败: " + err.Error(), bestTitle, bestScore
@@ -508,6 +503,78 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 // 若需要诊断 RSS 命中情况，请查 rssentry 表，不要在 tryDownloadEpisode 里再开一档。
 
 // ---- 辅助 ----
+
+// retryCountForEpisode 返回同一番剧/集数失败链已经消耗的最大重试次数。
+// RetryFailedJob 会先递增到期旧记录，再调用 Orchestrator；新任务继承这个值，
+// 因而即使发生 BT/Stream 换源，也不会重新从第 0 次开始计算退避。
+func (o *Orchestrator) retryCountForEpisode(ctx context.Context, animeID uint, ep int) int {
+	var retryCount int
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND status = ?", animeID, ep, model.DownloadStatusFailed).
+		Select("COALESCE(MAX(retry_count), 0)").
+		Scan(&retryCount)
+	return retryCount
+}
+
+// failedStreamRoads 返回该集已经失败过的线路。换源时优先选择从未失败的线路，
+// 所有线路都失败过时再回到首选线路，交给全局退避上限收敛。
+func (o *Orchestrator) failedStreamRoads(ctx context.Context, animeID uint, ep int) map[string]bool {
+	var roads []string
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND download_type = ? AND status = ?",
+			animeID, ep, model.DownloadTypeStream, model.DownloadStatusFailed).
+		Where("stream_road_name IS NOT NULL AND stream_road_name <> ''").
+		Distinct("stream_road_name").
+		Pluck("stream_road_name", &roads)
+	out := make(map[string]bool, len(roads))
+	for _, road := range roads {
+		out[road] = true
+	}
+	return out
+}
+
+// selectStreamEpisode 按线路组织扁平剧集列表，并选择指定集。
+// 顺序：未失败的首选线路 → 未失败的其他线路 → 已失败线路。
+func selectStreamEpisode(episodes []stream.EpisodeInfo, ep int, preferred string, failed map[string]bool, multi bool) (stream.EpisodeInfo, string, bool) {
+	if ep <= 0 {
+		return stream.EpisodeInfo{}, "", false
+	}
+	byRoad := make(map[string][]stream.EpisodeInfo)
+	order := make([]string, 0)
+	for _, item := range episodes {
+		road := item.RoadName
+		if _, exists := byRoad[road]; !exists {
+			order = append(order, road)
+		}
+		byRoad[road] = append(byRoad[road], item)
+	}
+	if preferred != "" {
+		for i, road := range order {
+			if road == preferred {
+				reordered := []string{road}
+				reordered = append(reordered, order[:i]...)
+				reordered = append(reordered, order[i+1:]...)
+				order = reordered
+				break
+			}
+		}
+	}
+	if !multi && len(order) > 1 {
+		order = order[:1]
+	}
+	candidates := append([]string{}, order...)
+	for _, allowFailed := range []bool{false, true} {
+		for _, road := range candidates {
+			if failed[road] != allowFailed || len(byRoad[road]) < ep {
+				continue
+			}
+			return byRoad[road][ep-1], road, true
+		}
+	}
+	return stream.EpisodeInfo{}, "", false
+}
 
 // downloadedEpisodes 查询某 anime 的已完成/进行中集数（跨所有 source_type）
 func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map[int]bool {
@@ -553,19 +620,25 @@ func (o *Orchestrator) episodeAirDates(ctx context.Context, animeID uint) map[in
 
 // isDuplicate 判断 (anime_id, ep, source_type) 是否应该跳过本轮入队。
 // 跳过条件：
-//   1. 已存在 downloading/completed/pending 记录（同集同源）
-//   2. 累计 failed 次数 ≥ 3 —— 该源对该集多次失败，永久跳过
-//   3. 最近 6 小时内有 failed 记录 —— 短期冷却
+//  1. 已存在 downloading/completed/pending 记录（同集同源）
+//  2. 累计 failed 次数 ≥ 3 —— 该源对该集多次失败，永久跳过
+//  3. 最近 6 小时内有 failed 记录 —— 短期冷却
 //
 // transient 例外（见 download.classifyError）：
-//   只有 permanent 失败才计入条件 2/3。failure_kind='transient' 的失败由
-//   RetryFailedJob 按退避节奏负责重投，orchestrator 不参与节流 —— 否则
-//   transient 失败也被 6h 冷却锁住会跟自动重试打架。
+//
+//	只有 permanent 失败才计入条件 2/3。failure_kind='transient' 的失败由
+//	RetryFailedJob 按退避节奏负责重投，orchestrator 不参与节流 —— 否则
+//	transient 失败也被 6h 冷却锁住会跟自动重试打架。
 func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, sourceType string) bool {
+	sources := []string{sourceType}
+	if sourceType == SourceStream {
+		// 历史 AutoDownloader 用 bangumi 表示触发来源；本质仍是 stream。
+		sources = append(sources, dlservice.SourceBangumi)
+	}
 	var count int64
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND source = ?", animeID, ep, sourceType).
+		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
 		Where("status IN ?", []string{
 			model.DownloadStatusDownloading,
 			model.DownloadStatusCompleted,
@@ -575,11 +648,22 @@ func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, so
 	if count > 0 {
 		return true
 	}
+	// 尚未到退避时间的 transient 失败必须阻止常规 30min 扫描提前重投。
+	var coolingTransient int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
+		Where("status = ? AND failure_kind = ?", model.DownloadStatusFailed, model.FailureKindTransient).
+		Where("next_retry_at IS NOT NULL AND next_retry_at > ?", time.Now()).
+		Count(&coolingTransient)
+	if coolingTransient > 0 {
+		return true
+	}
 	// 累计 permanent 失败 ≥ 3 次：永久放弃该源
 	var totalPermFailed int64
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND source = ?", animeID, ep, sourceType).
+		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
 		Where("status = ?", model.DownloadStatusFailed).
 		Where("failure_kind = ? OR failure_kind = ''", model.FailureKindPermanent).
 		Count(&totalPermFailed)
@@ -590,7 +674,7 @@ func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, so
 	var recentPermFailed int64
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND source = ?", animeID, ep, sourceType).
+		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
 		Where("status = ?", model.DownloadStatusFailed).
 		Where("failure_kind = ? OR failure_kind = ''", model.FailureKindPermanent).
 		Where("created_at > ?", time.Now().Add(-6*time.Hour)).
@@ -630,6 +714,22 @@ func (o *Orchestrator) hasHistoricalFailure(ctx context.Context, infoHash string
 		Count(&count)
 	return count > 0
 }
+
+// hasAnimeInfoHashFailure 判断该番是否已经尝试并失败过某个种子。
+// 与全局 abandoned_torrent 不同，它只影响当前番，避免解析误关联污染其他番剧。
+func (o *Orchestrator) hasAnimeInfoHashFailure(ctx context.Context, animeID uint, infoHash string) bool {
+	if infoHash == "" {
+		return false
+	}
+	var count int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND info_hash = ? AND status = ?",
+			animeID, strings.ToUpper(infoHash), model.DownloadStatusFailed).
+		Count(&count)
+	return count > 0
+}
+
 // 用于批量包（Fin 合集）场景：同一个 magnet 不应为每一集都重复入队。
 func (o *Orchestrator) isDuplicateURL(ctx context.Context, animeID uint, url string) bool {
 	if url == "" {

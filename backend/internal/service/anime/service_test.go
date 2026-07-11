@@ -55,7 +55,7 @@ func TestList_FilterByStatus(t *testing.T) {
 	svc.Create(context.Background(), &model.Anime{Title: "Ongoing", Status: model.AnimeStatusOngoing})
 	svc.Create(context.Background(), &model.Anime{Title: "Finished", Status: model.AnimeStatusFinished})
 
-	animes, total, _ := svc.List(context.Background(), model.AnimeStatusOngoing, 1, 10)
+	animes, total, _ := svc.List(context.Background(), model.AnimeStatusOngoing, false, 1, 10)
 	if total != 1 {
 		t.Errorf("total = %d; want 1", total)
 	}

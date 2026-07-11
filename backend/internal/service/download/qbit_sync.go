@@ -104,13 +104,24 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			if (dl.Status == model.DownloadStatusDownloading ||
 				dl.Status == model.DownloadStatusPending) &&
 				time.Since(dl.CreatedAt) > time.Minute {
+				orphanErr := fmt.Errorf("qBittorrent 中不存在对应任务，可能已被删除或下载器状态丢失")
+				kind, delay := classifyError(orphanErr, dl.RetryCount)
+				updates := map[string]interface{}{
+					"status":         model.DownloadStatusFailed,
+					"download_speed": 0,
+					"eta":            nil,
+					"failure_kind":   kind,
+					"last_error":     orphanErr.Error(),
+				}
+				if delay > 0 {
+					nextAt := time.Now().Add(delay)
+					updates["next_retry_at"] = &nextAt
+				} else {
+					updates["next_retry_at"] = nil
+				}
 				if err := s.db.Model(&model.Download{}).
 					Where("id = ?", dl.ID).
-					Updates(map[string]interface{}{
-						"status":         model.DownloadStatusFailed,
-						"download_speed": 0,
-						"eta":            nil,
-					}).Error; err != nil {
+					Updates(updates).Error; err != nil {
 					zap.L().Warn("标记孤儿下载为 failed 失败",
 						zap.Uint("id", dl.ID), zap.Error(err))
 					continue

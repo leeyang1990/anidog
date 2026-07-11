@@ -4,18 +4,19 @@
 // 重新交给 Orchestrator 跑一遍 CheckAnime，让多源补救机制再有一次机会。
 //
 // 触发条件（全部满足）：
-//   1. status = 'failed'
-//   2. failure_kind = 'transient' （permanent 不重试）
-//   3. retry_count < 3
-//   4. next_retry_at IS NOT NULL AND next_retry_at <= now（到点）
-//   5. 有关联 anime_id + episode_number（手动下载未绑番的不重试）
+//  1. status = 'failed'
+//  2. failure_kind = 'transient' （permanent 不重试）
+//  3. retry_count < 3
+//  4. next_retry_at IS NOT NULL AND next_retry_at <= now（到点）
+//  5. 有关联 anime_id + episode_number（手动下载未绑番的不重试）
 //
 // 重试动作（按 anime_id 聚合，多集失败只触发一次 orchestrator）：
-//   a. 把所有到点行 retry_count++、next_retry_at=NULL —— 防止下一轮 5min 后重复触发
-//   b. 调用 RetryConductor.CheckAnime(anime) —— 让 orchestrator 对所有缺失集
-//      重新挑源。CheckAnime 自己已经避开了正在 downloading/completed/pending
-//      的集，所以幂等。失败行的 status 仍是 'failed'，isDuplicate 因为
-//      failure_kind='transient' 不会把它当作"6h 冷却中"，于是新一轮可以正常排
+//
+//	a. 把所有到点行 retry_count++、next_retry_at=NULL —— 防止下一轮 5min 后重复触发
+//	b. 调用 RetryConductor.CheckAnime(anime) —— 让 orchestrator 对所有缺失集
+//	   重新挑源。CheckAnime 自己已经避开了正在 downloading/completed/pending
+//	   的集，所以幂等。失败行的 status 仍是 'failed'，isDuplicate 因为
+//	   failure_kind='transient' 不会把它当作"6h 冷却中"，于是新一轮可以正常排
 //
 // 这个 Job 与 orchestrator 主轮询（30min）是叠加关系：
 //   - 主轮询：扫所有番剧、关心新的一集播出
@@ -89,25 +90,7 @@ func (j *RetryFailedJob) Run(ctx context.Context) {
 	}
 
 	// 第二步：按 anime_id 去重 + 限流 —— 同一个 anime 多集失败只重排一次
-	animeIDSet := make(map[uint]struct{}, len(rows))
-	rowIDs := make([]uint, 0, len(rows))
-	for _, r := range rows {
-		if r.AnimeID != nil {
-			animeIDSet[*r.AnimeID] = struct{}{}
-		}
-		rowIDs = append(rowIDs, r.ID)
-	}
-	animeIDs := make([]uint, 0, len(animeIDSet))
-	for id := range animeIDSet {
-		animeIDs = append(animeIDs, id)
-	}
-	sort.Slice(animeIDs, func(i, k int) bool { return animeIDs[i] < animeIDs[k] })
-	if len(animeIDs) > j.maxPerRound {
-		zap.L().Warn("retry_failed: 单轮触发上限，截断",
-			zap.Int("total", len(animeIDs)),
-			zap.Int("limit", j.maxPerRound))
-		animeIDs = animeIDs[:j.maxPerRound]
-	}
+	animeIDs, rowIDs := selectRetryBatch(rows, j.maxPerRound)
 
 	// 第三步：更新所有行的 retry_count++ 并清掉 next_retry_at
 	//   清空 next_retry_at 是关键 —— 下一轮 RetryFailedJob 不会再选它，
@@ -146,10 +129,40 @@ func (j *RetryFailedJob) Run(ctx context.Context) {
 	}
 }
 
+func selectRetryBatch(rows []model.Download, maxAnime int) ([]uint, []uint) {
+	animeIDSet := make(map[uint]struct{}, len(rows))
+	for _, r := range rows {
+		if r.AnimeID != nil {
+			animeIDSet[*r.AnimeID] = struct{}{}
+		}
+	}
+	animeIDs := make([]uint, 0, len(animeIDSet))
+	for id := range animeIDSet {
+		animeIDs = append(animeIDs, id)
+	}
+	sort.Slice(animeIDs, func(i, k int) bool { return animeIDs[i] < animeIDs[k] })
+	if maxAnime > 0 && len(animeIDs) > maxAnime {
+		animeIDs = animeIDs[:maxAnime]
+	}
+	selected := make(map[uint]struct{}, len(animeIDs))
+	for _, id := range animeIDs {
+		selected[id] = struct{}{}
+	}
+	rowIDs := make([]uint, 0, len(rows))
+	for _, r := range rows {
+		if r.AnimeID != nil {
+			if _, ok := selected[*r.AnimeID]; ok {
+				rowIDs = append(rowIDs, r.ID)
+			}
+		}
+	}
+	return animeIDs, rowIDs
+}
+
 // AbandonedTorrentTTLJob 清理过期的死种黑名单 —— 给 mikan 上同 hash 的新副本
 // 一次复活机会。默认 14 天。
 //
-// 仅清 Kind='transient' / Kind='' 的；Kind='permanent' 保留（虽然目前没人写）。
+// 仅清 Kind='transient' / Kind=” 的；Kind='permanent' 保留（虽然目前没人写）。
 type AbandonedTorrentTTLJob struct {
 	db  *gorm.DB
 	ttl time.Duration

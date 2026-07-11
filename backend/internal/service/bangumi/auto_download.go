@@ -230,17 +230,18 @@ func (a *AutoDownloader) queueEpisodes(ctx context.Context, anime *model.Anime, 
 		epName := fmt.Sprintf("%s - %s", anime.Title, ep.Name)
 		epNumCopy := epNum
 		task := &dlservice.Task{
-			Name:            epName,
-			URL:             ep.URL,
-			DownloadType:    model.DownloadTypeStream,
-			Source:          dlservice.SourceBangumi,
+			Name:         epName,
+			URL:          ep.URL,
+			DownloadType: model.DownloadTypeStream,
+			// Source 表示实际下载源，而不是触发入口；统一为 stream 才能正确去重和换源。
+			Source:          dlservice.SourceStream,
 			AnimeName:       anime.Title,
 			AnimeID:         &anime.ID,
 			StreamRuleID:    &rule.ID,
 			StreamDetailURL: detailURL,
 			StreamRoadName:  roadName,
-			StreamRule:    rule,
-			EpisodeNumber: &epNumCopy,
+			StreamRule:      rule,
+			EpisodeNumber:   &epNumCopy,
 		}
 
 		if _, err := a.dlSvc.Create(ctx, task); err != nil {

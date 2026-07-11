@@ -2,7 +2,7 @@ name: Create GitHub Release
 
 # 与 docker-release.yml 同样只在 push tag 时触发。
 # 生成一个 GitHub Release，附带：
-#   - docker-compose.release.yml（指向 Docker Hub 镜像，开箱即用）
+#   - docker-compose.yml（指向 Docker Hub 镜像，开箱即用）
 #   - .env.example（需要用户填的密码/密钥）
 # 让用户拿到 tag 就能 docker compose up。
 on:
@@ -40,7 +40,7 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release
-          cp docker-compose.release.yml release/ 2>/dev/null || true
+          cp docker-compose.yml release/ 2>/dev/null || true
           cp .env.example release/ 2>/dev/null || true
           ls -la release/
 
@@ -59,15 +59,14 @@ jobs:
             - `${{ secrets.DOCKERHUB_USERNAME }}/anidog-frontend:${{ env.TAG }}`
 
             ### 快速部署
-            1. 下载本 Release 附带的 `docker-compose.release.yml` 与 `.env.example`
-            2. `cp .env.example .env`，填好 `SECRET_KEY` / `POSTGRES_PASSWORD` / `DOWNLOADER_PASSWORD` 等
-            3. 设置镜像归属与版本：`export DOCKERHUB_USERNAME=<你的用户名> TAG=${{ env.TAG }}`
-            4. `docker compose -f docker-compose.release.yml up -d`
-            5. 访问 `http://<host>:3002`
+            1. 下载本 Release 附带的 `docker-compose.yml` 与 `.env.example`
+            2. `cp .env.example .env`，填好 `DOCKERHUB_USERNAME` / `SECRET_KEY` / `POSTGRES_PASSWORD` / `DOWNLOADER_PASSWORD` 等；如需指定版本，设 `TAG=${{ env.TAG }}`（缺省 latest）
+            3. `docker compose up -d`
+            4. 访问 `http://<host>:3002`
 
             > 镜像由 push tag 自动构建发布。`:latest` 始终指向最新 tag。
           files: |
-            release/docker-compose.release.yml
+            release/docker-compose.yml
             release/.env.example
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

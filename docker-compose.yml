@@ -1,10 +1,12 @@
-version: '3.8'
-
-# 生产部署前请先创建 .env 文件覆盖默认密码：
-#   SECRET_KEY=<32字节随机字符串>
-#   POSTGRES_PASSWORD=<强密码>
-#   DOWNLOADER_PASSWORD=<qBit 密码>
-# docker compose 会自动读取 .env
+# AniDog 生产部署 —— 全部服务走 Docker Hub 镜像，开箱即用。
+#
+# 使用：
+#   1. cp .env.example .env  并填好密码/密钥/DOCKERHUB_USERNAME
+#   2. docker compose up -d
+#   3. 浏览器访问 http://<host>:3002
+#
+# 镜像由 GitHub Actions 在 push tag 时自动构建发布（amd64 + arm64）。
+# 本地开发请改用 docker-compose.dev.yml（源码挂载 + 热重载，不走镜像）。
 
 services:
   postgres:
@@ -27,28 +29,28 @@ services:
       - anidog-network
 
   qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:latest
+    # Docker Hub 源（等价于 lscr.io/linuxserver/qbittorrent，但可走镜像加速器，
+    # 避免 lscr.io 在部分网络下 TLS/拉取失败）
+    image: linuxserver/qbittorrent:latest
     container_name: anidog-qbittorrent
     restart: unless-stopped
     environment:
-      PUID: 1000
-      PGID: 1000
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
       TZ: ${TZ:-Asia/Shanghai}
       WEBUI_PORT: 8080
     volumes:
       - qbittorrent_config:/config
       - ./downloads:/downloads
     ports:
-      - "8080:8080"      # Web UI
+      - "8080:8080"      # qBit Web UI
       - "6881:6881"      # BT 连接
       - "6881:6881/udp"  # DHT
     networks:
       - anidog-network
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${DOCKERHUB_USERNAME:?需要在 .env 设置 DOCKERHUB_USERNAME}/anidog-backend:${TAG:-latest}
     container_name: anidog-backend
     restart: unless-stopped
     depends_on:
@@ -68,17 +70,15 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       RSS_CHECK_INTERVAL: ${RSS_CHECK_INTERVAL:-30}
 
+      # 前端从浏览器以 http://<host>:3002 访问，CORS 放行同源即可
       CORS_HOSTS: ${CORS_HOSTS:-http://localhost:3002}
 
       ENABLE_NOTIFICATIONS: "${ENABLE_NOTIFICATIONS:-false}"
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_LANGUAGE: ${TMDB_LANGUAGE:-zh-CN}
       TMDB_BASE_URL: ${TMDB_BASE_URL:-https://api.themoviedb.org/3}
-
     volumes:
       - ./downloads:/downloads
-    ports:
-      - "8088:8088"
     networks:
       - anidog-network
     healthcheck:
@@ -87,6 +87,17 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  frontend:
+    image: ${DOCKERHUB_USERNAME:?需要在 .env 设置 DOCKERHUB_USERNAME}/anidog-frontend:${TAG:-latest}
+    container_name: anidog-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3002}:80"   # nginx 反代 /api 与 /ws 到 backend:8088
+    networks:
+      - anidog-network
 
 volumes:
   postgres_data:

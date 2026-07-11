@@ -18,7 +18,8 @@ services:
 
   # qBittorrent 下载器服务（开发环境）
   qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:latest
+    # Docker Hub 源（等价 lscr.io/linuxserver/qbittorrent，可走镜像加速器）
+    image: linuxserver/qbittorrent:latest
     container_name: anidog-qbittorrent-dev
     restart: unless-stopped
     environment:

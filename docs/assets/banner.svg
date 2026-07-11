@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 240" width="720" height="240" role="img" aria-label="AniDog">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EAF6FF"/>
+      <stop offset="1" stop-color="#F7F4E9"/>
+    </linearGradient>
+    <linearGradient id="grass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9CCC65"/>
+      <stop offset="1" stop-color="#7CB342"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5D4037"/>
+      <stop offset="1" stop-color="#4E342E"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#5D4037" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <!-- 圆角背景卡 -->
+  <rect x="4" y="4" width="712" height="232" rx="36" fill="url(#sky)" stroke="#E8DCC4" stroke-width="3"/>
+
+  <!-- 草地弧线 -->
+  <path d="M4 176 Q180 150 360 168 Q540 186 716 160 L716 200 Q716 236 680 236 L40 236 Q4 236 4 200 Z" fill="url(#grass)" opacity="0.9"/>
+  <!-- 草丛点缀 -->
+  <g fill="#8BC34A" opacity="0.55">
+    <circle cx="120" cy="176" r="3"/><circle cx="250" cy="182" r="2.4"/>
+    <circle cx="470" cy="180" r="3"/><circle cx="600" cy="172" r="2.4"/>
+  </g>
+  <!-- 太阳 -->
+  <circle cx="640" cy="52" r="22" fill="#FFB74D" opacity="0.85"/>
+
+  <!-- ===== 边牧头像（放进圆形徽章）===== -->
+  <g filter="url(#soft)">
+    <circle cx="118" cy="120" r="80" fill="#FFFDF7" stroke="#7CB342" stroke-width="6"/>
+    <g transform="translate(54,56) scale(1.0)">
+      <!-- 黑色头部 + 半立耳 -->
+      <path d="M20 54 Q8 22 26 14 Q30 8 38 18 L48 40 Q56 36 64 36 Q72 36 80 40 L90 18 Q98 8 102 14 Q120 22 108 54 Q116 72 108 88 Q96 112 64 114 Q32 112 20 88 Q12 72 20 54 Z" fill="#2B2B2B"/>
+      <!-- 白色 blaze -->
+      <path d="M57 36 L55 56 Q44 66 49 86 Q57 102 64 104 Q71 102 79 86 Q84 66 73 56 L71 36 Q64 34 57 36 Z" fill="#ffffff"/>
+      <!-- 眼 -->
+      <ellipse cx="36" cy="62" rx="4.2" ry="4.8" fill="#ffffff"/><circle cx="36.5" cy="63" r="2.2" fill="#2B2B2B"/>
+      <ellipse cx="92" cy="62" rx="4.2" ry="4.8" fill="#ffffff"/><circle cx="91.5" cy="63" r="2.2" fill="#2B2B2B"/>
+      <!-- 鼻 -->
+      <ellipse cx="64" cy="78" rx="6" ry="4.5" fill="#2B2B2B"/>
+      <!-- 腮红 -->
+      <circle cx="30" cy="80" r="6" fill="#FFB4A2" opacity="0.5"/>
+      <circle cx="98" cy="80" r="6" fill="#FFB4A2" opacity="0.5"/>
+    </g>
+  </g>
+
+  <!-- ===== 文字 ===== -->
+  <text x="232" y="128" font-family="'Nunito','Segoe UI',sans-serif" font-size="76" font-weight="800" fill="url(#word)" letter-spacing="1">Ani<tspan fill="#7CB342">Dog</tspan></text>
+  <text x="234" y="168" font-family="'Nunito','Segoe UI',sans-serif" font-size="22" font-weight="600" fill="#8D6E63" letter-spacing="2">番剧自动下载管理系统</text>
+</svg>

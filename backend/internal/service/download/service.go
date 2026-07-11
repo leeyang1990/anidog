@@ -58,16 +58,16 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 	savePath := resolveSavePath(s.cfg, task)
 
 	dl := model.Download{
-		TorrentID:      torrentID,
-		Name:           task.Name,
-		URL:            task.URL,
-		SavePath:       savePath,
-		Status:         model.DownloadStatusPending,
-		DownloadType:   task.DownloadType,
-		StreamRuleID:   task.StreamRuleID,
-		AnimeID:        task.AnimeID,
-		EpisodeNumber:  task.EpisodeNumber,
-		Source:         task.Source,
+		TorrentID:     torrentID,
+		Name:          task.Name,
+		URL:           task.URL,
+		SavePath:      savePath,
+		Status:        model.DownloadStatusPending,
+		DownloadType:  task.DownloadType,
+		StreamRuleID:  task.StreamRuleID,
+		AnimeID:       task.AnimeID,
+		EpisodeNumber: task.EpisodeNumber,
+		Source:        task.Source,
 	}
 	if task.StreamRoadName != "" {
 		rn := task.StreamRoadName
@@ -192,8 +192,9 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	s.updateStatus(dlID, model.DownloadStatusDownloading, nil)
 
 	progressCB := func(progress float64, downloadedBytes, totalBytes int64) {
-		updates := map[string]interface{}{
-			"progress": progress,
+		updates := map[string]interface{}{}
+		if progress >= 0 {
+			updates["progress"] = progress
 		}
 		if downloadedBytes > 0 {
 			updates["downloaded_bytes"] = downloadedBytes
@@ -201,9 +202,11 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		if totalBytes > 0 {
 			updates["total_bytes"] = totalBytes
 		}
-		s.db.Model(&model.Download{}).Where("id = ?", dlID).Updates(updates)
+		if len(updates) > 0 {
+			s.db.Model(&model.Download{}).Where("id = ?", dlID).Updates(updates)
+		}
 
-		if s.hub != nil {
+		if s.hub != nil && progress >= 0 {
 			var animeID uint
 			if task.AnimeID != nil {
 				animeID = *task.AnimeID
@@ -319,9 +322,9 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 
 	// 重置状态与进度
 	s.db.WithContext(ctx).Model(&dl).Updates(map[string]interface{}{
-		"status":            model.DownloadStatusPending,
-		"progress":          0,
-		"downloaded_bytes":  nil,
+		"status":           model.DownloadStatusPending,
+		"progress":         0,
+		"downloaded_bytes": nil,
 	})
 	dl.Status = model.DownloadStatusPending
 

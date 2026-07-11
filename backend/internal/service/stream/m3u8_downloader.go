@@ -209,7 +209,9 @@ func (d *M3U8Downloader) parseFFmpegProgress(line string, totalDuration float64)
 	// 尝试 size 格式
 	if matches := sizeRe.FindStringSubmatch(line); len(matches) > 1 {
 		if bytes, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
-			return 0, bytes, true
+			// size/total_size 行只包含字节数，不包含可计算的播放进度。
+			// 使用负值表示“不要覆盖当前进度”，避免每次字节更新都把进度重置为 0。
+			return -1, bytes, true
 		}
 	}
 

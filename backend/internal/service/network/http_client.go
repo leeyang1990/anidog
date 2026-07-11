@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/anidog/anidog-go/internal/config"
@@ -16,20 +15,14 @@ type HTTPClient struct {
 	cfg    *config.Config
 }
 
-func NewHTTPClient(cfg *config.Config) *HTTPClient {
-	transport := &http.Transport{}
-	if cfg.HTTPProxy != "" {
-		if proxyURL, err := url.Parse(cfg.HTTPProxy); err == nil {
-			transport.Proxy = http.ProxyURL(proxyURL)
-		}
+func NewHTTPClient(cfg *config.Config, providers ...*ProxyProvider) *HTTPClient {
+	proxy := NewProxyProvider(cfg.HTTPProxy)
+	if len(providers) > 0 && providers[0] != nil {
+		proxy = providers[0]
 	}
-
 	return &HTTPClient{
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-		},
-		cfg: cfg,
+		client: NewClient(proxy, 30*time.Second),
+		cfg:    cfg,
 	}
 }
 

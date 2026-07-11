@@ -2,6 +2,7 @@ package setting
 
 import (
 	"context"
+	"sync"
 
 	"gorm.io/gorm"
 
@@ -10,12 +11,30 @@ import (
 )
 
 type Service struct {
-	cfg *config.Config
-	db  *gorm.DB
+	cfg       *config.Config
+	db        *gorm.DB
+	mu        sync.RWMutex
+	callbacks map[string][]func(string)
 }
 
 func NewService(cfg *config.Config, db *gorm.DB) *Service {
-	return &Service{cfg: cfg, db: db}
+	return &Service{cfg: cfg, db: db, callbacks: make(map[string][]func(string))}
+}
+
+// OnChange registers an in-process update hook for a persisted setting.
+func (s *Service) OnChange(key string, callback func(string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callbacks[key] = append(s.callbacks[key], callback)
+}
+
+func (s *Service) notify(key, value string) {
+	s.mu.RLock()
+	callbacks := append([]func(string){}, s.callbacks[key]...)
+	s.mu.RUnlock()
+	for _, callback := range callbacks {
+		callback(value)
+	}
 }
 
 func (s *Service) Config() *config.Config {
@@ -50,17 +69,27 @@ func (s *Service) Get(ctx context.Context, key string) (string, bool, error) {
 
 // Set 设置或更新一个 key 的 value
 func (s *Service) Set(ctx context.Context, key, value string) error {
-	return s.db.WithContext(ctx).Save(&model.Setting{Key: key, Value: value}).Error
+	if err := s.db.WithContext(ctx).Save(&model.Setting{Key: key, Value: value}).Error; err != nil {
+		return err
+	}
+	s.notify(key, value)
+	return nil
 }
 
 // SetMulti 批量更新
 func (s *Service) SetMulti(ctx context.Context, pairs map[string]string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for k, v := range pairs {
 			if err := tx.Save(&model.Setting{Key: k, Value: v}).Error; err != nil {
 				return err
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	for key, value := range pairs {
+		s.notify(key, value)
+	}
+	return nil
 }

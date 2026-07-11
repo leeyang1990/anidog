@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/anidog/anidog-go/internal/model"
-	animesvc "github.com/anidog/anidog-go/internal/service/anime"
 	"github.com/anidog/anidog-go/internal/service"
+	animesvc "github.com/anidog/anidog-go/internal/service/anime"
 )
 
 type CalendarHandler struct {
@@ -24,11 +24,12 @@ func NewCalendarHandler(animeSvc *animesvc.Service, bangumiSvc *service.BangumiS
 
 func (h *CalendarHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	calendar := rg.Group("/calendar")
-	calendar.GET("", h.GetCalendar) // 公开访问，无需认证
+	calendar.GET("", h.GetCalendar)              // 公开访问，无需认证
 	calendar.POST("/refresh", h.RefreshCalendar) // 刷新需要认证
 }
 
 func (h *CalendarHandler) RefreshCalendar(c *gin.Context) {
+	h.bangumiSvc.ClearCache()
 	c.JSON(http.StatusOK, gin.H{"detail": "日历刷新已触发"})
 }
 

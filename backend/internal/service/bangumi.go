@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/network"
 )
 
 // BangumiAnime is an alias for model.BangumiAnime.
@@ -29,8 +29,8 @@ type BangumiService struct {
 	cfg           *config.Config
 	client        *http.Client
 	cache         sync.Map
-	defaultRules   map[string]*config.XpathRule // 默认规则缓存
-	rulesInitOnce  sync.Once
+	defaultRules  map[string]*config.XpathRule // 默认规则缓存
+	rulesInitOnce sync.Once
 }
 
 var weekdayCN = map[int]string{
@@ -43,20 +43,14 @@ type cacheEntry struct {
 	ExpiresAt time.Time
 }
 
-func NewBangumiService(cfg *config.Config) *BangumiService {
-	transport := &http.Transport{}
-	if cfg.HTTPProxy != "" {
-		if proxyURL, err := url.Parse(cfg.HTTPProxy); err == nil {
-			transport.Proxy = http.ProxyURL(proxyURL)
-		}
+func NewBangumiService(cfg *config.Config, clients ...*http.Client) *BangumiService {
+	client := network.NewClient(network.NewProxyProvider(cfg.HTTPProxy), 30*time.Second)
+	if len(clients) > 0 && clients[0] != nil {
+		client = clients[0]
 	}
-
 	svc := &BangumiService{
-		cfg:    cfg,
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-		},
+		cfg:          cfg,
+		client:       client,
 		defaultRules: make(map[string]*config.XpathRule),
 	}
 
@@ -106,6 +100,13 @@ func (s *BangumiService) setCache(key string, data interface{}, ttl time.Duratio
 	s.cache.Store(key, &cacheEntry{Data: data, ExpiresAt: time.Now().Add(ttl)})
 }
 
+func (s *BangumiService) ClearCache() {
+	s.cache.Range(func(key, _ interface{}) bool {
+		s.cache.Delete(key)
+		return true
+	})
+}
+
 func (s *BangumiService) doRequest(ctx context.Context, method, path string, body io.Reader) ([]byte, error) {
 	reqURL := strings.TrimRight(s.cfg.BangumiAPIURL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, method, reqURL, body)
@@ -151,11 +152,11 @@ func (s *BangumiService) SearchAnime(ctx context.Context, keyword string) ([]Ban
 
 	var result struct {
 		Data []struct {
-			ID         int     `json:"id"`
-			Name       string  `json:"name"`
-			NameCN     string  `json:"name_cn"`
-			Summary    string  `json:"summary"`
-			Images     struct {
+			ID      int    `json:"id"`
+			Name    string `json:"name"`
+			NameCN  string `json:"name_cn"`
+			Summary string `json:"summary"`
+			Images  struct {
 				Common string `json:"common"`
 				Medium string `json:"medium"`
 			} `json:"images"`
@@ -656,7 +657,6 @@ func (s *BangumiService) GetEpisodes(ctx context.Context, bangumiID int) ([]Bang
 	return resp.Data, nil
 }
 
-
 func (s *BangumiService) GetCalendar(ctx context.Context) ([]BangumiCalendarDay, error) {
 	cacheKey := "calendar"
 	if cached, ok := s.getCached(cacheKey); ok {
@@ -674,11 +674,11 @@ func (s *BangumiService) GetCalendar(ctx context.Context) ([]BangumiCalendarDay,
 			ID int `json:"id"`
 		} `json:"weekday"`
 		Items []struct {
-			ID         int     `json:"id"`
-			Name       string  `json:"name"`
-			NameCN     string  `json:"name_cn"`
-			Summary    string  `json:"summary"`
-			Images     struct {
+			ID      int    `json:"id"`
+			Name    string `json:"name"`
+			NameCN  string `json:"name_cn"`
+			Summary string `json:"summary"`
+			Images  struct {
 				Common string `json:"common"`
 			} `json:"images"`
 			Rating struct {
@@ -1040,7 +1040,6 @@ func (s *BangumiService) GetCalendarWithDefaultRules(ctx context.Context) ([]Ban
 		}
 	}
 
-	s.setCache(cacheKey, calendar, 24*time.Hour)
 	zap.L().Info("默认规则日历数据已生成",
 		zap.Int("天数", len(calendar)),
 		zap.Int("总番剧数", len(hotKeywords)))
@@ -1048,6 +1047,7 @@ func (s *BangumiService) GetCalendarWithDefaultRules(ctx context.Context) ([]Ban
 	if len(calendar) == 0 {
 		return nil, fmt.Errorf("无法从默认规则获取日历数据")
 	}
+	s.setCache(cacheKey, calendar, 24*time.Hour)
 
 	return calendar, nil
 }

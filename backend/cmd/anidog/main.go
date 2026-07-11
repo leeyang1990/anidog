@@ -20,8 +20,8 @@ import (
 	"github.com/anidog/anidog-go/internal/handler"
 
 	// 导入下载器 provider 以触发注册
-	_ "github.com/anidog/anidog-go/internal/downloader/providers/qbittorrent"
 	_ "github.com/anidog/anidog-go/internal/downloader/providers/mock"
+	_ "github.com/anidog/anidog-go/internal/downloader/providers/qbittorrent"
 	"github.com/anidog/anidog-go/internal/middleware"
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service"
@@ -31,8 +31,8 @@ import (
 	dashboardsvc "github.com/anidog/anidog-go/internal/service/dashboard"
 	dlservice "github.com/anidog/anidog-go/internal/service/download"
 	"github.com/anidog/anidog-go/internal/service/episode"
-	notifsvc "github.com/anidog/anidog-go/internal/service/notification"
 	"github.com/anidog/anidog-go/internal/service/network"
+	notifsvc "github.com/anidog/anidog-go/internal/service/notification"
 	"github.com/anidog/anidog-go/internal/service/orchestrator"
 	rssservice "github.com/anidog/anidog-go/internal/service/rss"
 	"github.com/anidog/anidog-go/internal/service/scheduler"
@@ -62,8 +62,9 @@ func main() {
 	go wsHub.Run()
 
 	// 5. 构建服务
-	httpClient := network.NewHTTPClient(cfg)
-	bangumiSvc := service.NewBangumiService(cfg)
+	proxyProvider := network.NewProxyProvider(cfg.HTTPProxy)
+	httpClient := network.NewHTTPClient(cfg, proxyProvider)
+	bangumiSvc := service.NewBangumiService(cfg, httpClient.Client())
 	streamManager := stream.NewStreamManager(cfg, httpClient, db)
 
 	// 5a. 认证与用户服务
@@ -95,6 +96,11 @@ func main() {
 	notifSvc := notifsvc.NewService(db)
 	streamRuleSvc := streamrulesvc.NewService(db, streamManager)
 	settingSvc := settingsvc.NewService(cfg, db)
+	settingSvc.OnChange("http_proxy", func(value string) {
+		proxyProvider.Set(value)
+		bangumiSvc.ClearCache()
+		zap.L().Info("HTTP 代理已动态更新", zap.String("proxy", value))
+	})
 
 	// 把通知服务注入下载服务：所有下载完成事件（BT/Stream/手动）走 updateStatus 时
 	// 都会触发一次通知。这个调用得放在 dlSvc 创建之后，看上面 5b 阶段。

@@ -65,13 +65,20 @@ const currentPath = ref('')
 const parentPath = ref('')
 const directories = ref([])
 const loading = ref(false)
+const ROOT_PATH = '/downloads'
 
 const displayPath = computed(() => props.modelValue || '/')
+
+function toRelativePath(path) {
+  if (!path || path === '/' || path === ROOT_PATH) return ''
+  if (path.startsWith(ROOT_PATH + '/')) return path.slice(ROOT_PATH.length + 1)
+  return path.replace(/^\/+/, '')
+}
 
 function toggle() {
   open.value = !open.value
   if (open.value) {
-    const start = (props.modelValue || '').replace(/^\//, '')
+    const start = toRelativePath(props.modelValue)
     fetchDir(start)
   }
 }
@@ -99,7 +106,8 @@ function enter(d) { fetchDir(d.path) }
 function goUp() { fetchDir(parentPath.value) }
 
 function confirmSelect() {
-  emit('update:modelValue', '/' + (currentPath.value || ''))
+  const selected = currentPath.value ? `${ROOT_PATH}/${currentPath.value}` : ROOT_PATH
+  emit('update:modelValue', selected)
   open.value = false
 }
 

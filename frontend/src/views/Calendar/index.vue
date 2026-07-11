@@ -20,7 +20,7 @@
           :class="activeDay === day.weekday
             ? 'bg-ac-grass text-white border-ac-grass-dark shadow-sm'
             : 'bg-card border-ac-sand text-muted-foreground hover:border-ac-grass'"
-          @click="activeDay = day.weekday">
+          @click="selectDay(day.weekday)">
           <span>{{ day.weekdayName }}</span>
           <span v-if="day.isToday" class="text-[10px] mt-0.5 px-1.5 rounded-full bg-ac-sun text-ac-night">今天</span>
           <span class="text-xs mt-1 opacity-70 font-num">{{ day.items.length }}部</span>
@@ -44,7 +44,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { get, post } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
 import { RefreshOutline } from '@vicons/ionicons5'
@@ -52,6 +52,7 @@ import { AcPageHeader, AcButton, AcSpinner, AcEmpty } from '@/components/ac'
 import AnimeCard from '../Anime/AnimeCard.vue'
 
 const router = useRouter()
+const route = useRoute()
 const toast = useToast()
 
 const loading = ref(false)
@@ -60,9 +61,15 @@ const calendarData = ref([])
 
 const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 const today = new Date().getDay()
-const activeDay = ref(today)
+const routeDay = Number(route.query.day)
+const activeDay = ref(Number.isInteger(routeDay) && routeDay >= 0 && routeDay <= 6 ? routeDay : today)
 
 const currentDay = computed(() => calendarData.value.find(d => d.weekday === activeDay.value))
+
+function selectDay(day) {
+  activeDay.value = day
+  router.replace({ query: { ...route.query, day: String(day) } })
+}
 
 async function fetchCalendar() {
   loading.value = true

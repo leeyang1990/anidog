@@ -3,6 +3,9 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -265,9 +268,6 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 // ---- Stream 源适配 ----
 
 func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, retryCount int) (ok bool, resultCount int, reason string) {
-	if anime.StreamRuleID == nil || anime.StreamDetailURL == nil {
-		return false, 0, "该番剧未配置流媒体源"
-	}
 	if o.streamMgr == nil {
 		return false, 0, "stream manager 未就绪"
 	}
@@ -276,27 +276,17 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, re
 		return false, 0, "该集已有 stream 记录或在失败冷却期内，跳过"
 	}
 
-	var rule model.StreamRule
-	if err := o.db.WithContext(ctx).First(&rule, *anime.StreamRuleID).Error; err != nil {
-		return false, 0, fmt.Sprintf("找不到规则 id=%d", *anime.StreamRuleID)
-	}
-	// 单线路规则 broken 时跳过。多线路规则即使整体被标 broken，也要允许线路级
-	// fallback 尝试尚未失败的 road；degraded 仅用于排序/告警，不应直接熔断。
-	if rule.HealthStatus != nil {
-		switch {
-		case *rule.HealthStatus == "broken" && !rule.MultiSources:
-			return false, 0, "stream 规则状态 broken，跳过"
-		}
-	}
-
-	episodes, err := o.streamMgr.GetEpisodes(ctx, &rule, *anime.StreamDetailURL)
-	if err != nil || len(episodes) == 0 {
-		return false, len(episodes), fmt.Sprintf("获取剧集失败: %v", err)
+	rule, detailURL, episodes, switched, err := o.resolveStreamSource(ctx, anime, ep)
+	if err != nil {
+		return false, 0, err.Error()
 	}
 
 	preferredRoad := ""
 	if anime.StreamRoadName != nil {
 		preferredRoad = *anime.StreamRoadName
+	}
+	if switched {
+		preferredRoad = ""
 	}
 	failedRoads := o.failedStreamRoads(ctx, anime.ID, ep)
 	epInfo, roadName, found := selectStreamEpisode(episodes, ep, preferredRoad, failedRoads, rule.MultiSources)
@@ -315,8 +305,8 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, re
 		AnimeID:         &anime.ID,
 		EpisodeNumber:   &epCopy,
 		StreamRuleID:    &rule.ID,
-		StreamRule:      &rule,
-		StreamDetailURL: *anime.StreamDetailURL,
+		StreamRule:      rule,
+		StreamDetailURL: detailURL,
 		StreamRoadName:  roadName,
 		RetryCount:      retryCount,
 	}
@@ -324,6 +314,88 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, re
 		return false, len(episodes), "创建下载任务失败: " + err.Error()
 	}
 	return true, len(episodes), fmt.Sprintf("已从线路 %s 入队: %s", roadName, epInfo.Name)
+}
+
+// resolveStreamSource 优先使用当前健康源；当前规则 broken、页面解析失败或缺少目标集时，
+// 自动在其他启用且未熔断的规则中重新搜索，并将成功候选持久化为番剧的新源。
+func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Anime, ep int) (*model.StreamRule, string, []stream.EpisodeInfo, bool, error) {
+	if anime.StreamRuleID != nil && anime.StreamDetailURL != nil && *anime.StreamDetailURL != "" {
+		var current model.StreamRule
+		if err := o.db.WithContext(ctx).First(&current, *anime.StreamRuleID).Error; err == nil && !isRuleBroken(&current) {
+			episodes, parseErr := o.streamMgr.GetEpisodes(ctx, &current, *anime.StreamDetailURL)
+			if parseErr == nil && hasEpisode(episodes, ep) {
+				return &current, *anime.StreamDetailURL, episodes, false, nil
+			}
+		}
+	}
+
+	var rules []model.StreamRule
+	q := o.db.WithContext(ctx).Where("enabled = ?", true)
+	if anime.StreamRuleID != nil {
+		q = q.Where("id <> ?", *anime.StreamRuleID)
+	}
+	if err := q.Find(&rules).Error; err != nil {
+		return nil, "", nil, false, fmt.Errorf("查询备用 stream 规则失败: %w", err)
+	}
+	sort.SliceStable(rules, func(i, j int) bool { return streamRuleHealthScore(&rules[i]) > streamRuleHealthScore(&rules[j]) })
+	for i := range rules {
+		rule := &rules[i]
+		if isRuleBroken(rule) {
+			continue
+		}
+		searchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		results, searchErr := o.streamMgr.SearchAnime(searchCtx, rule, anime.Title)
+		cancel()
+		if searchErr != nil || len(results) == 0 {
+			continue
+		}
+		best := stream.PickBestMatch(anime.Title, results)
+		if best == nil {
+			continue
+		}
+		parseCtx, parseCancel := context.WithTimeout(ctx, 30*time.Second)
+		episodes, parseErr := o.streamMgr.GetEpisodes(parseCtx, rule, best.URL)
+		parseCancel()
+		if parseErr != nil || !hasEpisode(episodes, ep) {
+			continue
+		}
+		road := firstRoadWithEpisode(episodes, ep)
+		updates := map[string]interface{}{
+			"stream_rule_id": rule.ID, "stream_rule_name": rule.Name,
+			"stream_detail_url": best.URL, "stream_road_name": road,
+			"source_health_status": "", "source_health_note": "", "source_health_at": nil,
+		}
+		if err := o.db.WithContext(ctx).Model(anime).Updates(updates).Error; err != nil {
+			continue
+		}
+		anime.StreamRuleID, anime.StreamRuleName = &rule.ID, &rule.Name
+		anime.StreamDetailURL, anime.StreamRoadName = &best.URL, &road
+		zap.L().Info("orchestrator: 自动切换 stream 规则", zap.String("anime", anime.Title), zap.String("rule", rule.Name), zap.String("candidate", best.Name))
+		return rule, best.URL, episodes, true, nil
+	}
+	return nil, "", nil, false, fmt.Errorf("当前 stream 规则不可用，所有健康备用规则均未找到第 %d 集", ep)
+}
+
+func isRuleBroken(rule *model.StreamRule) bool {
+	if rule.HealthStatus == nil || *rule.HealthStatus != "broken" {
+		return false
+	}
+	// broken 规则冷却 1 小时后进入 half-open，由一次真实任务探测是否恢复。
+	return rule.HealthAt == nil || time.Since(*rule.HealthAt) < time.Hour
+}
+
+func streamRuleHealthScore(rule *model.StreamRule) int {
+	if rule.HealthStatus == nil || *rule.HealthStatus == "" {
+		return 2
+	}
+	switch *rule.HealthStatus {
+	case "healthy":
+		return 3
+	case "degraded":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // ---- BT 源适配 ----
@@ -567,13 +639,64 @@ func selectStreamEpisode(episodes []stream.EpisodeInfo, ep int, preferred string
 	candidates := append([]string{}, order...)
 	for _, allowFailed := range []bool{false, true} {
 		for _, road := range candidates {
-			if failed[road] != allowFailed || len(byRoad[road]) < ep {
+			if failed[road] != allowFailed {
 				continue
 			}
-			return byRoad[road][ep-1], road, true
+			if item, ok := findEpisode(byRoad[road], ep); ok {
+				return item, road, true
+			}
 		}
 	}
 	return stream.EpisodeInfo{}, "", false
+}
+
+var (
+	episodeNameRe = regexp.MustCompile(`(?i)(?:^|[^0-9])(?:第\s*|EP(?:ISODE)?\s*)?(\d{1,4})(?:\.\d+)?(?:\s*[集话話])?(?:$|[^0-9])`)
+	episodeURLRe  = regexp.MustCompile(`[-_/](\d{1,4})(?:\.html?)?(?:[?#].*)?$`)
+)
+
+func parseEpisodeNumber(item stream.EpisodeInfo) (int, bool) {
+	for _, candidate := range []struct {
+		re *regexp.Regexp
+		s  string
+	}{{episodeNameRe, strings.TrimSpace(item.Name)}, {episodeURLRe, item.URL}} {
+		match := candidate.re.FindStringSubmatch(candidate.s)
+		if len(match) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(match[1])
+		if err == nil && n > 0 {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func findEpisode(items []stream.EpisodeInfo, ep int) (stream.EpisodeInfo, bool) {
+	hasExplicit := false
+	for _, item := range items {
+		if n, ok := parseEpisodeNumber(item); ok {
+			hasExplicit = true
+			if n == ep {
+				return item, true
+			}
+		}
+	}
+	// 只有整条线路完全无法解析集数时才允许按位置兜底，防止倒序列表错集。
+	if !hasExplicit && ep > 0 && ep <= len(items) {
+		return items[ep-1], true
+	}
+	return stream.EpisodeInfo{}, false
+}
+
+func hasEpisode(episodes []stream.EpisodeInfo, ep int) bool {
+	_, _, ok := selectStreamEpisode(episodes, ep, "", nil, true)
+	return ok
+}
+
+func firstRoadWithEpisode(episodes []stream.EpisodeInfo, ep int) string {
+	_, road, _ := selectStreamEpisode(episodes, ep, "", nil, true)
+	return road
 }
 
 // downloadedEpisodes 查询某 anime 的已完成/进行中集数（跨所有 source_type）
@@ -670,14 +793,16 @@ func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, so
 	if totalPermFailed >= 3 {
 		return true
 	}
-	// 最近 6 小时 permanent 失败冷却（transient 不计入）
+	// permanent 配置/IO 错冷却 6 小时；快速预算耗尽的外部源错误 1 小时后
+	// half-open 探测。这样无需人工介入，也不会持续轰击故障站点。
 	var recentPermFailed int64
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
 		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
 		Where("status = ?", model.DownloadStatusFailed).
-		Where("failure_kind = ? OR failure_kind = ''", model.FailureKindPermanent).
-		Where("created_at > ?", time.Now().Add(-6*time.Hour)).
+		Where("((failure_kind = ? OR failure_kind = '') AND updated_at > ?) OR (failure_kind = ? AND updated_at > ?)",
+			model.FailureKindPermanent, time.Now().Add(-6*time.Hour),
+			model.FailureKindExhausted, time.Now().Add(-time.Hour)).
 		Count(&recentPermFailed)
 	return recentPermFailed > 0
 }

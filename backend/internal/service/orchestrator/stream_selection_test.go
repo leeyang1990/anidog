@@ -44,3 +44,15 @@ func TestSelectStreamEpisodeSkipsRoadMissingEpisode(t *testing.T) {
 		t.Fatalf("expected B/b2, got road=%q url=%q ok=%v", road, got.URL, ok)
 	}
 }
+
+func TestSelectStreamEpisodeUsesExplicitNumberForReversedList(t *testing.T) {
+	episodes := []stream.EpisodeInfo{
+		{Name: "2", URL: "https://example/p/6207-1-2.html", RoadName: "A"},
+		{Name: "1", URL: "https://example/p/6207-1-1.html", RoadName: "A"},
+	}
+
+	got, _, ok := selectStreamEpisode(episodes, 1, "A", nil, true)
+	if !ok || got.Name != "1" || got.URL != "https://example/p/6207-1-1.html" {
+		t.Fatalf("expected explicit episode 1, got %+v ok=%v", got, ok)
+	}
+}

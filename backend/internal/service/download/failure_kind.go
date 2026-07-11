@@ -33,7 +33,7 @@ func classifyError(err error, retryCount int) (kind string, nextDelay time.Durat
 	// permanent；这个判断要放在错误 marker 之前，否则已识别的网络错误会
 	// 返回 transient + 0 延迟，形成永远不会再调度、语义却仍可重试的僵尸行。
 	if retryCount >= 3 {
-		return model.FailureKindPermanent, 0
+		return model.FailureKindExhausted, 0
 	}
 	msg := strings.ToLower(err.Error())
 

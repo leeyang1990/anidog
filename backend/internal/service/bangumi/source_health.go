@@ -110,11 +110,20 @@ func (s *SourceHealthService) updateRuleHealth(ctx context.Context) {
 			}
 		}
 
-		s.db.WithContext(ctx).Model(rule).Updates(map[string]interface{}{
+		updates := map[string]interface{}{
 			"health_status": status,
 			"health_note":   note,
-			"health_at":     &now,
-		})
+		}
+		// health_at 表示进入当前状态的时间，而不是最后一次统计时间。
+		// 状态未变化时不能每 3 分钟刷新，否则 broken 熔断永远无法 half-open。
+		oldStatus := ""
+		if rule.HealthStatus != nil {
+			oldStatus = *rule.HealthStatus
+		}
+		if rule.HealthAt == nil || oldStatus != status {
+			updates["health_at"] = &now
+		}
+		s.db.WithContext(ctx).Model(rule).Updates(updates)
 	}
 }
 

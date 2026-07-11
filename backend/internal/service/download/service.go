@@ -252,6 +252,15 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 			extra["next_retry_at"] = nil
 		}
 		s.updateStatus(dlID, model.DownloadStatusFailed, extra)
+		if kind == model.FailureKindExhausted && task.StreamRuleID != nil {
+			now := time.Now()
+			note := "半开探测失败: " + truncateError(err)
+			s.db.Model(&model.StreamRule{}).Where("id = ?", *task.StreamRuleID).Updates(map[string]interface{}{
+				"health_status": "broken",
+				"health_note":   note,
+				"health_at":     &now,
+			})
+		}
 		zap.L().Error("下载失败",
 			zap.String("name", task.Name),
 			zap.String("failure_kind", kind),

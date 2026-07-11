@@ -18,7 +18,7 @@ func TestClassifyErrorBackoffAndFinalAttempt(t *testing.T) {
 		{0, model.FailureKindTransient, 10 * time.Minute},
 		{1, model.FailureKindTransient, time.Hour},
 		{2, model.FailureKindTransient, 6 * time.Hour},
-		{3, model.FailureKindPermanent, 0},
+		{3, model.FailureKindExhausted, 0},
 	}
 	for _, tc := range cases {
 		kind, delay := classifyError(err, tc.retryCount)

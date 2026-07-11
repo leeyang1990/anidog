@@ -60,7 +60,7 @@ jobs:
 
             ### 快速部署
             1. 下载本 Release 附带的 `docker-compose.yml` 与 `.env.example`
-            2. `cp .env.example .env`，填好 `DOCKERHUB_USERNAME` / `SECRET_KEY` / `POSTGRES_PASSWORD` / `DOWNLOADER_PASSWORD` 等；如需指定版本，设 `TAG=${{ env.TAG }}`（缺省 latest）
+            2. `cp .env.example .env`，填好 `SECRET_KEY` / `POSTGRES_PASSWORD` / `DOWNLOADER_PASSWORD` 等；如需指定版本，设 `TAG=${{ env.TAG }}`（缺省 latest）
             3. `docker compose up -d`
             4. 访问 `http://<host>:3002`
 

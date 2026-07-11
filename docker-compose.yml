@@ -1,7 +1,7 @@
 # AniDog 生产部署 —— 全部服务走 Docker Hub 镜像，开箱即用。
 #
 # 使用：
-#   1. cp .env.example .env  并填好密码/密钥/DOCKERHUB_USERNAME
+#   1. cp .env.example .env  并填好密码/密钥
 #   2. docker compose up -d
 #   3. 浏览器访问 http://<host>:3002
 #
@@ -50,7 +50,7 @@ services:
       - anidog-network
 
   backend:
-    image: ${DOCKERHUB_USERNAME:?需要在 .env 设置 DOCKERHUB_USERNAME}/anidog-backend:${TAG:-latest}
+    image: leeyang1990/anidog-backend:${TAG:-latest}
     container_name: anidog-backend
     restart: unless-stopped
     depends_on:
@@ -89,7 +89,7 @@ services:
       start_period: 40s
 
   frontend:
-    image: ${DOCKERHUB_USERNAME:?需要在 .env 设置 DOCKERHUB_USERNAME}/anidog-frontend:${TAG:-latest}
+    image: leeyang1990/anidog-frontend:${TAG:-latest}
     container_name: anidog-frontend
     restart: unless-stopped
     depends_on:

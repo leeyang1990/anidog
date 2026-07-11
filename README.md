@@ -97,7 +97,7 @@ git clone https://github.com/leeyang1990/anidog.git && cd anidog
 
 # 2. 配置密码密钥
 cp .env.example .env
-$EDITOR .env        # 填 DOCKERHUB_USERNAME / SECRET_KEY / POSTGRES_PASSWORD / DOWNLOADER_PASSWORD
+$EDITOR .env        # 填 SECRET_KEY / POSTGRES_PASSWORD / DOWNLOADER_PASSWORD
 
 # 3. 启动（默认读 docker-compose.yml，全部拉镜像）
 docker compose up -d

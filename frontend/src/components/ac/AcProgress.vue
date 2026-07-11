@@ -4,7 +4,7 @@
       <span class="text-xs text-muted-foreground">{{ label }}</span>
       <span class="text-xs font-bold font-num text-foreground">{{ percentText }}</span>
     </div>
-    <div class="relative w-full bg-ac-sand rounded-full overflow-hidden border-2 border-ac-sand-dark" :style="{ height: heightPx }">
+    <div class="relative w-full bg-ac-sand rounded-full overflow-hidden ring-1 ring-inset ring-ac-sand-dark" :style="{ height: heightPx }">
       <div
         class="absolute inset-y-0 left-0 transition-all duration-500 ease-ac rounded-full"
         :class="colorCls"

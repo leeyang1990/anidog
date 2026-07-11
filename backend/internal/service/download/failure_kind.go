@@ -7,10 +7,10 @@
 //   - isDuplicate 用 failure_kind 判断该不该让 transient 失败的集"立刻再来一次"
 //
 // 设计点：
-//   1. 默认是 permanent —— 不认识的错误宁可被人手动救，也不要疯狂重试浪费配额。
-//   2. 流媒体（StreamExecutor + ffmpeg）的几个签名/链路错最常见，单独枚举。
-//   3. BT 死种是另一个分类入口（qbit_sync.abandonDeadTorrent），不走这里 ——
-//      那条路径只发生在我们主动放弃种子时，详见 qbit_sync.go。
+//  1. 默认是 permanent —— 不认识的错误宁可被人手动救，也不要疯狂重试浪费配额。
+//  2. 流媒体（StreamExecutor + ffmpeg）的几个签名/链路错最常见，单独枚举。
+//  3. BT 死种是另一个分类入口（qbit_sync.abandonDeadTorrent），不走这里 ——
+//     那条路径只发生在我们主动放弃种子时，详见 qbit_sync.go。
 package download
 
 import (
@@ -28,6 +28,12 @@ import (
 func classifyError(err error, retryCount int) (kind string, nextDelay time.Duration) {
 	if err == nil {
 		return "", 0
+	}
+	// retryCount 表示已经消耗的重试次数。第 3 次重试仍失败后必须收敛为
+	// permanent；这个判断要放在错误 marker 之前，否则已识别的网络错误会
+	// 返回 transient + 0 延迟，形成永远不会再调度、语义却仍可重试的僵尸行。
+	if retryCount >= 3 {
+		return model.FailureKindPermanent, 0
 	}
 	msg := strings.ToLower(err.Error())
 
@@ -81,18 +87,15 @@ func classifyError(err error, retryCount int) (kind string, nextDelay time.Durat
 	}
 
 	// 其余视为 transient 试一两次 —— 多数 ffmpeg/网络错都属于"暂时性"。
-	// retryCount ≥ 3 时让 isFinalAttempt 接管（参见 backoff），不再继续。
-	if retryCount >= 3 {
-		return model.FailureKindPermanent, 0
-	}
 	return model.FailureKindTransient, backoff(retryCount)
 }
 
 // backoff —— transient 重试的等待时间，按重试次数递增。
-//   第 0 次重试（即首次失败后第一次重试）：10 分钟
-//   第 1 次重试：1 小时
-//   第 2 次重试：6 小时
-//   ≥ 3 次：返回 0，并由 RetryFailedJob 跳过（最多重试 3 次）
+//
+//	第 0 次重试（即首次失败后第一次重试）：10 分钟
+//	第 1 次重试：1 小时
+//	第 2 次重试：6 小时
+//	≥ 3 次：返回 0，并由 RetryFailedJob 跳过（最多重试 3 次）
 //
 // 退避节奏的逻辑：流媒体 m3u8 签名一般 5-15 分钟过期，所以 10min 后再试，
 // 大概率拿到的是新签名的 URL；第二次还失败说明源本身坏了，拉长到 1h；

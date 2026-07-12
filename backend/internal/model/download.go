@@ -7,6 +7,7 @@ const (
 	DownloadStatusCompleted   = "completed"
 	DownloadStatusFailed      = "failed"
 	DownloadStatusPaused      = "paused"
+	DownloadStatusSuperseded  = "superseded"
 )
 
 // 失败种类（FailureKind）—— 用来区分"可重试"与"永久失败"。

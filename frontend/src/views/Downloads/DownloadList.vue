@@ -97,8 +97,8 @@
 
           <div class="flex-1 min-w-0">
             <div class="text-sm truncate font-bold" :title="task.name">{{ task.name }}</div>
-            <div v-if="task.status === 'failed' && task.error_message" class="text-xs text-ac-heart-dark truncate mt-0.5">
-              {{ task.error_message }}
+            <div v-if="task.status === 'failed' && (task.last_error || task.error_message)" class="text-xs text-ac-heart-dark truncate mt-0.5">
+              {{ task.last_error || task.error_message }}
             </div>
             <div v-else-if="task.episode_number" class="text-xs text-muted-foreground mt-0.5">
               第 <span class="font-num">{{ String(task.episode_number).padStart(2,'0') }}</span> 集

@@ -300,6 +300,8 @@ func (s *Service) List(ctx context.Context, status, downloadType string, animeID
 	query := s.db.WithContext(ctx).Model(&model.Download{})
 	if status != "" {
 		query = query.Where("status = ?", status)
+	} else {
+		query = query.Where("status <> ?", model.DownloadStatusSuperseded)
 	}
 	if downloadType != "" {
 		query = query.Where("download_type = ?", downloadType)
@@ -410,6 +412,7 @@ func (s *Service) ResumeAll(ctx context.Context) (int64, error) {
 // 重启前状态为 pending/downloading 的任务，重启后执行 goroutine 已丢失，
 // 这里重新调度执行（stream 类型）。torrent 由下载器自身管理，不处理。
 func (s *Service) RecoverPending(ctx context.Context) {
+	s.resolveHistoricalFailures(ctx)
 	// 启动时做一次性数据迁移：历史 stream 下载的 stream_road_name 为 NULL，
 	// 用 anime 当前的 stream_road_name 回填（通常是"播放列表1"）
 	s.migrateStreamRoadName(ctx)
@@ -517,11 +520,45 @@ func (s *Service) updateStatus(dlID uint, status string, extra map[string]interf
 	// stream 下载完成时，更新 anime 的 current_episode 为最大集数
 	if status == model.DownloadStatusCompleted {
 		s.updateAnimeProgress(dlID)
+		s.resolvePriorFailures(dlID)
 
 		// 首次翻成 completed 才发通知（去重核心：prev.Status != completed）
 		if hadRow && prev.Status != model.DownloadStatusCompleted {
 			s.notifyCompletion(dlID)
 		}
+	}
+}
+
+// resolvePriorFailures 将已被同集后续成功任务解决的失败尝试收口为 superseded。
+// 记录仍保留用于审计，但默认下载列表和自动重试不再把它视为当前故障。
+func (s *Service) resolvePriorFailures(completedID uint) {
+	var completed model.Download
+	if err := s.db.First(&completed, completedID).Error; err != nil || completed.AnimeID == nil || completed.EpisodeNumber == nil {
+		return
+	}
+	s.db.Model(&model.Download{}).
+		Where("id <> ? AND anime_id = ? AND episode_number = ? AND status = ?",
+			completed.ID, *completed.AnimeID, *completed.EpisodeNumber, model.DownloadStatusFailed).
+		Update("status", model.DownloadStatusSuperseded)
+}
+
+func (s *Service) resolveHistoricalFailures(ctx context.Context) {
+	result := s.db.WithContext(ctx).Exec(`
+		UPDATE download AS failed
+		SET status = ?
+		WHERE failed.status = ?
+		  AND failed.anime_id IS NOT NULL
+		  AND failed.episode_number IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM download AS done
+			WHERE done.anime_id = failed.anime_id
+			  AND done.episode_number = failed.episode_number
+			  AND done.status = ?
+		  )`, model.DownloadStatusSuperseded, model.DownloadStatusFailed, model.DownloadStatusCompleted)
+	if result.Error != nil {
+		zap.L().Warn("收口历史失败任务失败", zap.Error(result.Error))
+	} else if result.RowsAffected > 0 {
+		zap.L().Info("历史失败任务已标记为已解决", zap.Int64("rows", result.RowsAffected))
 	}
 }
 

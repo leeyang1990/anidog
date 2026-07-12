@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -31,13 +32,14 @@ const (
 
 // Orchestrator 剧集驱动的多源下载调度器。
 type Orchestrator struct {
-	db         *gorm.DB
-	dlSvc      *dlservice.Service
-	streamMgr  *stream.StreamManager
-	settingSvc *setting.Service
-	indexers   map[string]indexer.Indexer // Name() -> instance
-	mikanRSS   *indexer.MikanRSSFetcher   // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
-	mediaRoot  string                     // BT 下载根目录（容器内路径）
+	db          *gorm.DB
+	dlSvc       *dlservice.Service
+	streamMgr   *stream.StreamManager
+	settingSvc  *setting.Service
+	indexers    map[string]indexer.Indexer // Name() -> instance
+	mikanRSS    *indexer.MikanRSSFetcher   // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
+	mediaRoot   string                     // BT 下载根目录（容器内路径）
+	indexerHTTP *http.Client               // 复用动态代理的 BT/Mikan 客户端
 }
 
 // New 构造 Orchestrator。
@@ -50,27 +52,39 @@ func New(
 	settingSvc *setting.Service,
 	indexers map[string]indexer.Indexer,
 	mediaRoot string,
+	clients ...*http.Client,
 ) *Orchestrator {
+	var indexerHTTP *http.Client
+	if len(clients) > 0 {
+		indexerHTTP = clients[0]
+	}
 	if indexers == nil {
-		indexers = map[string]indexer.Indexer{
-			"mikan":      indexer.NewMikanIndexer(),
-			"dmhy":       indexer.NewDmhyIndexer(),
-			"bangumimoe": indexer.NewBangumiMoeIndexer(),
-			"nyaa":       indexer.NewNyaaIndexer(),
+		mikan := indexer.NewMikanIndexer()
+		dmhy := indexer.NewDmhyIndexer()
+		bangumiMoe := indexer.NewBangumiMoeIndexer()
+		nyaa := indexer.NewNyaaIndexer()
+		if indexerHTTP != nil {
+			mikan.Client, dmhy.Client, bangumiMoe.Client, nyaa.Client = indexerHTTP, indexerHTTP, indexerHTTP, indexerHTTP
 		}
+		indexers = map[string]indexer.Indexer{"mikan": mikan, "dmhy": dmhy, "bangumimoe": bangumiMoe, "nyaa": nyaa}
 	}
 	if mediaRoot == "" {
 		mediaRoot = "/downloads"
 	}
-	return &Orchestrator{
-		db:         db,
-		dlSvc:      dlSvc,
-		streamMgr:  streamMgr,
-		settingSvc: settingSvc,
-		indexers:   indexers,
-		mikanRSS:   indexer.NewMikanRSSFetcher(),
-		mediaRoot:  mediaRoot,
+	o := &Orchestrator{
+		db:          db,
+		dlSvc:       dlSvc,
+		streamMgr:   streamMgr,
+		settingSvc:  settingSvc,
+		indexers:    indexers,
+		mikanRSS:    indexer.NewMikanRSSFetcher(),
+		mediaRoot:   mediaRoot,
+		indexerHTTP: indexerHTTP,
 	}
+	if indexerHTTP != nil {
+		o.mikanRSS.Client = indexerHTTP
+	}
+	return o
 }
 
 // collectBTCandidates 汇总 BT 候选。
@@ -84,6 +98,33 @@ func New(
 //
 // 失败处理：Mikan RSS 拿不到不阻塞，回退到关键词搜索。
 func (o *Orchestrator) collectBTCandidates(ctx context.Context, anime *model.Anime, enabled []indexer.Indexer) []indexer.Candidate {
+	// 旧数据或订阅时直连失败可能没有 mikan_bangumi_id。每次真正缺集时用
+	// 动态代理客户端按多个标题补查一次，命中后持久化，后续直接走高召回 RSS。
+	if (anime.MikanBangumiID == nil || *anime.MikanBangumiID <= 0) && o.indexerHTTP != nil {
+		season := 0
+		if anime.Season != nil {
+			season = *anime.Season
+		}
+		keywords := []string{anime.Title}
+		for _, title := range []*string{anime.OfficialTitle, anime.OriginalTitle} {
+			if title != nil && strings.TrimSpace(*title) != "" && *title != anime.Title {
+				keywords = append(keywords, *title)
+			}
+		}
+		for _, keyword := range keywords {
+			lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			mid, matchedTitle, err := indexer.LookupMikanBangumiID(lookupCtx, keyword, season, o.indexerHTTP)
+			cancel()
+			if err != nil || mid <= 0 {
+				continue
+			}
+			anime.MikanBangumiID = &mid
+			o.db.WithContext(ctx).Model(anime).Update("mikan_bangumi_id", mid)
+			zap.L().Info("orchestrator: 自动绑定 Mikan 番剧", zap.String("anime", anime.Title), zap.Int("mikan_bangumi_id", mid), zap.String("matched_title", matchedTitle))
+			break
+		}
+	}
+
 	var rssCands []indexer.Candidate
 	if anime.MikanBangumiID != nil && *anime.MikanBangumiID > 0 && o.mikanRSS != nil {
 		rssCtx, cancel := context.WithTimeout(ctx, 15*time.Second)

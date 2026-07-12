@@ -23,7 +23,7 @@ import (
 //  2. 否则取第一条（Mikan 默认按相关性排）
 //
 // season 参数（如 1/2/3）用于多季作品消歧；为 0 时不参与匹配。
-func LookupMikanBangumiID(ctx context.Context, keyword string, season int) (int, string, error) {
+func LookupMikanBangumiID(ctx context.Context, keyword string, season int, clients ...*http.Client) (int, string, error) {
 	if strings.TrimSpace(keyword) == "" {
 		return 0, "", nil
 	}
@@ -41,6 +41,9 @@ func LookupMikanBangumiID(ctx context.Context, keyword string, season int) (int,
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; anidog/1.0)")
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	if len(clients) > 0 && clients[0] != nil {
+		client = clients[0]
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, "", fmt.Errorf("mikan search 请求失败: %w", err)

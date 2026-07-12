@@ -114,7 +114,7 @@ func main() {
 	rssEngine.SetMediaRoot(mediaRoot)
 
 	// 5d2. Orchestrator：多源剧集填坑调度器（替代旧的 bangumi.CheckAllSubscribed）
-	orch := orchestrator.New(db, dlSvc, streamManager, settingSvc, nil, mediaRoot)
+	orch := orchestrator.New(db, dlSvc, streamManager, settingSvc, nil, mediaRoot, httpClient.Client())
 
 	// 5d3. Episode 同步：从 Bangumi 拉取每集的播出时间，让前端能区分
 	// "未下载" 和 "待发布"，让 Orchestrator 不去搜未播出的集

@@ -278,7 +278,9 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 	if state == "" {
 		state = MediaStateUninitialized
 	}
-	if state != MediaStateArchived && anime.Status == model.AnimeStatusFinished && latestAired >= expected {
+	// 不依赖可能长期不刷新的 anime.status；当已知总集数中的最终集已经
+	// 明确播出，进入最终核验，完整后归档退出目录管理。
+	if state != MediaStateArchived && expected > 0 && latestAired >= expected {
 		state = MediaStateFinalizing
 	}
 	if state != MediaStateArchived && (state == MediaStateUninitialized || state == MediaStateFinalizing || triggerEpisode > anime.MediaAuditEpisode) {

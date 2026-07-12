@@ -29,14 +29,17 @@ type Anime struct {
 	// SeriesTitle / SeriesYear describe the Emby/Plex series root.  Bangumi
 	// models each sequel as a separate subject, while media servers expect all
 	// seasons below one stable show directory.
-	SeriesTitle    *string   `gorm:"index" json:"series_title"`
-	SeriesYear     *int      `json:"series_year"`
-	CoverURL       *string   `json:"cover_url"`
-	EpisodeCount   *int      `json:"episode_count"`
-	CurrentEpisode *int      `json:"current_episode"`
-	Directory      *string   `json:"directory"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	SeriesTitle    *string `gorm:"index" json:"series_title"`
+	SeriesYear     *int    `json:"series_year"`
+	CoverURL       *string `json:"cover_url"`
+	EpisodeCount   *int    `json:"episode_count"`
+	CurrentEpisode *int    `json:"current_episode"`
+	// MediaAuditEpisode is the latest aired episode whose current-season files
+	// have been reconciled. A higher aired episode triggers one new audit.
+	MediaAuditEpisode int       `gorm:"default:0" json:"media_audit_episode"`
+	Directory         *string   `json:"directory"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 
 	// 解析相关字段
 	OfficialTitle *string `json:"official_title"`

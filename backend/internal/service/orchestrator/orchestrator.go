@@ -243,6 +243,33 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 		}
 		missing = append(missing, ep)
 	}
+
+	// 每当 Bangumi 剧集表出现更高的已播集数，触发一次持久化水位控制的
+	// 当前季文件审计。即使新集已经被 RSS 提前入队，也不会漏掉这次自愈。
+	latestAired := latestAiredEpisode(expected, airDates, now)
+	if latestAired > anime.MediaAuditEpisode {
+		if healed := o.reconcileMissingMedia(ctx, anime); len(healed) > 0 {
+			downloaded = o.downloadedEpisodes(ctx, anime.ID)
+			missing = missing[:0]
+			skippedUnaired = skippedUnaired[:0]
+			for ep := 1; ep <= expected; ep++ {
+				if downloaded[ep] {
+					continue
+				}
+				if ad, has := airDates[ep]; has && !episode.IsAired(ad, now) {
+					skippedUnaired = append(skippedUnaired, ep)
+					continue
+				}
+				missing = append(missing, ep)
+			}
+		}
+		if err := o.db.WithContext(ctx).Model(&model.Anime{}).Where("id = ?", anime.ID).
+			Update("media_audit_episode", latestAired).Error; err != nil {
+			zap.L().Warn("媒体自愈：更新审计水位失败", zap.Uint("anime_id", anime.ID), zap.Error(err))
+		} else {
+			anime.MediaAuditEpisode = latestAired
+		}
+	}
 	if len(missing) == 0 {
 		if len(skippedUnaired) > 0 {
 			zap.L().Debug("orchestrator: 番剧无可下载集（剩余均为待发布）",
@@ -267,6 +294,21 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 				zap.Int("episode", ep))
 		}
 	}
+}
+
+func latestAiredEpisode(expected int, airDates map[int]string, now time.Time) int {
+	latest := 0
+	for ep := 1; ep <= expected; ep++ {
+		airDate, has := airDates[ep]
+		if !has || airDate == "" {
+			continue
+		}
+		if !episode.IsAired(airDate, now) {
+			continue
+		}
+		latest = ep
+	}
+	return latest
 }
 
 // tryDownloadEpisode 按优先级尝试每个源下载指定集，成功（入队）即返回 true。

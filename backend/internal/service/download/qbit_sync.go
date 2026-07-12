@@ -435,8 +435,8 @@ func (s *QBitSyncer) ensureLogin(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "Ok") {
-		return fmt.Errorf("qBit 登录返回 %s", string(body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || strings.Contains(string(body), "Fails") {
+		return fmt.Errorf("qBit 登录失败 status=%d: %s", resp.StatusCode, string(body))
 	}
 	return nil
 }

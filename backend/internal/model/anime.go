@@ -36,10 +36,14 @@ type Anime struct {
 	CurrentEpisode *int    `json:"current_episode"`
 	// MediaAuditEpisode is the latest aired episode whose current-season files
 	// have been reconciled. A higher aired episode triggers one new audit.
-	MediaAuditEpisode int       `gorm:"default:0" json:"media_audit_episode"`
-	Directory         *string   `json:"directory"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	MediaAuditEpisode int `gorm:"default:0" json:"media_audit_episode"`
+	// MediaManagementState: uninitialized / tracking / finalizing / archived.
+	MediaManagementState  string     `gorm:"index;default:'uninitialized'" json:"media_management_state"`
+	MediaMissingSnapshot  string     `gorm:"type:text" json:"-"`
+	MediaMissingCheckedAt *time.Time `json:"-"`
+	Directory             *string    `json:"directory"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 
 	// 解析相关字段
 	OfficialTitle *string `json:"official_title"`

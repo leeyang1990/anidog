@@ -20,7 +20,10 @@ func TestScanEpisodeFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	present, count := scanEpisodeFiles(dir, 3)
+	present, count, err := scanEpisodeFiles(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if count != 3 {
 		t.Fatalf("media file count = %d, want 3", count)
 	}

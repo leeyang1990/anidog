@@ -47,6 +47,10 @@ type Download struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	CompletedAt     *time.Time `json:"completed_at"`
+	// MediaMissing describes current storage state without rewriting the fact
+	// that this download once completed successfully.
+	MediaMissing   bool       `gorm:"index;default:false" json:"media_missing"`
+	MediaMissingAt *time.Time `json:"media_missing_at"`
 
 	AnimeID       *uint `gorm:"index" json:"anime_id"`
 	EpisodeNumber *int  `json:"episode_number"`

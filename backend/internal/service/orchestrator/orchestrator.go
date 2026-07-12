@@ -40,6 +40,7 @@ type Orchestrator struct {
 	mikanRSS    *indexer.MikanRSSFetcher   // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
 	mediaRoot   string                     // BT 下载根目录（容器内路径）
 	indexerHTTP *http.Client               // 复用动态代理的 BT/Mikan 客户端
+	animeLocks  sync.Map                   // anime id -> *sync.Mutex（单实例内防并发审计/入队）
 }
 
 // New 构造 Orchestrator。
@@ -210,6 +211,12 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 	if anime == nil || !anime.IsSubscribed {
 		return
 	}
+	lock := o.animeLock(anime.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	if anime.MediaManagementState == MediaStateArchived {
+		return
+	}
 
 	pref := MergeWithAnime(global, anime)
 
@@ -219,7 +226,23 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 		expected = *anime.EpisodeCount
 	}
 	if expected <= 0 {
+		o.db.WithContext(ctx).Model(&model.AnimeEpisode{}).
+			Where("anime_id = ?", anime.ID).
+			Select("COALESCE(MAX(episode_number), 0)").Scan(&expected)
+	}
+	observedEpisode := 0
+	o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number IS NOT NULL", anime.ID).
+		Select("COALESCE(MAX(episode_number), 0)").Scan(&observedEpisode)
+	if observedEpisode > expected {
+		expected = observedEpisode
+	}
+	if expected <= 0 {
 		zap.L().Debug("orchestrator: 番剧无集数信息，跳过", zap.String("title", anime.Title))
+		return
+	}
+	if err := o.checkMediaRootHealth(ctx, o.currentMediaRoot(ctx)); err != nil {
+		zap.L().Error("媒体存储不健康，禁止本轮审计和下载", zap.Uint("anime_id", anime.ID), zap.Error(err))
 		return
 	}
 
@@ -247,8 +270,23 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 	// 每当 Bangumi 剧集表出现更高的已播集数，触发一次持久化水位控制的
 	// 当前季文件审计。即使新集已经被 RSS 提前入队，也不会漏掉这次自愈。
 	latestAired := latestAiredEpisode(expected, airDates, now)
-	if latestAired > anime.MediaAuditEpisode {
-		if healed := o.reconcileMissingMedia(ctx, anime); len(healed) > 0 {
+	triggerEpisode := latestAired
+	if observedEpisode > triggerEpisode {
+		triggerEpisode = observedEpisode
+	}
+	state := anime.MediaManagementState
+	if state == "" {
+		state = MediaStateUninitialized
+	}
+	if state != MediaStateArchived && anime.Status == model.AnimeStatusFinished && latestAired >= expected {
+		state = MediaStateFinalizing
+	}
+	if state != MediaStateArchived && (state == MediaStateUninitialized || state == MediaStateFinalizing || triggerEpisode > anime.MediaAuditEpisode) {
+		result := o.reconcileMissingMedia(ctx, anime)
+		if !result.Success {
+			return
+		}
+		if result.Success {
 			downloaded = o.downloadedEpisodes(ctx, anime.ID)
 			missing = missing[:0]
 			skippedUnaired = skippedUnaired[:0]
@@ -262,12 +300,7 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 				}
 				missing = append(missing, ep)
 			}
-		}
-		if err := o.db.WithContext(ctx).Model(&model.Anime{}).Where("id = ?", anime.ID).
-			Update("media_audit_episode", latestAired).Error; err != nil {
-			zap.L().Warn("媒体自愈：更新审计水位失败", zap.Uint("anime_id", anime.ID), zap.Error(err))
-		} else {
-			anime.MediaAuditEpisode = latestAired
+			o.persistMediaAuditResult(ctx, anime, state, triggerEpisode, expected, result)
 		}
 	}
 	if len(missing) == 0 {
@@ -294,6 +327,11 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 				zap.Int("episode", ep))
 		}
 	}
+}
+
+func (o *Orchestrator) animeLock(id uint) *sync.Mutex {
+	lock, _ := o.animeLocks.LoadOrStore(id, &sync.Mutex{})
+	return lock.(*sync.Mutex)
 }
 
 func latestAiredEpisode(expected int, airDates map[int]string, now time.Time) int {
@@ -814,6 +852,7 @@ func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map
 	var rows []struct {
 		EpisodeNumber *int
 		Status        string
+		MediaMissing  bool
 	}
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
@@ -823,14 +862,19 @@ func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map
 			model.DownloadStatusDownloading,
 			model.DownloadStatusPending,
 		}).
-		Select("episode_number, status").
+		Select("episode_number, status, media_missing").
 		Scan(&rows)
 
 	out := make(map[int]bool, len(rows))
 	for _, r := range rows {
-		if r.EpisodeNumber != nil {
+		if r.EpisodeNumber != nil && !r.MediaMissing {
 			out[*r.EpisodeNumber] = true
 		}
+	}
+	var diskRows []model.AnimeEpisode
+	o.db.WithContext(ctx).Where("anime_id = ? AND downloaded = ?", animeID, true).Find(&diskRows)
+	for _, row := range diskRows {
+		out[row.EpisodeNumber] = true
 	}
 	return out
 }
@@ -872,11 +916,9 @@ func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, so
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
 		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
-		Where("status IN ?", []string{
-			model.DownloadStatusDownloading,
-			model.DownloadStatusCompleted,
-			model.DownloadStatusPending,
-		}).
+		Where("status IN ? OR (status = ? AND media_missing = ?)", []string{
+			model.DownloadStatusDownloading, model.DownloadStatusPending,
+		}, model.DownloadStatusCompleted, false).
 		Count(&count)
 	if count > 0 {
 		return true

@@ -131,8 +131,16 @@ func (s *Service) Subscribe(ctx context.Context, id uint) (*model.Anime, error) 
 		return nil, err
 	}
 	if !anime.IsSubscribed {
-		s.db.WithContext(ctx).Model(anime).Update("is_subscribed", true)
+		s.db.WithContext(ctx).Model(anime).Updates(map[string]interface{}{
+			"is_subscribed":            true,
+			"media_management_state":   "uninitialized",
+			"media_audit_episode":      0,
+			"media_missing_snapshot":   "",
+			"media_missing_checked_at": nil,
+		})
 		anime.IsSubscribed = true
+		anime.MediaManagementState = "uninitialized"
+		anime.MediaAuditEpisode = 0
 	}
 	// 反查 Mikan bangumiId（用于后续 BT 走 Mikan RSS 而非低召回率的关键词搜索）
 	// 已存在则跳过；查不到也不阻塞订阅。

@@ -32,10 +32,10 @@ func BuildAnimeSavePath(mediaRoot string, anime *model.Anime) string {
 		return mediaRoot
 	}
 
-	title := SanitizeTitle(anime.Title)
+	title := SanitizeTitle(anime.MediaSeriesTitle())
 	dir := title
-	if anime.Year != nil && *anime.Year > 0 {
-		dir = fmt.Sprintf("%s (%d)", title, *anime.Year)
+	if year := anime.MediaSeriesYear(); year > 0 {
+		dir = fmt.Sprintf("%s (%d)", title, year)
 	}
 
 	season := 1

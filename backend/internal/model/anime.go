@@ -1,10 +1,14 @@
 package model
 
-import "time"
+import (
+	"regexp"
+	"strings"
+	"time"
+)
 
 // AnimeStatus 番剧状态枚举
 const (
-	AnimeStatusOngoing = "ongoing"
+	AnimeStatusOngoing  = "ongoing"
 	AnimeStatusFinished = "finished"
 	AnimeStatusUpcoming = "upcoming"
 	AnimeStatusUnknown  = "unknown"
@@ -12,20 +16,25 @@ const (
 
 // Anime 番剧数据库模型
 type Anime struct {
-	ID              uint            `gorm:"primaryKey" json:"id"`
-	Title           string          `gorm:"index;not null" json:"title"`
-	OriginalTitle   *string         `gorm:"index" json:"original_title"`
-	Aliases         *string         `json:"aliases"`
-	Description     *string         `json:"description"`
-	Status          string          `gorm:"index;default:'unknown'" json:"status"`
-	Season          *int            `json:"season"`
-	Year            *int            `json:"year"`
-	CoverURL        *string         `json:"cover_url"`
-	EpisodeCount    *int            `json:"episode_count"`
-	CurrentEpisode  *int            `json:"current_episode"`
-	Directory       *string         `json:"directory"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID            uint    `gorm:"primaryKey" json:"id"`
+	Title         string  `gorm:"index;not null" json:"title"`
+	OriginalTitle *string `gorm:"index" json:"original_title"`
+	Aliases       *string `json:"aliases"`
+	Description   *string `json:"description"`
+	Status        string  `gorm:"index;default:'unknown'" json:"status"`
+	Season        *int    `json:"season"`
+	Year          *int    `json:"year"`
+	// SeriesTitle / SeriesYear describe the Emby/Plex series root.  Bangumi
+	// models each sequel as a separate subject, while media servers expect all
+	// seasons below one stable show directory.
+	SeriesTitle    *string   `gorm:"index" json:"series_title"`
+	SeriesYear     *int      `json:"series_year"`
+	CoverURL       *string   `json:"cover_url"`
+	EpisodeCount   *int      `json:"episode_count"`
+	CurrentEpisode *int      `json:"current_episode"`
+	Directory      *string   `json:"directory"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 
 	// 解析相关字段
 	OfficialTitle *string `json:"official_title"`
@@ -88,6 +97,56 @@ type Anime struct {
 
 func (Anime) TableName() string { return "anime" }
 
+var seasonTitleSuffixes = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\s*[-–—:]?\s*第\s*[0-9一二三四五六七八九十]+\s*[季期]\s*$`),
+	regexp.MustCompile(`(?i)\s*[-–—:]?\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s+season)\s*$`),
+	regexp.MustCompile(`(?i)\s*[-–—:]?\s+s\d+\s*$`),
+}
+
+// NormalizeSeriesTitle removes a trailing season marker without changing the
+// actual anime title. It is deliberately conservative: numbers elsewhere in
+// the title are preserved.
+func NormalizeSeriesTitle(title string) string {
+	title = strings.TrimSpace(title)
+	for _, re := range seasonTitleSuffixes {
+		if normalized := strings.TrimSpace(re.ReplaceAllString(title, "")); normalized != "" && normalized != title {
+			return normalized
+		}
+	}
+	return title
+}
+
+// MediaSeriesTitle is the stable directory name seen by Emby/Plex.
+func (a *Anime) MediaSeriesTitle() string {
+	if a != nil && a.SeriesTitle != nil && strings.TrimSpace(*a.SeriesTitle) != "" {
+		return strings.TrimSpace(*a.SeriesTitle)
+	}
+	if a == nil {
+		return ""
+	}
+	return NormalizeSeriesTitle(a.Title)
+}
+
+// MediaSeriesYear returns the first season's year when it is known. The
+// current sequel's year must not be presented to metadata providers as the
+// series year, so seasons > 1 omit it unless SeriesYear is explicitly stored.
+func (a *Anime) MediaSeriesYear() int {
+	if a == nil {
+		return 0
+	}
+	if a.SeriesYear != nil && *a.SeriesYear > 1900 {
+		return *a.SeriesYear
+	}
+	season := 1
+	if a.Season != nil && *a.Season > 0 {
+		season = *a.Season
+	}
+	if season <= 1 && a.Year != nil && *a.Year > 1900 {
+		return *a.Year
+	}
+	return 0
+}
+
 // AnimeEpisode 番剧集数数据库模型
 type AnimeEpisode struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
@@ -109,31 +168,32 @@ func (AnimeEpisode) TableName() string { return "animeepisode" }
 
 // AnimeCreate 创建番剧请求
 type AnimeCreate struct {
-	Title           string   `json:"title" binding:"required"`
-	OriginalTitle   *string  `json:"original_title"`
-	Aliases         *string  `json:"aliases"`
-	Description     *string  `json:"description"`
-	Status          string   `json:"status"`
-	Season          *int     `json:"season"`
-	Year            *int     `json:"year"`
-	CoverURL        *string  `json:"cover_url"`
-	EpisodeCount    *int     `json:"episode_count"`
-	Directory       *string  `json:"directory"`
-	OfficialTitle   *string  `json:"official_title"`
-	TitleRaw        *string  `json:"title_raw"`
-	SeasonRaw       *string  `json:"season_raw"`
-	GroupName       *string  `json:"group_name"`
-	DPI             *string  `json:"dpi"`
-	Source          *string  `json:"source"`
-	Subtitle        *string  `json:"subtitle"`
-	EpsCollect      bool     `json:"eps_collect"`
-	EpisodeOffset   int      `json:"episode_offset"`
-	SeasonOffset    int      `json:"season_offset"`
-	Filter          *string  `json:"filter"`
-	RSSLink         *string  `json:"rss_link"`
-	AirWeekday      *int     `json:"air_weekday"`
-	BangumiID       *int     `json:"bangumi_id"`
-	BangumiRating   *float64 `json:"bangumi_rating"`
-	IsSubscribed    bool     `json:"is_subscribed"`
+	Title         string   `json:"title" binding:"required"`
+	OriginalTitle *string  `json:"original_title"`
+	Aliases       *string  `json:"aliases"`
+	Description   *string  `json:"description"`
+	Status        string   `json:"status"`
+	Season        *int     `json:"season"`
+	Year          *int     `json:"year"`
+	SeriesTitle   *string  `json:"series_title"`
+	SeriesYear    *int     `json:"series_year"`
+	CoverURL      *string  `json:"cover_url"`
+	EpisodeCount  *int     `json:"episode_count"`
+	Directory     *string  `json:"directory"`
+	OfficialTitle *string  `json:"official_title"`
+	TitleRaw      *string  `json:"title_raw"`
+	SeasonRaw     *string  `json:"season_raw"`
+	GroupName     *string  `json:"group_name"`
+	DPI           *string  `json:"dpi"`
+	Source        *string  `json:"source"`
+	Subtitle      *string  `json:"subtitle"`
+	EpsCollect    bool     `json:"eps_collect"`
+	EpisodeOffset int      `json:"episode_offset"`
+	SeasonOffset  int      `json:"season_offset"`
+	Filter        *string  `json:"filter"`
+	RSSLink       *string  `json:"rss_link"`
+	AirWeekday    *int     `json:"air_weekday"`
+	BangumiID     *int     `json:"bangumi_id"`
+	BangumiRating *float64 `json:"bangumi_rating"`
+	IsSubscribed  bool     `json:"is_subscribed"`
 }
-

@@ -89,6 +89,8 @@ func (h *AnimeHandler) Create(c *gin.Context) {
 		Status:        req.Status,
 		Season:        req.Season,
 		Year:          req.Year,
+		SeriesTitle:   req.SeriesTitle,
+		SeriesYear:    req.SeriesYear,
 		CoverURL:      req.CoverURL,
 		EpisodeCount:  req.EpisodeCount,
 		Directory:     req.Directory,
@@ -245,10 +247,10 @@ func (h *AnimeHandler) StreamPreference(c *gin.Context) {
 	}
 
 	updates := map[string]interface{}{
-		"stream_rule_id":     req.RuleID,
-		"stream_detail_url":  req.DetailURL,
-		"stream_road_name":   req.RoadName,
-		"stream_rule_name":   req.RuleName,
+		"stream_rule_id":    req.RuleID,
+		"stream_detail_url": req.DetailURL,
+		"stream_road_name":  req.RoadName,
+		"stream_rule_name":  req.RuleName,
 		// 切换源时清空健康状态，等健康检测 job 重新评估
 		"source_health_status": "",
 		"source_health_note":   "",

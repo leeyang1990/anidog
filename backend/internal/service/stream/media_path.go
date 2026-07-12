@@ -58,8 +58,8 @@ func detectYear(anime *model.Anime) int {
 // 返回：完整文件路径
 // 例如: /downloads/葬送的芙莉莲 (2023)/Season 01/葬送的芙莉莲 S01E01.mp4
 func BuildMediaPath(baseDir string, anime *model.Anime, episodeNumber int, ext string) string {
-	title := sanitizeFileName(anime.Title)
-	year := detectYear(anime)
+	title := sanitizeFileName(anime.MediaSeriesTitle())
+	year := anime.MediaSeriesYear()
 	season := 1
 	if anime.Season != nil && *anime.Season > 0 {
 		season = *anime.Season
@@ -67,7 +67,10 @@ func BuildMediaPath(baseDir string, anime *model.Anime, episodeNumber int, ext s
 		season = detectSeason(anime.Title)
 	}
 
-	showDir := fmt.Sprintf("%s (%d)", title, year)
+	showDir := title
+	if year > 0 {
+		showDir = fmt.Sprintf("%s (%d)", title, year)
+	}
 	seasonDir := fmt.Sprintf("Season %02d", season)
 	fileName := fmt.Sprintf("%s S%02dE%02d%s", title, season, episodeNumber, ext)
 

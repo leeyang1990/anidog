@@ -80,8 +80,18 @@ func Aggregate(ctx context.Context, indexers []Indexer, keyword string) []Candid
 // 如 targetEpisode > 0：过滤掉集数不匹配（非批量包）的条目；返回按 Score 降序的结果。
 // prefs 任意字段为空/零值 = 不约束。
 func RankByPreference(cands []Candidate, prefs DownloadPreference, targetEpisode int) []ScoredCandidate {
+	return RankByPreferenceAndSeason(cands, prefs, targetEpisode, 0)
+}
+
+// RankByPreferenceAndSeason additionally hard-rejects candidates that
+// explicitly identify a different season. Candidates without a season marker
+// remain eligible because many weekly releases omit it.
+func RankByPreferenceAndSeason(cands []Candidate, prefs DownloadPreference, targetEpisode, targetSeason int) []ScoredCandidate {
 	out := make([]ScoredCandidate, 0, len(cands))
 	for _, c := range cands {
+		if targetSeason > 0 && c.Parsed != nil && c.Parsed.SeasonNum != nil && *c.Parsed.SeasonNum != targetSeason {
+			continue
+		}
 		// 集数过滤
 		if targetEpisode > 0 && c.Parsed != nil {
 			matched := false

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/anidog/anidog-go/internal/service/titleparse"
 )
 
 // mockIndexer 用于测试
@@ -161,5 +163,23 @@ func TestScoreOne_NoPrefs(t *testing.T) {
 	ranked := RankByPreference(parsed, DownloadPreference{}, 1)
 	if len(ranked) != 1 {
 		t.Errorf("空偏好应保留所有条目")
+	}
+}
+
+func TestRankByPreferenceAndSeasonRejectsExplicitMismatch(t *testing.T) {
+	s2, s3, ep := 2, 3, 3
+	cands := []Candidate{
+		{Title: "wrong S2", Parsed: &titleparse.ParsedTitle{SeasonNum: &s2, EpisodeNum: &ep}},
+		{Title: "right S3", Parsed: &titleparse.ParsedTitle{SeasonNum: &s3, EpisodeNum: &ep}},
+		{Title: "unknown season", Parsed: &titleparse.ParsedTitle{EpisodeNum: &ep}},
+	}
+	got := RankByPreferenceAndSeason(cands, DownloadPreference{}, 3, 3)
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want 2", len(got))
+	}
+	for _, candidate := range got {
+		if candidate.Title == "wrong S2" {
+			t.Fatal("explicit season mismatch was not rejected")
+		}
 	}
 }

@@ -9,11 +9,12 @@ import (
 
 // ParsedTitle 解析结果
 type ParsedTitle struct {
-	Group      string   `json:"group"`       // 字幕组，如 "LoliHouse"、"桜都字幕组"
-	AnimeName  string   `json:"anime_name"`  // 番名（中文优先）
-	AltNames   []string `json:"alt_names"`   // 其他名字段（英文/日文罗马音）
-	EpisodeNum *int     `json:"episode_num"` // 集数；批量包时为 nil，见 BatchStart/End
-	IsBatch    bool     `json:"is_batch"`    // 是否为合集（如 01-12 Fin）
+	Group      string   `json:"group"`                // 字幕组，如 "LoliHouse"、"桜都字幕组"
+	AnimeName  string   `json:"anime_name"`           // 番名（中文优先）
+	AltNames   []string `json:"alt_names"`            // 其他名字段（英文/日文罗马音）
+	EpisodeNum *int     `json:"episode_num"`          // 集数；批量包时为 nil，见 BatchStart/End
+	SeasonNum  *int     `json:"season_num,omitempty"` // 标题明确标注的季度；未知为 nil
+	IsBatch    bool     `json:"is_batch"`             // 是否为合集（如 01-12 Fin）
 	BatchStart *int     `json:"batch_start,omitempty"`
 	BatchEnd   *int     `json:"batch_end,omitempty"`
 	Quality    string   `json:"quality"` // "720p" / "1080p" / "2160p" / "4K" 等
@@ -35,10 +36,15 @@ var (
 
 	// 集数模式（优先级从高到低）
 	reEpisodeDash      = regexp.MustCompile(`[\s_\-\.]-\s*(\d{1,3}(?:\.5)?)(?:v\d+)?(?:[\s_\-\.\[]|$)`) // " - 05" 或 "- 05.5"
-	reEpisodeBracket   = regexp.MustCompile(`\[(\d{1,3}(?:\.5)?)(?:v\d+)?\]`)                          // "[05]"
+	reEpisodeBracket   = regexp.MustCompile(`\[(\d{1,3}(?:\.5)?)(?:v\d+)?\]`)                           // "[05]"
 	reEpisodeChinese   = regexp.MustCompile(`第\s*(\d{1,3})\s*[话集話]`)                                    // "第05话"
-	reEpisodeE         = regexp.MustCompile(`\bE[Pp]?(\d{1,3})\b`)                                     // "E05" / "EP05"
-	reEpisodeStandalon = regexp.MustCompile(`\s(\d{1,3})(?:v\d+)?\s*(?:END|FIN|完)?\s*$`)               // trailing number
+	reEpisodeE         = regexp.MustCompile(`\bE[Pp]?(\d{1,3})\b`)                                      // "E05" / "EP05"
+	reEpisodeStandalon = regexp.MustCompile(`\s(\d{1,3})(?:v\d+)?\s*(?:END|FIN|完)?\s*$`)                // trailing number
+
+	// 季度模式。只把明确标记视为季度；无法识别时保持 nil，交给上层 fail-open。
+	reSeasonChinese = regexp.MustCompile(`第\s*([0-9一二三四五六七八九十]+)\s*[季期]`)
+	reSeasonEnglish = regexp.MustCompile(`(?i)\bSeason\s*(\d+)\b|\bS(\d+)(?:E\d+)?\b|\b(\d+)(?:st|nd|rd|th)\s+Season\b`)
+	reSeasonRoman   = regexp.MustCompile(`(?i)\b(II|III|IV|V|VI)\b`)
 
 	// 批量包模式
 	reBatch = regexp.MustCompile(`(\d{1,3})\s*[-~～]\s*(\d{1,3})(?:\s*(?:END|Fin|FIN|完|全))?`)
@@ -51,7 +57,7 @@ var (
 	reSource = regexp.MustCompile(`(?i)\b(WEB-?DL|WEB-?Rip|WebRip|Blu-?Ray|BD-?Rip|BDRip|BD-?MV|BDBox|BD|HDTV|TV|DVD-?Rip|DVDRip|DVD|Baha|Bilibili|CR|Crunchyroll|NF|Netflix|AMZN|Amazon|KKTV|iQIYI|AT-X)\b`)
 
 	// 编码
-	reCodec      = regexp.MustCompile(`(?i)\b(HEVC|H\.?265|x265|AVC|H\.?264|x264|AV1)\b(?:[\s_\-](?:10-?bit|10bit))?`)
+	reCodec       = regexp.MustCompile(`(?i)\b(HEVC|H\.?265|x265|AVC|H\.?264|x264|AV1)\b(?:[\s_\-](?:10-?bit|10bit))?`)
 	reCodecWith10 = regexp.MustCompile(`(?i)\b(HEVC|H\.?265|x265)[\s_\-]*10-?bit\b`)
 
 	// 废弃 token 过滤（不作为字幕组）
@@ -78,6 +84,7 @@ func Parse(title string) *ParsedTitle {
 	}
 
 	p := &ParsedTitle{Raw: title}
+	p.SeasonNum = detectSeasonNumber(title)
 
 	// 预处理：把 `_` 替换为空格以便正则 \b 边界生效；保留原始标题用于个别正则
 	normalized := strings.ReplaceAll(title, "_", " ")
@@ -165,6 +172,38 @@ func Parse(title string) *ParsedTitle {
 	return p
 }
 
+func detectSeasonNumber(title string) *int {
+	if m := reSeasonChinese.FindStringSubmatch(title); len(m) > 1 {
+		if n := parseSeasonNumber(m[1]); n > 0 {
+			return &n
+		}
+	}
+	if m := reSeasonEnglish.FindStringSubmatch(title); len(m) > 1 {
+		for _, value := range m[1:] {
+			if n := parseInt(value); n > 0 {
+				return &n
+			}
+		}
+	}
+	if m := reSeasonRoman.FindStringSubmatch(title); len(m) > 1 {
+		roman := map[string]int{"II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6}
+		if n := roman[strings.ToUpper(m[1])]; n > 0 {
+			return &n
+		}
+	}
+	return nil
+}
+
+func parseSeasonNumber(value string) int {
+	if n := parseInt(value); n > 0 {
+		return n
+	}
+	return map[string]int{
+		"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+		"六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+	}[value]
+}
+
 // matchEpisode 按优先级查找集数
 func matchEpisode(title, core string, tokens []string) *int {
 	// 优先级 1：core 文本中的 " - 05" 模式
@@ -227,9 +266,12 @@ func bracketContains(title, needle string) bool {
 
 // extractAnimeNames 从 core 文本中提取所有番名候选（中文优先，其他语言作为 alt）
 // 例子: "葬送的芙莉莲 / Sousou no Frieren - 03"
-//   → main="葬送的芙莉莲", alts=["Sousou no Frieren"]
+//
+//	→ main="葬送的芙莉莲", alts=["Sousou no Frieren"]
+//
 // "RentaGirlfriend S05 / 出租女友 第五季 - 05"
-//   → main="出租女友 第五季", alts=["RentaGirlfriend S05"]
+//
+//	→ main="出租女友 第五季", alts=["RentaGirlfriend S05"]
 func extractAnimeNames(core string, episodeNum *int) (string, []string) {
 	s := core
 

@@ -476,7 +476,11 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 		return false, 0, 0, "所有 indexer 均无结果", "", 0
 	}
 
-	ranked := indexer.RankByPreference(cands, pref.ToIndexerPref(), ep)
+	season := 1
+	if anime.Season != nil && *anime.Season > 0 {
+		season = *anime.Season
+	}
+	ranked := indexer.RankByPreferenceAndSeason(cands, pref.ToIndexerPref(), ep, season)
 	rankedOut = resultCount - len(ranked)
 	if len(ranked) == 0 {
 		return false, resultCount, rankedOut, "所有候选均不符合偏好（集数不匹配/分辨率不符/字幕组不符）", "", 0
@@ -606,7 +610,7 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 		AnimeName:     anime.Title,
 		AnimeID:       &anime.ID,
 		EpisodeNumber: &epCopy,
-		SavePath:      dlservice.BuildAnimeSavePath(o.mediaRoot, anime),
+		SavePath:      dlservice.BuildAnimeSavePath(o.currentMediaRoot(ctx), anime),
 		RetryCount:    retryCount,
 	}
 	if _, err := o.dlSvc.Create(ctx, task); err != nil {
@@ -620,6 +624,17 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 		zap.Float64("score", top.Score),
 	)
 	return true, resultCount, rankedOut, fmt.Sprintf("已从 %s 入队（score=%.1f）", top.SourceName, top.Score), bestTitle, bestScore
+}
+
+// currentMediaRoot keeps BT output aligned with the download directory changed
+// from Settings. The configured process default is only a fallback.
+func (o *Orchestrator) currentMediaRoot(ctx context.Context) string {
+	if o.settingSvc != nil {
+		if value, ok, err := o.settingSvc.Get(ctx, "download_dir"); err == nil && ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return o.mediaRoot
 }
 
 // ---- RSS 源说明 ----

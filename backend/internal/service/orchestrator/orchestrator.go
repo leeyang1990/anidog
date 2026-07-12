@@ -321,7 +321,8 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, re
 func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Anime, ep int) (*model.StreamRule, string, []stream.EpisodeInfo, bool, error) {
 	if anime.StreamRuleID != nil && anime.StreamDetailURL != nil && *anime.StreamDetailURL != "" {
 		var current model.StreamRule
-		if err := o.db.WithContext(ctx).First(&current, *anime.StreamRuleID).Error; err == nil && !isRuleBroken(&current) {
+		if err := o.db.WithContext(ctx).First(&current, *anime.StreamRuleID).Error; err == nil &&
+			!isRuleBroken(&current) && !o.hasStreamRuleFailure(ctx, anime.ID, ep, current.ID) {
 			episodes, parseErr := o.streamMgr.GetEpisodes(ctx, &current, *anime.StreamDetailURL)
 			if parseErr == nil && hasEpisode(episodes, ep) {
 				return &current, *anime.StreamDetailURL, episodes, false, nil
@@ -374,6 +375,17 @@ func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Ani
 		return rule, best.URL, episodes, true, nil
 	}
 	return nil, "", nil, false, fmt.Errorf("当前 stream 规则不可用，所有健康备用规则均未找到第 %d 集", ep)
+}
+
+// hasStreamRuleFailure 防止同一集在规则整体仍 healthy 时反复撞同一个坏播放页。
+// 只要该集在该规则有失败记录，本轮就换其他规则；源恢复由长周期 half-open 负责。
+func (o *Orchestrator) hasStreamRuleFailure(ctx context.Context, animeID uint, ep int, ruleID uint) bool {
+	var count int64
+	o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND stream_rule_id = ? AND download_type = ? AND status = ?",
+			animeID, ep, ruleID, model.DownloadTypeStream, model.DownloadStatusFailed).
+		Count(&count)
+	return count > 0
 }
 
 func isRuleBroken(rule *model.StreamRule) bool {

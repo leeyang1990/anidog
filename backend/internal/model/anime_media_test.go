@@ -36,3 +36,10 @@ func TestMediaSeriesIdentity(t *testing.T) {
 		t.Fatalf("mapped series year = %d", got)
 	}
 }
+
+func TestMediaSeriesYearForLegacySequelWithoutSeasonField(t *testing.T) {
+	a := &Anime{Title: "碧蓝之海 第三季", Year: intPtr(2026)}
+	if got := a.MediaSeriesYear(); got != 0 {
+		t.Fatalf("legacy sequel year = %d, want 0", got)
+	}
+}

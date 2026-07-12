@@ -141,6 +141,12 @@ func (a *Anime) MediaSeriesYear() int {
 	if a.Season != nil && *a.Season > 0 {
 		season = *a.Season
 	}
+	// Older records may have no numeric season and carry it only in Title.
+	// If normalization recognizes a sequel marker, its current air year is not
+	// a safe series year for metadata matching.
+	if season <= 1 && NormalizeSeriesTitle(a.Title) != strings.TrimSpace(a.Title) {
+		return 0
+	}
 	if season <= 1 && a.Year != nil && *a.Year > 1900 {
 		return *a.Year
 	}

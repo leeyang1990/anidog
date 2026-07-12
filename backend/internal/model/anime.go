@@ -1,7 +1,9 @@
 package model
 
 import (
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -101,6 +103,45 @@ var seasonTitleSuffixes = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\s*[-–—:]?\s*第\s*[0-9一二三四五六七八九十]+\s*[季期]\s*$`),
 	regexp.MustCompile(`(?i)\s*[-–—:]?\s*(?:season\s*\d+|\d+(?:st|nd|rd|th)\s+season)\s*$`),
 	regexp.MustCompile(`(?i)\s*[-–—:]?\s+s\d+\s*$`),
+}
+
+var seasonNumberPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)第\s*([0-9一二三四五六七八九十]+)\s*[季期]`),
+	regexp.MustCompile(`(?i)season\s*(\d+)`),
+	regexp.MustCompile(`(?i)(\d+)(?:st|nd|rd|th)\s+season`),
+	regexp.MustCompile(`(?i)\bs(\d+)\b`),
+}
+
+var chineseSeasonNumbers = map[string]int{
+	"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+	"六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+// InferSeasonNumber extracts an explicit season marker. Zero means unknown.
+func InferSeasonNumber(title string) int {
+	for _, re := range seasonNumberPatterns {
+		match := re.FindStringSubmatch(title)
+		if len(match) < 2 {
+			continue
+		}
+		if season, err := strconv.Atoi(match[1]); err == nil && season > 0 {
+			return season
+		}
+		if season := chineseSeasonNumbers[match[1]]; season > 0 {
+			return season
+		}
+	}
+	return 0
+}
+
+// CanonicalSeasonTitle keeps the series identity stable while retaining the
+// season information needed by users and source searches.
+func CanonicalSeasonTitle(seriesTitle string, season int) string {
+	seriesTitle = strings.TrimSpace(seriesTitle)
+	if season <= 1 {
+		return seriesTitle
+	}
+	return fmt.Sprintf("%s 第%d季", seriesTitle, season)
 }
 
 // NormalizeSeriesTitle removes a trailing season marker without changing the

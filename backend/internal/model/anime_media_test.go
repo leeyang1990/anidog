@@ -21,6 +21,15 @@ func TestNormalizeSeriesTitle(t *testing.T) {
 	}
 }
 
+func TestSeasonTitleNormalization(t *testing.T) {
+	if got := InferSeasonNumber("幼女战记 第二季"); got != 2 {
+		t.Fatalf("season = %d", got)
+	}
+	if got := CanonicalSeasonTitle("幼女战记", 2); got != "幼女战记 第2季" {
+		t.Fatalf("canonical title = %q", got)
+	}
+}
+
 func TestMediaSeriesIdentity(t *testing.T) {
 	a := &Anime{Title: "幼女战记 第二季", Year: intPtr(2026), Season: intPtr(2)}
 	if got := a.MediaSeriesTitle(); got != "幼女战记" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -53,7 +54,57 @@ func (s *Service) Create(ctx context.Context, anime *model.Anime) error {
 	if anime.Status == "" {
 		anime.Status = model.AnimeStatusUnknown
 	}
+	s.prepareMediaIdentity(ctx, anime)
 	return s.db.WithContext(ctx).Create(anime).Error
+}
+
+// prepareMediaIdentity separates the user-facing season title from the stable
+// Emby/Plex series root. The original seasonal title is retained for source
+// matching, while common suffixes are normalized to "系列名 第N季".
+func (s *Service) prepareMediaIdentity(ctx context.Context, anime *model.Anime) {
+	if anime == nil {
+		return
+	}
+	originalTitle := anime.Title
+	seriesTitle := model.NormalizeSeriesTitle(originalTitle)
+	season := 0
+	if anime.Season != nil {
+		season = *anime.Season
+	}
+	if season <= 0 {
+		season = model.InferSeasonNumber(originalTitle)
+		if season <= 0 {
+			season = 1
+		}
+		anime.Season = &season
+	}
+	if anime.SeriesTitle == nil || strings.TrimSpace(*anime.SeriesTitle) == "" {
+		anime.SeriesTitle = &seriesTitle
+	} else {
+		seriesTitle = strings.TrimSpace(*anime.SeriesTitle)
+	}
+	if seriesTitle != strings.TrimSpace(originalTitle) {
+		if anime.OfficialTitle == nil || strings.TrimSpace(*anime.OfficialTitle) == "" {
+			preserved := originalTitle
+			anime.OfficialTitle = &preserved
+		}
+		anime.Title = model.CanonicalSeasonTitle(seriesTitle, season)
+	}
+	if anime.SeriesYear != nil && *anime.SeriesYear > 1900 {
+		return
+	}
+	var existing model.Anime
+	if err := s.db.WithContext(ctx).
+		Where("series_title = ? AND series_year IS NOT NULL", seriesTitle).
+		Order("series_year ASC").First(&existing).Error; err == nil && existing.SeriesYear != nil {
+		year := *existing.SeriesYear
+		anime.SeriesYear = &year
+		return
+	}
+	if season <= 1 && anime.Year != nil && *anime.Year > 1900 {
+		year := *anime.Year
+		anime.SeriesYear = &year
+	}
 }
 
 func (s *Service) Update(ctx context.Context, id uint, updates map[string]interface{}) (*model.Anime, error) {
@@ -189,7 +240,7 @@ func (s *Service) CreateFromBangumi(ctx context.Context, bangumiID int, detail *
 	if anime.Status == "" {
 		anime.Status = model.AnimeStatusUnknown
 	}
-	if err := s.db.WithContext(ctx).Create(&anime).Error; err != nil {
+	if err := s.Create(ctx, &anime); err != nil {
 		return nil, err
 	}
 	return &anime, nil

@@ -119,10 +119,6 @@
                   <label class="text-sm font-bold text-foreground">语言偏好</label>
                   <AcSelect v-model="schedulerForm.language" :options="languageOptions" />
                 </div>
-                <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">HTTP代理</label>
-                  <AcInput v-model="schedulerForm.http_proxy" placeholder="socks5://127.0.0.1:1080 (留空不使用代理)" />
-                </div>
                 <AcButton variant="primary" :loading="saving.scheduler" @click="saveSchedulerSettings">
                   <template #icon><SaveOutline class="size-4" /></template>
                   保存设置
@@ -144,7 +140,8 @@
               <div>
                 <h3 class="text-lg font-bold tracking-tight text-foreground">HTTP 代理</h3>
                 <p class="text-sm text-muted-foreground">
-                  配置后，Bangumi API、BT Indexer 搜索、RSS 抓取、流媒体拦截等所有出站 HTTP 都会走此代理。
+                  仅用于 Bangumi API、BT Indexer、Mikan 与 RSS 等小型元数据请求。
+                  qBittorrent 的种子数据和 ffmpeg 的视频数据始终由各自进程直连，不消耗这里的代理流量。
                 </p>
               </div>
               <div class="space-y-2">
@@ -180,8 +177,7 @@
                 </div>
               </div>
               <div class="rounded-2xl border-2 border-ac-sun bg-ac-sun/10 p-3 text-xs text-ac-sun-dark">
-                ⚠ 保存后需要重启 backend 才能对已初始化的 HTTP 客户端和 rod 浏览器生效：<br />
-                <code class="text-[11px] font-num">docker compose -f docker-compose.dev.yml restart backend</code>
+                保存后立即热更新，无需重启。系统会在同一轮缺集检查中复用索引结果，避免请求量随缺集数量成倍增长。
               </div>
             </div>
           </div>
@@ -401,7 +397,7 @@ const renameExample = computed(() => ({
   subtitle_advance: 'Sousou no Frieren S01E01.zh.srt'
 }[renameForm.rename_method] || ''))
 
-const schedulerForm = reactive({ enabled: true, rss_interval: 30, language: 'zh', http_proxy: '' })
+const schedulerForm = reactive({ enabled: true, rss_interval: 30, language: 'zh' })
 
 const languageOptions = [
   { label: '中文', value: 'zh' },
@@ -448,7 +444,6 @@ async function fetchSettings() {
     if (data.enable_scheduler !== undefined) schedulerForm.enabled = data.enable_scheduler
     if (data.rss_check_interval) schedulerForm.rss_interval = data.rss_check_interval
     if (data.language) schedulerForm.language = data.language
-    if (data.http_proxy) schedulerForm.http_proxy = data.http_proxy
     proxyForm.http_proxy = data.http_proxy || ''
   } catch (e) { console.error('获取设置失败:', e) }
 }
@@ -480,7 +475,7 @@ async function saveProxy() {
   saving.value.proxy = true
   try {
     await put('/settings', { http_proxy: proxyForm.http_proxy || '' })
-    toast.success('已保存，重启 backend 后生效')
+    toast.success('已保存并立即生效')
   } catch (e) { toast.error(e?.message || '保存失败') }
   finally { saving.value.proxy = false }
 }

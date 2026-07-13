@@ -41,7 +41,16 @@ type Orchestrator struct {
 	mediaRoot   string                     // BT 下载根目录（容器内路径）
 	indexerHTTP *http.Client               // 复用动态代理的 BT/Mikan 客户端
 	animeLocks  sync.Map                   // anime id -> *sync.Mutex（单实例内防并发审计/入队）
+	candidateMu sync.Mutex
+	candidates  map[string]candidateCacheEntry // 同一轮缺多集时复用 BT 元数据，避免请求量按集数放大
 }
+
+type candidateCacheEntry struct {
+	items     []indexer.Candidate
+	expiresAt time.Time
+}
+
+const candidateCacheTTL = 20 * time.Minute
 
 // New 构造 Orchestrator。
 // indexers 由调用方注册，方便测试替换。传 nil 时自动注册 4 家默认 indexer。
@@ -81,6 +90,7 @@ func New(
 		mikanRSS:    indexer.NewMikanRSSFetcher(),
 		mediaRoot:   mediaRoot,
 		indexerHTTP: indexerHTTP,
+		candidates:  make(map[string]candidateCacheEntry),
 	}
 	if indexerHTTP != nil {
 		o.mikanRSS.Client = indexerHTTP
@@ -124,6 +134,14 @@ func (o *Orchestrator) collectBTCandidates(ctx context.Context, anime *model.Ani
 			zap.L().Info("orchestrator: 自动绑定 Mikan 番剧", zap.String("anime", anime.Title), zap.Int("mikan_bangumi_id", mid), zap.String("matched_title", matchedTitle))
 			break
 		}
+	}
+
+	cacheKey := o.candidateCacheKey(anime, enabled)
+	if cached, ok := o.loadCandidateCache(cacheKey); ok {
+		zap.L().Debug("复用 BT 候选缓存",
+			zap.Uint("anime_id", anime.ID),
+			zap.Int("count", len(cached)))
+		return cached
 	}
 
 	var rssCands []indexer.Candidate
@@ -176,7 +194,54 @@ func (o *Orchestrator) collectBTCandidates(ctx context.Context, anime *model.Ani
 		seen[key] = true
 		merged = append(merged, c)
 	}
+	o.storeCandidateCache(cacheKey, merged)
 	return merged
+}
+
+func (o *Orchestrator) candidateCacheKey(anime *model.Anime, enabled []indexer.Indexer) string {
+	names := make([]string, 0, len(enabled))
+	for _, ix := range enabled {
+		names = append(names, ix.Name())
+	}
+	sort.Strings(names)
+	mikanID := 0
+	if anime.MikanBangumiID != nil {
+		mikanID = *anime.MikanBangumiID
+	}
+	return fmt.Sprintf("%d|%d|%s|%s", anime.ID, mikanID, anime.Title, strings.Join(names, ","))
+}
+
+func (o *Orchestrator) loadCandidateCache(key string) ([]indexer.Candidate, bool) {
+	o.candidateMu.Lock()
+	defer o.candidateMu.Unlock()
+	entry, ok := o.candidates[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(o.candidates, key)
+		return nil, false
+	}
+	return append([]indexer.Candidate(nil), entry.items...), true
+}
+
+func (o *Orchestrator) storeCandidateCache(key string, items []indexer.Candidate) {
+	o.candidateMu.Lock()
+	defer o.candidateMu.Unlock()
+	// 缓存空结果同样重要：代理或索引站异常时，不能让每个缺集都再超时一次。
+	o.candidates[key] = candidateCacheEntry{
+		items:     append([]indexer.Candidate(nil), items...),
+		expiresAt: time.Now().Add(candidateCacheTTL),
+	}
+	// 订阅量通常很小；仍做惰性清理，避免长期改名/切换索引源留下无界缓存。
+	if len(o.candidates) > 256 {
+		now := time.Now()
+		for cacheKey, entry := range o.candidates {
+			if now.After(entry.expiresAt) {
+				delete(o.candidates, cacheKey)
+			}
+		}
+	}
 }
 
 // Run 实现 scheduler.Job 接口：定时对所有订阅番剧逐个跑 CheckAnime。

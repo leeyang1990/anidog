@@ -1,0 +1,23 @@
+# AniDog 后端稳定运行时。
+# Chromium、ffmpeg 和字体接近 1GB，只有依赖确实变化时才发布新版本；
+# 日常 AniDog 发版只在这个基础镜像上追加约 38MB 的 Go 二进制。
+FROM alpine:3.24.1
+
+RUN apk --no-cache add \
+    ca-certificates \
+    ffmpeg \
+    chromium \
+    chromium-swiftshader \
+    nss \
+    freetype \
+    freetype-dev \
+    harfbuzz \
+    ttf-freefont \
+    font-noto-cjk \
+    wqy-zenhei
+
+ENV ROD_BROWSER_BIN=/usr/bin/chromium-browser
+
+WORKDIR /app
+RUN mkdir -p /downloads
+

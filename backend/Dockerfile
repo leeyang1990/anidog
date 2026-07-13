@@ -29,34 +29,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o anidog ./cmd/anidog
 
 # ========================================
-# 阶段二：运行时镜像
+# 阶段二：稳定运行时镜像
 # ========================================
-FROM alpine:latest
-
-# 安装运行时依赖：ffmpeg + chromium (rod 浏览器) + 字体
-RUN apk --no-cache add \
-    ca-certificates \
-    ffmpeg \
-    chromium \
-    chromium-swiftshader \
-    nss \
-    freetype \
-    freetype-dev \
-    harfbuzz \
-    ttf-freefont \
-    font-noto-cjk \
-    wqy-zenhei
-
-# 告诉 rod 使用系统 chromium，不去下载
-ENV ROD_BROWSER_BIN=/usr/bin/chromium-browser
-
-WORKDIR /app
+# Chromium + ffmpeg + 字体约 914MB，固定在单独的基础镜像中。这样普通发版
+# 不会每次生成并重新下载一个 400MB+ 的依赖层，只需拉取新的 Go 二进制层。
+FROM leeyang1990/anidog-backend-runtime:alpine3.24-v1
 
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/anidog .
-
-# 创建下载目录
-RUN mkdir -p /downloads
 
 # 暴露端口
 EXPOSE 8088

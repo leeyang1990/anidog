@@ -279,6 +279,11 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 
 const stalledProgressTimeout = 2 * time.Hour
 
+const (
+	defaultMaxActiveDownloads = 6
+	defaultMaxActiveTorrents  = 10
+)
+
 func downloadProgressAdvanced(dl *model.Download, torrent map[string]interface{}) bool {
 	if downloaded, ok := torrent["downloaded"].(float64); ok {
 		return dl.DownloadedBytes == nil || int64(downloaded) > *dl.DownloadedBytes
@@ -491,6 +496,8 @@ func (s *QBitSyncer) ensureQueuePolicy(ctx context.Context) {
 		"dont_count_slow_torrents":       true,
 		"slow_torrent_dl_rate_threshold": 10,
 		"slow_torrent_inactive_timer":    60,
+		"max_active_downloads":           defaultMaxActiveDownloads,
+		"max_active_torrents":            defaultMaxActiveTorrents,
 	}
 	raw, err := json.Marshal(preferences)
 	if err != nil {
@@ -518,7 +525,11 @@ func (s *QBitSyncer) ensureQueuePolicy(ctx context.Context) {
 		return
 	}
 	s.queuePolicyReady = true
-	zap.L().Info("qBit 慢种队列策略已启用", zap.Int("slow_rate_kib", 10), zap.Int("inactive_seconds", 60))
+	zap.L().Info("qBit 下载队列策略已启用",
+		zap.Int("max_active_downloads", defaultMaxActiveDownloads),
+		zap.Int("max_active_torrents", defaultMaxActiveTorrents),
+		zap.Int("slow_rate_kib", 10),
+		zap.Int("inactive_seconds", 60))
 }
 
 // mapQBitState 把 qBit 状态映射到我们的 status

@@ -91,6 +91,12 @@ func TestEnsureQueuePolicy(t *testing.T) {
 		if enabled, _ := prefs["dont_count_slow_torrents"].(bool); !enabled {
 			t.Fatalf("unexpected preferences: %s", strings.TrimSpace(values.Get("json")))
 		}
+		if got := int(prefs["max_active_downloads"].(float64)); got != defaultMaxActiveDownloads {
+			t.Fatalf("max_active_downloads=%d, want %d", got, defaultMaxActiveDownloads)
+		}
+		if got := int(prefs["max_active_torrents"].(float64)); got != defaultMaxActiveTorrents {
+			t.Fatalf("max_active_torrents=%d, want %d", got, defaultMaxActiveTorrents)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()

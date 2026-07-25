@@ -25,8 +25,8 @@ func TestCollectBTCandidatesCachesPerAnime(t *testing.T) {
 	o := New(nil, nil, nil, nil, map[string]indexer.Indexer{"counting": idx}, "/downloads")
 	anime := &model.Anime{ID: 42, Title: "Example"}
 
-	first := o.collectBTCandidates(context.Background(), anime, []indexer.Indexer{idx})
-	second := o.collectBTCandidates(context.Background(), anime, []indexer.Indexer{idx})
+	first := o.collectBTCandidates(context.Background(), anime, []indexer.Indexer{idx}, false)
+	second := o.collectBTCandidates(context.Background(), anime, []indexer.Indexer{idx}, false)
 
 	if got := idx.calls.Load(); got != 1 {
 		t.Fatalf("indexer calls = %d, want 1", got)
@@ -37,7 +37,7 @@ func TestCollectBTCandidatesCachesPerAnime(t *testing.T) {
 
 	// 返回副本，调用方修改切片本身不能污染缓存。
 	second[0].Title = "changed"
-	third := o.collectBTCandidates(context.Background(), anime, []indexer.Indexer{idx})
+	third := o.collectBTCandidates(context.Background(), anime, []indexer.Indexer{idx}, false)
 	if third[0].Title != "Example - 01" {
 		t.Fatalf("cached candidate was mutated: %q", third[0].Title)
 	}
@@ -47,8 +47,8 @@ func TestCollectBTCandidatesSeparatesAnime(t *testing.T) {
 	idx := &countingIndexer{}
 	o := New(nil, nil, nil, nil, map[string]indexer.Indexer{"counting": idx}, "/downloads")
 
-	o.collectBTCandidates(context.Background(), &model.Anime{ID: 1, Title: "One"}, []indexer.Indexer{idx})
-	o.collectBTCandidates(context.Background(), &model.Anime{ID: 2, Title: "Two"}, []indexer.Indexer{idx})
+	o.collectBTCandidates(context.Background(), &model.Anime{ID: 1, Title: "One"}, []indexer.Indexer{idx}, false)
+	o.collectBTCandidates(context.Background(), &model.Anime{ID: 2, Title: "Two"}, []indexer.Indexer{idx}, false)
 
 	if got := idx.calls.Load(); got != 2 {
 		t.Fatalf("indexer calls = %d, want 2", got)

@@ -212,6 +212,86 @@ func TestSyncStartsMetadataProbeForQueuedMagnet(t *testing.T) {
 	}
 }
 
+func TestSyncRejectsMissingQBitTaskAndImmediatelyRecoversEpisode(t *testing.T) {
+	db := testutil.InitTestDB()
+	hash := "9AC43785313D3F97B6B6F165B708A7DDB95F092B"
+	animeID, episode := uint(1), 3
+	nextRetry := time.Now().Add(time.Hour)
+	wrongBatchSize := int64(45_210_546_716)
+	partialBytes := int64(1_024)
+	row := model.Download{
+		TorrentID:       "legacy-wrong-season",
+		Name:            "无职转生 第3季 - 第03集",
+		URL:             "magnet:?xt=urn:btih:" + hash,
+		Status:          model.DownloadStatusDownloading,
+		DownloadType:    model.DownloadTypeTorrent,
+		InfoHash:        &hash,
+		AnimeID:         &animeID,
+		EpisodeNumber:   &episode,
+		FailureKind:     model.FailureKindTransient,
+		LastError:       "季度不匹配：错误选中第二季合集，已自动删除",
+		NextRetryAt:     &nextRetry,
+		Progress:        12.5,
+		TotalBytes:      &wrongBatchSize,
+		DownloadedBytes: &partialBytes,
+		CreatedAt:       time.Now().Add(-2 * time.Hour),
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			_, _ = w.Write([]byte("Ok."))
+		case "/api/v2/app/setPreferences":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v2/torrents/info":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	recovered := make(chan struct{}, 1)
+	s := &QBitSyncer{db: db, baseURL: server.URL, user: "admin", pass: "secret", client: server.Client()}
+	s.SetDeadTorrentHandler(func(_ context.Context, gotAnimeID uint, gotEpisode int) {
+		if gotAnimeID != animeID || gotEpisode != episode {
+			t.Errorf("unexpected recovery target: anime=%d episode=%d", gotAnimeID, gotEpisode)
+		}
+		recovered <- struct{}{}
+	})
+
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	var saved model.Download
+	if err := db.First(&saved, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != model.DownloadStatusFailed || saved.FailureKind != model.FailureKindRejected {
+		t.Fatalf("missing qBit task must be rejected, got status=%s kind=%s", saved.Status, saved.FailureKind)
+	}
+	if saved.NextRetryAt != nil {
+		t.Fatalf("rejected candidate must not retain retry cooldown: %v", saved.NextRetryAt)
+	}
+	if saved.TotalBytes != nil || saved.DownloadedBytes != nil || saved.Progress != 0 {
+		t.Fatalf("rejected candidate retained stale progress: total=%v downloaded=%v progress=%v",
+			saved.TotalBytes, saved.DownloadedBytes, saved.Progress)
+	}
+	if !strings.Contains(saved.LastError, "季度不匹配") ||
+		!strings.Contains(saved.LastError, "qBittorrent 中不存在") {
+		t.Fatalf("original cause must be preserved, got %q", saved.LastError)
+	}
+	select {
+	case <-recovered:
+	case <-time.After(time.Second):
+		t.Fatal("episode recovery was not triggered")
+	}
+}
+
 func TestEnsureQueuePolicy(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -239,15 +319,41 @@ func TestEnsureQueuePolicy(t *testing.T) {
 		if got := int(prefs["max_active_torrents"].(float64)); got != defaultMaxActiveTorrents {
 			t.Fatalf("max_active_torrents=%d, want %d", got, defaultMaxActiveTorrents)
 		}
+		if got := int64(prefs["dl_limit"].(float64)); got != 2048*1024 {
+			t.Fatalf("dl_limit=%d, want %d", got, 2048*1024)
+		}
+		if got := int64(prefs["up_limit"].(float64)); got != 512*1024 {
+			t.Fatalf("up_limit=%d, want %d", got, 512*1024)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	s := &QBitSyncer{baseURL: server.URL, client: server.Client()}
+	s.SetRateLimitLoader(func(context.Context) (int64, int64) {
+		return 2048, 512
+	})
 	s.ensureQueuePolicy(context.Background())
 	s.ensureQueuePolicy(context.Background())
 	if calls != 1 {
 		t.Fatalf("queue policy should be applied once, got %d calls", calls)
+	}
+	s.InvalidatePreferences()
+	s.ensureQueuePolicy(context.Background())
+	if calls != 2 {
+		t.Fatalf("invalidated policy should be applied again, got %d calls", calls)
+	}
+}
+
+func TestQBitRateLimitBytes(t *testing.T) {
+	if got := qbitRateLimitBytes(0); got != 0 {
+		t.Fatalf("unlimited got %d", got)
+	}
+	if got := qbitRateLimitBytes(-1); got != 0 {
+		t.Fatalf("negative limit got %d", got)
+	}
+	if got := qbitRateLimitBytes(1024); got != 1024*1024 {
+		t.Fatalf("1 MiB/s got %d", got)
 	}
 }
 

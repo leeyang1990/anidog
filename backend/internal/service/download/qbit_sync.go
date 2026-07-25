@@ -30,6 +30,7 @@ type QBitSyncer struct {
 	client             *http.Client
 	notifSvc           *notification.Service // 可空：未配置时不发通知
 	deadTorrentHandler func(context.Context, uint, int)
+	rateLimitLoader    func(context.Context) (downloadKiB, uploadKiB int64)
 	queuePolicyMu      sync.Mutex
 	queuePolicyReady   bool
 }
@@ -59,6 +60,21 @@ func (s *QBitSyncer) SetDeadTorrentHandler(handler func(context.Context, uint, i
 	s.deadTorrentHandler = handler
 }
 
+// SetRateLimitLoader 注入动态限速读取器。返回值单位为 KiB/s，0 表示不限速。
+// 设置发生变化时调用 InvalidatePreferences，下一轮同步会在 15 秒内应用。
+func (s *QBitSyncer) SetRateLimitLoader(loader func(context.Context) (downloadKiB, uploadKiB int64)) {
+	s.queuePolicyMu.Lock()
+	defer s.queuePolicyMu.Unlock()
+	s.rateLimitLoader = loader
+	s.queuePolicyReady = false
+}
+
+func (s *QBitSyncer) InvalidatePreferences() {
+	s.queuePolicyMu.Lock()
+	defer s.queuePolicyMu.Unlock()
+	s.queuePolicyReady = false
+}
+
 func (s *QBitSyncer) Name() string { return "qbit_sync" }
 
 // Run 实现 scheduler.Job 接口。
@@ -78,9 +94,6 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	torrents, err := s.listTorrents(ctx)
 	if err != nil {
 		return err
-	}
-	if len(torrents) == 0 {
-		return nil
 	}
 
 	// 按 info_hash 做映射
@@ -116,29 +129,21 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		}
 		qt, ok := byHash[strings.ToUpper(*dl.InfoHash)]
 		if !ok {
-			// qBit 里找不到这个 hash —— 大概率是 qBit 容器重启/数据丢失。
-			// 仅把"还在进行中"的状态翻成 failed，让 Orchestrator 下一轮重新挑源。
+			// qBit 里找不到这个 hash。它可能被用户/系统主动删除，也可能是
+			// qBit 状态丢失；无论哪种情况，原 DB 行都不可能自行恢复。
+			// 将“这个候选”标为 rejected 并立即换源，不能把它当 transient
+			// 延迟复活，否则旧 hash 会制造冷却并阻塞后续正常候选。
 			// 已 completed / failed / paused 的不动。
 			// 保护：刚创建 < 60s 的任务给 qBit 一点时间索引，跳过；
 			// >= 60s 还找不到才认定为孤儿。
 			if (dl.Status == model.DownloadStatusDownloading ||
 				dl.Status == model.DownloadStatusPending) &&
 				time.Since(dl.CreatedAt) > time.Minute {
-				orphanErr := fmt.Errorf("qBittorrent 中不存在对应任务，可能已被删除或下载器状态丢失")
-				kind, delay := classifyError(orphanErr, dl.RetryCount)
-				updates := map[string]interface{}{
-					"status":         model.DownloadStatusFailed,
-					"download_speed": 0,
-					"eta":            nil,
-					"failure_kind":   kind,
-					"last_error":     orphanErr.Error(),
-				}
-				if delay > 0 {
-					nextAt := time.Now().Add(delay)
-					updates["next_retry_at"] = &nextAt
-				} else {
-					updates["next_retry_at"] = nil
-				}
+				orphanMessage := buildOrphanError(dl.LastError)
+				updates := rejectedCandidateCleanup()
+				updates["status"] = model.DownloadStatusFailed
+				updates["failure_kind"] = model.FailureKindRejected
+				updates["last_error"] = orphanMessage
 				if err := s.db.Model(&model.Download{}).
 					Where("id = ?", dl.ID).
 					Updates(updates).Error; err != nil {
@@ -151,6 +156,7 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 					zap.Uint("id", dl.ID),
 					zap.String("info_hash", *dl.InfoHash),
 					zap.String("name", dl.Name))
+				s.triggerEpisodeRecovery(dl.AnimeID, dl.EpisodeNumber)
 			}
 			continue
 		}
@@ -335,6 +341,45 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			zap.Int("db_total", len(downloads)))
 	}
 	return nil
+}
+
+func buildOrphanError(previous string) string {
+	const current = "qBittorrent 中不存在对应任务，可能已被删除或下载器状态丢失"
+	previous = strings.TrimSpace(previous)
+	if previous == "" || strings.Contains(previous, current) {
+		return current
+	}
+	return truncateError(fmt.Errorf("%s；后续检查：%s", previous, current))
+}
+
+// rejectedCandidateCleanup 清除已淘汰候选留下的运行态数据。尤其是错误季度
+// 合集的 total_bytes，不能继续作为当前单集大小展示。
+func rejectedCandidateCleanup() map[string]interface{} {
+	return map[string]interface{}{
+		"progress":                  0,
+		"downloaded_bytes":          nil,
+		"total_bytes":               nil,
+		"download_speed":            0,
+		"eta":                       nil,
+		"last_progress_at":          nil,
+		"stalled_since":             nil,
+		"speed_window_started_at":   nil,
+		"speed_window_start_bytes":  nil,
+		"metadata_probe_started_at": nil,
+		"next_retry_at":             nil,
+	}
+}
+
+func (s *QBitSyncer) triggerEpisodeRecovery(animeID *uint, episodeNumber *int) {
+	if s.deadTorrentHandler == nil || animeID == nil || episodeNumber == nil {
+		return
+	}
+	aid, episode := *animeID, *episodeNumber
+	go func() {
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		s.deadTorrentHandler(recoveryCtx, aid, episode)
+	}()
 }
 
 const (
@@ -611,14 +656,7 @@ func (s *QBitSyncer) abandonDeadTorrent(ctx context.Context, dl *model.Download,
 		zap.String("name", dl.Name),
 		zap.String("reason", reason))
 
-	if s.deadTorrentHandler != nil && dl.AnimeID != nil && dl.EpisodeNumber != nil {
-		animeID, episode := *dl.AnimeID, *dl.EpisodeNumber
-		go func() {
-			recoveryCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			s.deadTorrentHandler(recoveryCtx, animeID, episode)
-		}()
-	}
+	s.triggerEpisodeRecovery(dl.AnimeID, dl.EpisodeNumber)
 	return true
 }
 
@@ -688,12 +726,20 @@ func (s *QBitSyncer) ensureQueuePolicy(ctx context.Context) {
 	if s.queuePolicyReady {
 		return
 	}
+	var downloadKiB, uploadKiB int64
+	if s.rateLimitLoader != nil {
+		downloadKiB, uploadKiB = s.rateLimitLoader(ctx)
+	}
+	downloadLimit := qbitRateLimitBytes(downloadKiB)
+	uploadLimit := qbitRateLimitBytes(uploadKiB)
 	preferences := map[string]interface{}{
 		"dont_count_slow_torrents":       true,
 		"slow_torrent_dl_rate_threshold": 10,
 		"slow_torrent_inactive_timer":    60,
 		"max_active_downloads":           defaultMaxActiveDownloads,
 		"max_active_torrents":            defaultMaxActiveTorrents,
+		"dl_limit":                       downloadLimit,
+		"up_limit":                       uploadLimit,
 	}
 	raw, err := json.Marshal(preferences)
 	if err != nil {
@@ -724,8 +770,21 @@ func (s *QBitSyncer) ensureQueuePolicy(ctx context.Context) {
 	zap.L().Info("qBit 下载队列策略已启用",
 		zap.Int("max_active_downloads", defaultMaxActiveDownloads),
 		zap.Int("max_active_torrents", defaultMaxActiveTorrents),
+		zap.Int64("download_limit_kib", downloadKiB),
+		zap.Int64("upload_limit_kib", uploadKiB),
 		zap.Int("slow_rate_kib", 10),
 		zap.Int("inactive_seconds", 60))
+}
+
+func qbitRateLimitBytes(kib int64) int64 {
+	if kib <= 0 {
+		return 0
+	}
+	const maxInt64 = int64(^uint64(0) >> 1)
+	if kib > maxInt64/1024 {
+		return maxInt64
+	}
+	return kib * 1024
 }
 
 // mapQBitState 把 qBit 状态映射到我们的 status

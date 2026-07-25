@@ -428,6 +428,7 @@ func (s *Service) ResumeAll(ctx context.Context) (int64, error) {
 // 重启前状态为 pending/downloading 的任务，重启后执行 goroutine 已丢失，
 // 这里重新调度执行（stream 类型）。torrent 由下载器自身管理，不处理。
 func (s *Service) RecoverPending(ctx context.Context) {
+	s.normalizeHistoricalFailureKinds(ctx)
 	s.resolveHistoricalFailures(ctx)
 	// 启动时做一次性数据迁移：历史 stream 下载的 stream_road_name 为 NULL，
 	// 用 anime 当前的 stream_road_name 回填（通常是"播放列表1"）
@@ -486,6 +487,43 @@ func (s *Service) RecoverPending(ctx context.Context) {
 		}
 
 		go s.execute(dl.ID, dl.TorrentID, task)
+	}
+}
+
+// normalizeHistoricalFailureKinds 修正旧版本遗留的错误分类。早期版本把季度/
+// 集数不匹配也记成 transient，RetryFailedJob 因而会周期性复活已被主动删除的
+// qBit 任务。启动时将这类记录改为候选级 rejected，并清除冷却时间。
+func (s *Service) normalizeHistoricalFailureKinds(ctx context.Context) {
+	var rows []model.Download
+	if err := s.db.WithContext(ctx).
+		Where("status = ? AND last_error <> ''", model.DownloadStatusFailed).
+		Where("failure_kind IN ? OR failure_kind = ''", []string{model.FailureKindTransient}).
+		Find(&rows).Error; err != nil {
+		zap.L().Warn("查询历史失败分类失败", zap.Error(err))
+		return
+	}
+
+	var updated int64
+	for i := range rows {
+		kind, _ := classifyError(fmt.Errorf("%s", rows[i].LastError), rows[i].RetryCount)
+		if kind != model.FailureKindRejected {
+			continue
+		}
+		result := s.db.WithContext(ctx).Model(&model.Download{}).
+			Where("id = ?", rows[i].ID).
+			Updates(func() map[string]interface{} {
+				updates := rejectedCandidateCleanup()
+				updates["failure_kind"] = model.FailureKindRejected
+				return updates
+			}())
+		if result.Error != nil {
+			zap.L().Warn("修正历史失败分类失败", zap.Uint("id", rows[i].ID), zap.Error(result.Error))
+			continue
+		}
+		updated += result.RowsAffected
+	}
+	if updated > 0 {
+		zap.L().Info("已修正历史候选错误分类", zap.Int64("rows", updated))
 	}
 }
 

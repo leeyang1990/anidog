@@ -27,3 +27,11 @@ func TestClassifyErrorBackoffAndFinalAttempt(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyErrorRejectsWrongSeasonWithoutConsumingRetry(t *testing.T) {
+	err := errors.New("季度不匹配：错误选中第二季合集，已自动删除")
+	kind, delay := classifyError(err, 3)
+	if kind != model.FailureKindRejected || delay != 0 {
+		t.Fatalf("got %s/%s, want rejected/0", kind, delay)
+	}
+}

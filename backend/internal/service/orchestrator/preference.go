@@ -34,7 +34,7 @@ type Preference struct {
 	DisabledForAnime []string // 该 anime 关闭的 source_type
 
 	// 调度
-	Priority      []string // ["bt","stream"]（不再包含 rss）
+	Priority      []string // ["bt","mikan","stream"]（不再包含 rss）
 	CheckInterval int      // 分钟
 }
 
@@ -49,7 +49,7 @@ func (p Preference) IsSourceDisabled(srcType string) bool {
 	switch srcType {
 	case "stream":
 		return !p.StreamEnabled
-	case "bt":
+	case "bt", "mikan":
 		return !p.BTEnabled
 	case "rss":
 		return true
@@ -80,7 +80,7 @@ func Defaults() Preference {
 		BTEnabled:       true,
 		RSSEnabled:      true,
 		EnabledIndexers: []string{"mikan", "dmhy", "bangumimoe"},
-		Priority:        []string{"bt", "stream"},
+		Priority:        []string{"bt", "mikan", "stream"},
 		CheckInterval:   30,
 	}
 }
@@ -166,6 +166,19 @@ func LoadGlobal(ctx context.Context, svc *setting.Service) Preference {
 					filtered = append(filtered, s)
 				}
 			}
+			// 旧版本把 Mikan 混在 bt 层级中，历史值通常是
+			// ["bt","stream"]。升级后将独立 Mikan 层插在普通 BT 与
+			// 流媒体之间，保持用户要求的三级兜底顺序。
+			if !containsSource(filtered, "mikan") {
+				for i, source := range filtered {
+					if source == "bt" {
+						filtered = append(filtered, "")
+						copy(filtered[i+2:], filtered[i+1:])
+						filtered[i+1] = "mikan"
+						break
+					}
+				}
+			}
 			if len(filtered) > 0 {
 				p.Priority = filtered
 			}
@@ -180,6 +193,15 @@ func LoadGlobal(ctx context.Context, svc *setting.Service) Preference {
 	}
 
 	return p
+}
+
+func containsSource(sources []string, target string) bool {
+	for _, source := range sources {
+		if source == target {
+			return true
+		}
+	}
+	return false
 }
 
 // MergeWithAnime 把全局偏好与 anime.Override* 字段合并。

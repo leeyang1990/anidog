@@ -28,6 +28,17 @@ type NotificationProvider interface {
 	Test(ctx context.Context) error
 }
 
+type httpClientProvider interface {
+	setHTTPClient(client *http.Client)
+}
+
+func providerHTTPClient(client *http.Client, timeout time.Duration) *http.Client {
+	if client != nil {
+		return client
+	}
+	return &http.Client{Timeout: timeout}
+}
+
 func formatMessage(info *NotificationInfo) string {
 	if info.Message != "" {
 		return info.Message
@@ -51,7 +62,10 @@ type TelegramProvider struct {
 	BotToken   string `json:"bot_token,omitempty"`
 	TokenAlias string `json:"token,omitempty"` // 前端简短键
 	ChatID     string `json:"chat_id"`
+	httpClient *http.Client
 }
+
+func (p *TelegramProvider) setHTTPClient(client *http.Client) { p.httpClient = client }
 
 // resolveTelegram 取出真正要用的 token，兼容前端简短键。
 func (p *TelegramProvider) resolveToken() string {
@@ -90,10 +104,12 @@ func (p *TelegramProvider) Send(ctx context.Context, info *NotificationInfo) err
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := providerHTTPClient(p.httpClient, 15*time.Second).Do(req)
 	if err != nil {
-		return fmt.Errorf("Telegram 发送失败: %w", err)
+		// url.Error 会包含完整请求 URL，而 Telegram token 位于 URL path 中。
+		// 对错误文本脱敏，避免 token 泄漏到后端日志和接口响应。
+		safeErr := strings.ReplaceAll(err.Error(), tok, "[REDACTED]")
+		return fmt.Errorf("Telegram 发送失败: %s", safeErr)
 	}
 	defer resp.Body.Close()
 
@@ -138,11 +154,14 @@ func truncateStr(s string, n int) string {
 //
 // 同样兼容前端简短键 (url/key) 和长键 (server_url/device_key)。
 type BarkProvider struct {
-	ServerURL string `json:"server_url,omitempty"`
-	URLAlias  string `json:"url,omitempty"`
-	DeviceKey string `json:"device_key,omitempty"`
-	KeyAlias  string `json:"key,omitempty"`
+	ServerURL  string `json:"server_url,omitempty"`
+	URLAlias   string `json:"url,omitempty"`
+	DeviceKey  string `json:"device_key,omitempty"`
+	KeyAlias   string `json:"key,omitempty"`
+	httpClient *http.Client
 }
+
+func (p *BarkProvider) setHTTPClient(client *http.Client) { p.httpClient = client }
 
 func (p *BarkProvider) resolveServer() string {
 	if p.URLAlias != "" {
@@ -170,7 +189,12 @@ func (p *BarkProvider) Send(ctx context.Context, info *NotificationInfo) error {
 	payload := map[string]string{"device_key": key, "title": "AniDog", "body": msg}
 	data, _ := json.Marshal(payload)
 
-	resp, err := http.Post(server+"/"+key, "application/json", strings.NewReader(string(data)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server+"/"+key, strings.NewReader(string(data)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := providerHTTPClient(p.httpClient, 15*time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("Bark 发送失败: %w", err)
 	}
@@ -190,7 +214,10 @@ func (p *BarkProvider) Test(ctx context.Context) error {
 type DiscordProvider struct {
 	WebhookURL string `json:"webhook_url,omitempty"`
 	URLAlias   string `json:"url,omitempty"`
+	httpClient *http.Client
 }
+
+func (p *DiscordProvider) setHTTPClient(client *http.Client) { p.httpClient = client }
 
 func (p *DiscordProvider) resolveURL() string {
 	if p.URLAlias != "" {
@@ -208,7 +235,12 @@ func (p *DiscordProvider) Send(ctx context.Context, info *NotificationInfo) erro
 	payload := map[string]string{"content": msg}
 	data, _ := json.Marshal(payload)
 
-	resp, err := http.Post(u, "application/json", strings.NewReader(string(data)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(data)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := providerHTTPClient(p.httpClient, 15*time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("Discord 发送失败: %w", err)
 	}
@@ -226,16 +258,19 @@ func (p *DiscordProvider) Test(ctx context.Context) error {
 
 // WebhookProvider 通用 Webhook 通知
 type WebhookProvider struct {
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers"`
+	URL        string            `json:"url"`
+	Headers    map[string]string `json:"headers"`
+	httpClient *http.Client
 }
+
+func (p *WebhookProvider) setHTTPClient(client *http.Client) { p.httpClient = client }
 
 func (p *WebhookProvider) Send(ctx context.Context, info *NotificationInfo) error {
 	msg := formatMessage(info)
 	payload := map[string]string{"message": msg, "title": "AniDog"}
 	data, _ := json.Marshal(payload)
 
-	req, err := http.NewRequest(http.MethodPost, p.URL, strings.NewReader(string(data)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, strings.NewReader(string(data)))
 	if err != nil {
 		return err
 	}
@@ -244,8 +279,7 @@ func (p *WebhookProvider) Send(ctx context.Context, info *NotificationInfo) erro
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := providerHTTPClient(p.httpClient, 10*time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("Webhook 发送失败: %w", err)
 	}
@@ -261,7 +295,10 @@ func (p *WebhookProvider) Test(ctx context.Context) error {
 type ServerChanProvider struct {
 	SendKey      string `json:"send_key,omitempty"`
 	SendKeyAlias string `json:"sendkey,omitempty"`
+	httpClient   *http.Client
 }
+
+func (p *ServerChanProvider) setHTTPClient(client *http.Client) { p.httpClient = client }
 
 func (p *ServerChanProvider) resolveKey() string {
 	if p.SendKeyAlias != "" {
@@ -279,7 +316,12 @@ func (p *ServerChanProvider) Send(ctx context.Context, info *NotificationInfo) e
 	apiURL := fmt.Sprintf("https://sctapi.ftqq.com/%s.send", key)
 	form := url.Values{"title": {"AniDog"}, "desp": {msg}}
 
-	resp, err := http.PostForm(apiURL, form)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := providerHTTPClient(p.httpClient, 15*time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("Server酱发送失败: %w", err)
 	}
@@ -297,13 +339,16 @@ func (p *ServerChanProvider) Test(ctx context.Context) error {
 
 // WeComProvider 企业微信通知
 type WeComProvider struct {
-	CorpID         string `json:"corp_id,omitempty"`
-	CorpIDAlias    string `json:"corpid,omitempty"`
-	CorpSecret     string `json:"corp_secret,omitempty"`
-	CorpSecretAlt  string `json:"corpsecret,omitempty"`
-	AgentID        string `json:"agent_id,omitempty"`
-	AgentIDAlias   string `json:"agentid,omitempty"`
+	CorpID        string `json:"corp_id,omitempty"`
+	CorpIDAlias   string `json:"corpid,omitempty"`
+	CorpSecret    string `json:"corp_secret,omitempty"`
+	CorpSecretAlt string `json:"corpsecret,omitempty"`
+	AgentID       string `json:"agent_id,omitempty"`
+	AgentIDAlias  string `json:"agentid,omitempty"`
+	httpClient    *http.Client
 }
+
+func (p *WeComProvider) setHTTPClient(client *http.Client) { p.httpClient = client }
 
 func (p *WeComProvider) resolveCorpID() string {
 	if p.CorpIDAlias != "" {
@@ -333,7 +378,11 @@ func (p *WeComProvider) Send(ctx context.Context, info *NotificationInfo) error 
 	}
 	// 获取 access_token
 	tokenURL := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=%s&corpsecret=%s", corpID, corpSecret)
-	resp, err := http.Get(tokenURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := providerHTTPClient(p.httpClient, 15*time.Second).Do(req)
 	if err != nil {
 		return fmt.Errorf("企业微信获取 token 失败: %w", err)
 	}
@@ -362,7 +411,12 @@ func (p *WeComProvider) Send(ctx context.Context, info *NotificationInfo) error 
 	data, _ := json.Marshal(payload)
 
 	sendURL := fmt.Sprintf("https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=%s", tokenResp.AccessToken)
-	resp2, err := http.Post(sendURL, "application/json", strings.NewReader(string(data)))
+	req2, err := http.NewRequestWithContext(ctx, http.MethodPost, sendURL, strings.NewReader(string(data)))
+	if err != nil {
+		return err
+	}
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := providerHTTPClient(p.httpClient, 15*time.Second).Do(req2)
 	if err != nil {
 		return fmt.Errorf("企业微信发送失败: %w", err)
 	}
@@ -382,46 +436,55 @@ func (p *WeComProvider) Test(ctx context.Context) error {
 	return p.Send(ctx, &NotificationInfo{Message: "AniDog - 企业微信通知测试"})
 }
 
-// CreateProvider 根据类型创建通知提供者
-func CreateProvider(providerType, configJSON string) (NotificationProvider, error) {
+// CreateProvider 根据类型创建通知提供者。可选 client 用于让所有外部通知请求
+// 共用系统的动态代理；省略时保持原有直连行为，方便独立使用与测试。
+func CreateProvider(providerType, configJSON string, clients ...*http.Client) (NotificationProvider, error) {
+	var provider NotificationProvider
 	switch providerType {
 	case "telegram":
 		var p TelegramProvider
 		if err := json.Unmarshal([]byte(configJSON), &p); err != nil {
 			return nil, fmt.Errorf("解析 Telegram 配置失败: %w", err)
 		}
-		return &p, nil
+		provider = &p
 	case "bark":
 		var p BarkProvider
 		if err := json.Unmarshal([]byte(configJSON), &p); err != nil {
 			return nil, fmt.Errorf("解析 Bark 配置失败: %w", err)
 		}
-		return &p, nil
+		provider = &p
 	case "discord":
 		var p DiscordProvider
 		if err := json.Unmarshal([]byte(configJSON), &p); err != nil {
 			return nil, fmt.Errorf("解析 Discord 配置失败: %w", err)
 		}
-		return &p, nil
+		provider = &p
 	case "webhook":
 		var p WebhookProvider
 		if err := json.Unmarshal([]byte(configJSON), &p); err != nil {
 			return nil, fmt.Errorf("解析 Webhook 配置失败: %w", err)
 		}
-		return &p, nil
+		provider = &p
 	case "server_chan":
 		var p ServerChanProvider
 		if err := json.Unmarshal([]byte(configJSON), &p); err != nil {
 			return nil, fmt.Errorf("解析 Server酱配置失败: %w", err)
 		}
-		return &p, nil
+		provider = &p
 	case "wecom":
 		var p WeComProvider
 		if err := json.Unmarshal([]byte(configJSON), &p); err != nil {
 			return nil, fmt.Errorf("解析企业微信配置失败: %w", err)
 		}
-		return &p, nil
+		provider = &p
 	default:
 		return nil, fmt.Errorf("不支持的通知类型: %s", providerType)
 	}
+
+	if len(clients) > 0 && clients[0] != nil {
+		if configurable, ok := provider.(httpClientProvider); ok {
+			configurable.setHTTPClient(clients[0])
+		}
+	}
+	return provider, nil
 }

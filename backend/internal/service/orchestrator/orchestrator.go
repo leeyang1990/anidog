@@ -27,6 +27,7 @@ import (
 const (
 	SourceStream = "stream"
 	SourceBT     = "bt"
+	SourceMikan  = "mikan"
 	SourceRSS    = "rss"
 )
 
@@ -98,7 +99,8 @@ func New(
 	return o
 }
 
-// collectBTCandidates 汇总 BT 候选。
+// collectBTCandidates 汇总一个 BT 层级的候选。includeMikan 为 false 时只跑
+// 普通 BT indexer；为 true 时才绑定 Mikan 番剧并合并 Mikan RSS。
 //
 // 策略（关键：Mikan RSS 召回率远超关键词搜索，这是 ep1/ep4 等小众集数被漏掉的根因）：
 //  1. 若 anime.MikanBangumiID 已反查并写入 → 走 /RSS/Bangumi?bangumiId=X
@@ -108,10 +110,15 @@ func New(
 //  4. 给所有条目补 Parsed 字段。
 //
 // 失败处理：Mikan RSS 拿不到不阻塞，回退到关键词搜索。
-func (o *Orchestrator) collectBTCandidates(ctx context.Context, anime *model.Anime, enabled []indexer.Indexer) []indexer.Candidate {
+func (o *Orchestrator) collectBTCandidates(
+	ctx context.Context,
+	anime *model.Anime,
+	enabled []indexer.Indexer,
+	includeMikan bool,
+) []indexer.Candidate {
 	// 旧数据或订阅时直连失败可能没有 mikan_bangumi_id。每次真正缺集时用
 	// 动态代理客户端按多个标题补查一次，命中后持久化，后续直接走高召回 RSS。
-	if (anime.MikanBangumiID == nil || *anime.MikanBangumiID <= 0) && o.indexerHTTP != nil {
+	if includeMikan && (anime.MikanBangumiID == nil || *anime.MikanBangumiID <= 0) && o.indexerHTTP != nil {
 		season := 0
 		if anime.Season != nil {
 			season = *anime.Season
@@ -136,7 +143,7 @@ func (o *Orchestrator) collectBTCandidates(ctx context.Context, anime *model.Ani
 		}
 	}
 
-	cacheKey := o.candidateCacheKey(anime, enabled)
+	cacheKey := o.candidateCacheKey(anime, enabled, includeMikan)
 	if cached, ok := o.loadCandidateCache(cacheKey); ok {
 		zap.L().Debug("复用 BT 候选缓存",
 			zap.Uint("anime_id", anime.ID),
@@ -145,7 +152,7 @@ func (o *Orchestrator) collectBTCandidates(ctx context.Context, anime *model.Ani
 	}
 
 	var rssCands []indexer.Candidate
-	if anime.MikanBangumiID != nil && *anime.MikanBangumiID > 0 && o.mikanRSS != nil {
+	if includeMikan && anime.MikanBangumiID != nil && *anime.MikanBangumiID > 0 && o.mikanRSS != nil {
 		rssCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		items, err := o.mikanRSS.Fetch(rssCtx, *anime.MikanBangumiID)
 		cancel()
@@ -198,7 +205,7 @@ func (o *Orchestrator) collectBTCandidates(ctx context.Context, anime *model.Ani
 	return merged
 }
 
-func (o *Orchestrator) candidateCacheKey(anime *model.Anime, enabled []indexer.Indexer) string {
+func (o *Orchestrator) candidateCacheKey(anime *model.Anime, enabled []indexer.Indexer, includeMikan bool) string {
 	names := make([]string, 0, len(enabled))
 	for _, ix := range enabled {
 		names = append(names, ix.Name())
@@ -208,7 +215,7 @@ func (o *Orchestrator) candidateCacheKey(anime *model.Anime, enabled []indexer.I
 	if anime.MikanBangumiID != nil {
 		mikanID = *anime.MikanBangumiID
 	}
-	return fmt.Sprintf("%d|%d|%s|%s", anime.ID, mikanID, anime.Title, strings.Join(names, ","))
+	return fmt.Sprintf("%d|%d|%t|%s|%s", anime.ID, mikanID, includeMikan, anime.Title, strings.Join(names, ","))
 }
 
 func (o *Orchestrator) loadCandidateCache(key string) ([]indexer.Candidate, bool) {
@@ -437,8 +444,9 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 		switch srcType {
 		case SourceStream:
 			ok, diagResultCount, diagReason = o.tryStream(ctx, anime, ep, retryCount)
-		case SourceBT:
-			ok, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore = o.tryBT(ctx, anime, ep, pref, retryCount)
+		case SourceBT, SourceMikan:
+			ok, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore =
+				o.tryBT(ctx, anime, ep, pref, retryCount, srcType)
 		default:
 			// SourceRSS 已不再作为 orchestrator 的主动源（被动通道由 RSSRefreshJob 处理）。
 			// 其他未知 srcType 也忽略。
@@ -600,7 +608,14 @@ func streamRuleHealthScore(rule *model.StreamRule) int {
 
 // ---- BT 源适配 ----
 
-func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pref Preference, retryCount int) (
+func (o *Orchestrator) tryBT(
+	ctx context.Context,
+	anime *model.Anime,
+	ep int,
+	pref Preference,
+	retryCount int,
+	tier string,
+) (
 	ok bool, resultCount int, rankedOut int, reason, bestTitle string, bestScore float64,
 ) {
 	if o.dlSvc == nil || !o.dlSvc.HasExecutor(model.DownloadTypeTorrent) {
@@ -609,15 +624,22 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 	// 选启用的 indexer
 	enabled := make([]indexer.Indexer, 0, len(pref.EnabledIndexers))
 	for _, name := range pref.EnabledIndexers {
+		isMikan := name == SourceMikan
+		if (tier == SourceMikan) != isMikan {
+			continue
+		}
 		if ix, has := o.indexers[name]; has {
 			enabled = append(enabled, ix)
 		}
 	}
 	if len(enabled) == 0 {
-		return false, 0, 0, "无启用的 BT indexer", "", 0
+		if tier == SourceMikan {
+			return false, 0, 0, "Mikan 未启用", "", 0
+		}
+		return false, 0, 0, "无启用的普通 BT indexer", "", 0
 	}
 
-	cands := o.collectBTCandidates(ctx, anime, enabled)
+	cands := o.collectBTCandidates(ctx, anime, enabled, tier == SourceMikan)
 	resultCount = len(cands)
 	if resultCount == 0 {
 		return false, 0, 0, "所有 indexer 均无结果", "", 0
@@ -638,8 +660,23 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 	// 永远轮不到第二候选。
 	rankedFiltered := ranked[:0]
 	for _, c := range ranked {
+		candidateURL := c.MagnetURL
+		if candidateURL == "" {
+			candidateURL = c.TorrentURL
+		}
+		if candidateURL == "" {
+			rankedOut++
+			continue
+		}
 		if c.InfoHash != "" && (o.hasHistoricalFailure(ctx, c.InfoHash) ||
 			o.hasAnimeInfoHashFailure(ctx, anime.ID, c.InfoHash)) {
+			rankedOut++
+			continue
+		}
+		// torrent URL 不一定能提前提取 InfoHash。失败/淘汰过的 URL 也必须
+		// 在选 top 前剔除，否则 isDuplicateURL 会把它误报成“合集已入队”，
+		// 整轮提前结束，后面的候选永远没有机会。
+		if o.hasAnimeURLFailure(ctx, anime.ID, candidateURL) {
 			rankedOut++
 			continue
 		}
@@ -655,6 +692,7 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 	// 这样在没法 scrape 的网络环境下不会把所有候选都误杀。
 	scrapeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	type scrapedCand struct {
+		index   int
 		c       indexer.ScoredCandidate
 		ok      bool // scrape 收到回包
 		seeders int
@@ -662,42 +700,52 @@ func (o *Orchestrator) tryBT(ctx context.Context, anime *model.Anime, ep int, pr
 	scrapedCh := make(chan scrapedCand, len(ranked))
 	var swg sync.WaitGroup
 	for i := range ranked {
+		index := i
 		c := ranked[i]
 		magnet := c.MagnetURL
 		if magnet == "" {
 			magnet = c.InfoHash
 		}
 		if magnet == "" {
-			scrapedCh <- scrapedCand{c: c, ok: false} // 缺 hash 不能 scrape，保留
+			scrapedCh <- scrapedCand{index: index, c: c, ok: false} // 缺 hash 不能 scrape，保留
 			continue
 		}
 		swg.Add(1)
 		go func() {
 			defer swg.Done()
 			r := indexer.ScrapeMagnet(scrapeCtx, magnet)
-			scrapedCh <- scrapedCand{c: c, ok: r.OK, seeders: r.Seeders}
+			scrapedCh <- scrapedCand{index: index, c: c, ok: r.OK, seeders: r.Seeders}
 		}()
 	}
 	go func() { swg.Wait(); close(scrapedCh); cancel() }()
 
-	alive := make([]indexer.ScoredCandidate, 0, len(ranked))
+	scraped := make([]scrapedCand, len(ranked))
 	scrapedDead := 0
 	scrapedNoResponse := 0
 	for sc := range scrapedCh {
+		scraped[sc.index] = sc
 		switch {
 		case sc.ok && sc.seeders > 0:
 			// 探活成功且有活种
 			sc.c.Seeders = sc.seeders
 			sc.c.SeedersReported = true
-			alive = append(alive, sc.c)
+			scraped[sc.index] = sc
 		case sc.ok && sc.seeders == 0:
 			// 探活成功但无活种 → 死种
 			scrapedDead++
 		default:
 			// scrape 没回包：保留（fail-open）
 			scrapedNoResponse++
-			alive = append(alive, sc.c)
 		}
+	}
+	// 并发探测的返回顺序不稳定，必须按原评分顺序重建列表。否则响应最快的
+	// 低分候选会随机抢到第一名，破坏 RankByPreferenceAndSeason 的结果。
+	alive := make([]indexer.ScoredCandidate, 0, len(ranked))
+	for _, sc := range scraped {
+		if sc.ok && sc.seeders == 0 {
+			continue
+		}
+		alive = append(alive, sc.c)
 	}
 	rankedOut += scrapedDead
 	if len(alive) == 0 {
@@ -799,6 +847,10 @@ func (o *Orchestrator) retryCountForEpisode(ctx context.Context, animeID uint, e
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
 		Where("anime_id = ? AND episode_number = ? AND status = ?", animeID, ep, model.DownloadStatusFailed).
+		Where("failure_kind IN ?", []string{
+			model.FailureKindTransient,
+			model.FailureKindExhausted,
+		}).
 		Select("COALESCE(MAX(retry_count), 0)").
 		Scan(&retryCount)
 	return retryCount
@@ -1059,7 +1111,7 @@ func (o *Orchestrator) hasHistoricalFailure(ctx context.Context, infoHash string
 	return count > 0
 }
 
-// hasAnimeInfoHashFailure 判断该番是否已经尝试并失败过某个种子。
+// hasAnimeInfoHashFailure 判断该番是否已经尝试并失败/淘汰过某个种子。
 // 与全局 abandoned_torrent 不同，它只影响当前番，避免解析误关联污染其他番剧。
 func (o *Orchestrator) hasAnimeInfoHashFailure(ctx context.Context, animeID uint, infoHash string) bool {
 	if infoHash == "" {
@@ -1068,8 +1120,27 @@ func (o *Orchestrator) hasAnimeInfoHashFailure(ctx context.Context, animeID uint
 	var count int64
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
-		Where("anime_id = ? AND info_hash = ? AND status = ?",
-			animeID, strings.ToUpper(infoHash), model.DownloadStatusFailed).
+		Where("anime_id = ? AND info_hash = ? AND status IN ?",
+			animeID, strings.ToUpper(infoHash), []string{
+				model.DownloadStatusFailed,
+				model.DownloadStatusSuperseded,
+			}).
+		Count(&count)
+	return count > 0
+}
+
+func (o *Orchestrator) hasAnimeURLFailure(ctx context.Context, animeID uint, candidateURL string) bool {
+	if candidateURL == "" {
+		return false
+	}
+	var count int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND url = ? AND status IN ?",
+			animeID, candidateURL, []string{
+				model.DownloadStatusFailed,
+				model.DownloadStatusSuperseded,
+			}).
 		Count(&count)
 	return count > 0
 }
@@ -1087,7 +1158,6 @@ func (o *Orchestrator) isDuplicateURL(ctx context.Context, animeID uint, url str
 			model.DownloadStatusDownloading,
 			model.DownloadStatusCompleted,
 			model.DownloadStatusPending,
-			model.DownloadStatusFailed,
 		}).
 		Count(&count)
 	return count > 0

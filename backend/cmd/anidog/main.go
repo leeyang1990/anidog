@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -93,7 +94,8 @@ func main() {
 
 	// 5d. Dashboard / Notification / StreamRule / Settings
 	dashboardSvc := dashboardsvc.New(db, bangumiSvc)
-	notifSvc := notifsvc.NewService(db)
+	notificationHTTPClient := network.NewClient(proxyProvider, 15*time.Second)
+	notifSvc := notifsvc.NewService(db, notificationHTTPClient)
 	streamRuleSvc := streamrulesvc.NewService(db, streamManager)
 	settingSvc := settingsvc.NewService(cfg, db)
 	settingSvc.OnChange("http_proxy", func(value string) {
@@ -167,6 +169,26 @@ func main() {
 		// QBitSyncer 会广播到所有 enabled 渠道（telegram/bark/...）
 		qbitSync.SetNotificationService(notifSvc)
 		qbitSync.SetDeadTorrentHandler(orch.RetryEpisodeAfterDeadTorrent)
+		qbitSync.SetRateLimitLoader(func(ctx context.Context) (downloadKiB, uploadKiB int64) {
+			read := func(key string) int64 {
+				raw, ok, err := settingSvc.Get(ctx, key)
+				if err != nil || !ok {
+					return 0
+				}
+				value, err := strconv.ParseInt(raw, 10, 64)
+				if err != nil || value < 0 {
+					return 0
+				}
+				return value
+			}
+			return read("download.bt_download_limit_kib"), read("download.bt_upload_limit_kib")
+		})
+		settingSvc.OnChange("download.bt_download_limit_kib", func(string) {
+			qbitSync.InvalidatePreferences()
+		})
+		settingSvc.OnChange("download.bt_upload_limit_kib", func(string) {
+			qbitSync.InvalidatePreferences()
+		})
 		sched.Register(qbitSync, 15*time.Second, true)
 	}
 

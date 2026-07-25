@@ -29,13 +29,20 @@ func classifyError(err error, retryCount int) (kind string, nextDelay time.Durat
 	if err == nil {
 		return "", 0
 	}
+	msg := strings.ToLower(err.Error())
+
+	// 候选级错误不能重试原任务，也不能消耗整集的重试预算。Orchestrator
+	// 应立即换另一个 hash/线路，而不是把错误季度的旧任务隔一小时再“复活”。
+	if isRejectedCandidateError(msg) {
+		return model.FailureKindRejected, 0
+	}
+
 	// retryCount 表示已经消耗的重试次数。第 3 次重试仍失败后必须收敛为
 	// permanent；这个判断要放在错误 marker 之前，否则已识别的网络错误会
 	// 返回 transient + 0 延迟，形成永远不会再调度、语义却仍可重试的僵尸行。
 	if retryCount >= 3 {
 		return model.FailureKindExhausted, 0
 	}
-	msg := strings.ToLower(err.Error())
 
 	// ---- transient：流媒体源的临时故障 ----
 	// 1. m3u8 签名/token 过期：ffmpeg "IO error: End of file" / "End of file"
@@ -88,6 +95,29 @@ func classifyError(err error, retryCount int) (kind string, nextDelay time.Durat
 
 	// 其余视为 transient 试一两次 —— 多数 ffmpeg/网络错都属于"暂时性"。
 	return model.FailureKindTransient, backoff(retryCount)
+}
+
+// isRejectedCandidateError 判断错误是否只说明“这一个候选不适合当前剧集”。
+// 这类错误与网络抖动不同：重复提交同一个候选没有意义，但应允许编排器
+// 立刻尝试下一候选，所以使用 rejected，而不是 transient/permanent。
+func isRejectedCandidateError(msg string) bool {
+	markers := []string{
+		"季度不匹配",
+		"季数不匹配",
+		"错误选中",
+		"season mismatch",
+		"wrong season",
+		"集数不匹配",
+		"剧集不匹配",
+		"episode mismatch",
+		"qbittorrent 中不存在对应任务",
+	}
+	for _, marker := range markers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // backoff —— transient 重试的等待时间，按重试次数递增。

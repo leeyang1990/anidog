@@ -57,6 +57,19 @@
                 {{ ix.label }}
               </button>
             </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+              <div class="space-y-2">
+                <label class="text-sm font-bold text-foreground">BT 下载限速（KB/s）</label>
+                <AcInput v-model="form.bt_download_limit_kib" type="number" min="0" />
+                <p class="text-xs text-muted-foreground">0 表示不限速，保存后约 15 秒内生效</p>
+              </div>
+              <div class="space-y-2">
+                <label class="text-sm font-bold text-foreground">BT 上传限速（KB/s）</label>
+                <AcInput v-model="form.bt_upload_limit_kib" type="number" min="0" />
+                <p class="text-xs text-muted-foreground">限制下载中和做种任务的总上传速度，0 表示不限速</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -254,7 +267,9 @@ const defaults = {
   source_enabled_bt: true,
   source_enabled_rss: true,
   indexer_enabled: { mikan: true, dmhy: true, bangumimoe: true, nyaa: false },
-  priority: ['bt', 'stream'],
+  priority: ['bt', 'mikan', 'stream'],
+  bt_download_limit_kib: 0,
+  bt_upload_limit_kib: 0,
   check_interval: 30,
   // 下载与归档（原"下载管理 → 设置"弹窗）
   download_dir: '/downloads',
@@ -304,7 +319,7 @@ const renameExample = computed(() => ({
 }[form.rename_method] || ''))
 
 function sourceLabel(src) {
-  return { bt: '🧲 BT 种子', stream: '🎬 流媒体' }[src] || src
+  return { bt: '🧲 普通 BT 聚合', mikan: '🍊 Mikan', stream: '🎬 流媒体' }[src] || src
 }
 
 function isIndexerEnabled(name) { return !!form.indexer_enabled[name] }
@@ -351,8 +366,15 @@ async function load() {
     if (!Array.isArray(form.priority) || form.priority.length === 0) form.priority = [...defaults.priority]
     // 兼容旧数据：过滤掉 'rss'（已不再作为主动源）
     form.priority = form.priority.filter(s => s !== 'rss')
+    // 旧版本的 Mikan 混在 bt 中；升级后作为普通 BT 与流媒体之间的独立层。
+    if (!form.priority.includes('mikan')) {
+      const btIndex = form.priority.indexOf('bt')
+      if (btIndex >= 0) form.priority.splice(btIndex + 1, 0, 'mikan')
+    }
     if (form.priority.length === 0) form.priority = [...defaults.priority]
     form.check_interval = parseInt(map['download.check_interval']) || defaults.check_interval
+    form.bt_download_limit_kib = Math.max(0, parseInt(map['download.bt_download_limit_kib']) || 0)
+    form.bt_upload_limit_kib = Math.max(0, parseInt(map['download.bt_upload_limit_kib']) || 0)
 
     // 下载与归档（沿用原 DownloadList 的扁平 key：media_root/download_dir/max_concurrent/rename_*）
     form.download_dir = map['download_dir'] || map['media_root'] || defaults.download_dir
@@ -380,6 +402,8 @@ async function save() {
     'download.source_enabled.rss': String(form.source_enabled_rss),
     'download.priority': JSON.stringify(form.priority),
     'download.check_interval': String(form.check_interval),
+    'download.bt_download_limit_kib': String(Math.max(0, parseInt(form.bt_download_limit_kib) || 0)),
+    'download.bt_upload_limit_kib': String(Math.max(0, parseInt(form.bt_upload_limit_kib) || 0)),
     // 下载与归档（扁平 key，与后端白名单一致）
     'download_dir': form.download_dir,
     'max_concurrent': String(form.max_concurrent),

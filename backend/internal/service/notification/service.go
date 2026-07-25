@@ -2,6 +2,7 @@ package notification
 
 import (
 	"context"
+	"net/http"
 	"sync"
 
 	"go.uber.org/zap"
@@ -12,11 +13,16 @@ import (
 
 // Service handles notification channel persistence.
 type Service struct {
-	db *gorm.DB
+	db         *gorm.DB
+	httpClient *http.Client
 }
 
-func NewService(db *gorm.DB) *Service {
-	return &Service{db: db}
+func NewService(db *gorm.DB, clients ...*http.Client) *Service {
+	var client *http.Client
+	if len(clients) > 0 {
+		client = clients[0]
+	}
+	return &Service{db: db, httpClient: client}
 }
 
 func (s *Service) List(ctx context.Context) ([]model.NotificationChannel, error) {
@@ -61,7 +67,7 @@ func (s *Service) Test(ctx context.Context, id uint) error {
 		return err
 	}
 
-	provider, err := CreateProvider(channel.Type, channel.Config)
+	provider, err := CreateProvider(channel.Type, channel.Config, s.httpClient)
 	if err != nil {
 		return err
 	}
@@ -94,7 +100,7 @@ func (s *Service) Broadcast(ctx context.Context, info *NotificationInfo) {
 		wg.Add(1)
 		go func(ch model.NotificationChannel) {
 			defer wg.Done()
-			provider, err := CreateProvider(ch.Type, ch.Config)
+			provider, err := CreateProvider(ch.Type, ch.Config, s.httpClient)
 			if err != nil {
 				zap.L().Warn("构造通知 provider 失败",
 					zap.Uint("channel_id", ch.ID),

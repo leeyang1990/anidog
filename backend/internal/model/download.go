@@ -16,10 +16,13 @@ const (
 //     BT 死种：DHT 短期找不到 peer（meta_dl 超时）—— 等下一轮新 hash
 //   - permanent：永久失败，不再重试
 //     例：磁盘满、文件 IO 错、格式不支持
+//   - rejected：当前候选本身无效或已经消失，不重试这条记录，但允许同集立即换源
+//     例：季度/集数不匹配、qBittorrent 中的对应任务被删除
 //   - "" （空）：尚未分类（旧记录或代码未覆盖路径）—— 走原逻辑
 const (
 	FailureKindTransient = "transient"
 	FailureKindPermanent = "permanent"
+	FailureKindRejected  = "rejected"
 	// exhausted：快速重试预算已耗尽，但外部下载源未来可能恢复。
 	// 不进入 5 分钟 RetryJob，由 30 分钟 Orchestrator 在长冷却后半开探测。
 	FailureKindExhausted = "exhausted"

@@ -389,6 +389,9 @@ function formatSize(bytes) {
 function formatTaskSize(task) {
   const total = task.total_bytes || 0
   const done = task.downloaded_bytes || 0
+  // rejected 表示这个候选已经被淘汰；其容量可能来自错误季度合集，
+  // 不是当前剧集的有效大小。后端也会清理，这里再做一层兼容保护。
+  if (task.failure_kind === 'rejected') return '—'
   if (task.status === 'completed') return formatSize(done || total)
   if (task.status === 'downloading' || task.status === 'paused') {
     if (total > 0) return `${formatSize(done)} / ${formatSize(total)}`

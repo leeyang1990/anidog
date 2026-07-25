@@ -102,6 +102,14 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	updated := 0
 	orphaned := 0
 	abandoned := 0
+	activeMetadataProbes := 0
+	for i := range downloads {
+		if downloads[i].MetadataProbeStartedAt != nil &&
+			(downloads[i].Status == model.DownloadStatusPending ||
+				downloads[i].Status == model.DownloadStatusDownloading) {
+			activeMetadataProbes++
+		}
+	}
 	for _, dl := range downloads {
 		if dl.InfoHash == nil {
 			continue
@@ -174,6 +182,42 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		}
 		// 状态映射
 		if state, ok := qt["state"].(string); ok {
+			hasMetadata, hasMetadataField := qt["has_metadata"].(bool)
+			if hasMetadataField && hasMetadata && dl.MetadataProbeStartedAt != nil {
+				if err := s.setForceStart(ctx, *dl.InfoHash, false); err != nil {
+					zap.L().Warn("metadata 探测完成但恢复普通队列失败",
+						zap.Uint("id", dl.ID), zap.Error(err))
+				} else {
+					updates["metadata_probe_started_at"] = nil
+					dl.MetadataProbeStartedAt = nil
+					if activeMetadataProbes > 0 {
+						activeMetadataProbes--
+					}
+					zap.L().Info("magnet metadata 探测完成，已恢复普通队列",
+						zap.Uint("id", dl.ID), zap.String("name", dl.Name))
+				}
+			}
+			if state == "queuedDL" && hasMetadataField && !hasMetadata &&
+				dl.MetadataProbeStartedAt == nil && activeMetadataProbes < maxConcurrentMetadataProbes {
+				if err := s.setForceStart(ctx, *dl.InfoHash, true); err != nil {
+					zap.L().Warn("启动 magnet metadata 独立探测失败",
+						zap.Uint("id", dl.ID), zap.Error(err))
+				} else {
+					probeStartedAt := now
+					updates["metadata_probe_started_at"] = &probeStartedAt
+					dl.MetadataProbeStartedAt = &probeStartedAt
+					activeMetadataProbes++
+					zap.L().Info("已启动 magnet metadata 独立探测",
+						zap.Uint("id", dl.ID), zap.String("name", dl.Name),
+						zap.Int("active_probes", activeMetadataProbes))
+				}
+			}
+
+			healthUpdates, longTermReason := observeLongTermTorrentHealth(&dl, qt, now)
+			for key, value := range healthUpdates {
+				updates[key] = value
+			}
+
 			newStatus := mapQBitState(state)
 			// 防误标：刚入队 < 60s 内不允许翻 completed。qBit 在创建种子的早期
 			// 阶段会瞬时上报 checkingUP/queuedUP/forcedUP 等状态，mapQBitState
@@ -197,7 +241,7 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 					s.notifyCompletion(ctx, &dl)
 				}
 			}
-			// 死种快速放弃 —— 分三档：
+			// 死种自动放弃 —— 多信号分层：
 			//
 			//  A. metaDL 卡住 ≥ 90s：DHT 找不到任何 peer，连元数据都拉不到，是死种最强信号。
 			//     正常种子 5-15s 内就会进入 stalledDL/downloading；超过 90s 还停在 metaDL
@@ -211,27 +255,43 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			//  C. stalledDL/missingFiles 持续 6h 且 0 元数据 0 做种 0 进度：兜底。
 			//     这一档专门收"漏掉的边角情况"——比如 has_metadata=false 但状态被映射成 stalledDL。
 			//
+			//  D. 连续 4h 无完整可用分片：偶发几个字节不会重置计时。
+			//
+			//  E. 4h 字节窗口平均 <5 KiB/s，当前仍低速且完成度 <95%：
+			//     处理能连上 peer、却会拖几天甚至几周的半死种。
+			//
 			// 命中任一档：写黑名单 + 从 qBit 删除 + 从 DB 删除
 			// （Orchestrator 下一轮就会从剩下的 mikan_rss 候选里挑下一名次的种）。
-			if state == "metaDL" && time.Since(dl.CreatedAt) > 90*time.Second {
+			metadataStartedAt := dl.CreatedAt
+			if dl.MetadataProbeStartedAt != nil {
+				metadataStartedAt = *dl.MetadataProbeStartedAt
+			}
+			if (state == "metaDL" ||
+				(state == "queuedDL" && dl.MetadataProbeStartedAt != nil)) &&
+				now.Sub(metadataStartedAt) > metadataProbeTimeout {
 				if s.abandonDeadTorrent(ctx, &dl, "metaDL 超 90s 无元数据，DHT 找不到任何 peer，判死种") {
 					abandoned++
 				}
 				continue
 			}
-			if state == "stalledDL" && time.Since(dl.CreatedAt) > 5*time.Minute {
-				hasMeta, _ := qt["has_metadata"].(bool)
+			if state == "stalledDL" && dl.StalledSince != nil && now.Sub(*dl.StalledSince) > 5*time.Minute {
 				numSeeds, _ := qt["num_seeds"].(float64)
 				progress, _ := qt["progress"].(float64)
 				dlspeed, _ := qt["dlspeed"].(float64)
 				// has_metadata=true 的种子才适用这条快速判定（已拿到 .torrent 信息但找不到完整源）
 				// progress < 0.01 即 < 1%；同时 num_seeds=0 且 dlspeed=0 → 5min 内未恢复
-				if hasMeta && numSeeds <= 0 && dlspeed <= 0 && progress < 0.01 {
+				if hasMetadata && numSeeds <= 0 && dlspeed <= 0 && progress < 0.01 {
 					if s.abandonDeadTorrent(ctx, &dl, "stalledDL 超 5min 无 seeder 无进度（swarm 里全是不完整副本），判死种") {
 						abandoned++
 					}
 					continue
 				}
+			}
+			if longTermReason != "" {
+				if s.abandonDeadTorrent(ctx, &dl, longTermReason) {
+					abandoned++
+				}
+				continue
 			}
 			if shouldAbandonStalledDownload(state, qt, dl.LastProgressAt, now) {
 				if s.abandonDeadTorrent(ctx, &dl, "stalledDL 连续 2h 无任何进度，且无已连接做种、可用度未超过当前进度，判定为不完整 swarm") {
@@ -277,7 +337,15 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	return nil
 }
 
-const stalledProgressTimeout = 2 * time.Hour
+const (
+	stalledProgressTimeout       = 2 * time.Hour
+	continuousUnavailableTimeout = 4 * time.Hour
+	longTermSpeedWindow          = 4 * time.Hour
+	minLongTermAverageSpeed      = 5 * 1024 // bytes/s
+	unavailableSpeedCeiling      = 10 * 1024
+	metadataProbeTimeout         = 90 * time.Second
+	maxConcurrentMetadataProbes  = 3
+)
 
 const (
 	defaultMaxActiveDownloads = 6
@@ -295,6 +363,109 @@ func downloadProgressAdvanced(dl *model.Download, torrent map[string]interface{}
 		return progress*100 > dl.Progress+0.01
 	}
 	return false
+}
+
+// observeLongTermTorrentHealth persists two independent signals:
+//  1. continuous swarm unavailability, which tiny byte trickles cannot reset;
+//  2. downloaded bytes over a multi-hour window, which catches permanently
+//     slow torrents even if their instantaneous qBit state keeps changing.
+func observeLongTermTorrentHealth(dl *model.Download, torrent map[string]interface{}, now time.Time) (map[string]interface{}, string) {
+	updates := map[string]interface{}{}
+	unavailable := isUnavailableSwarm(torrent)
+
+	if unavailable {
+		if dl.StalledSince == nil {
+			startedAt := now
+			if dl.LastProgressAt != nil && dl.LastProgressAt.Before(now) {
+				startedAt = *dl.LastProgressAt
+			}
+			dl.StalledSince = &startedAt
+			updates["stalled_since"] = &startedAt
+		}
+		if now.Sub(*dl.StalledSince) >= continuousUnavailableTimeout {
+			return updates, fmt.Sprintf(
+				"连续 %s 无完整可用分片（偶发字节不重置停滞计时），判定长期不完整 swarm",
+				continuousUnavailableTimeout)
+		}
+	} else if dl.StalledSince != nil {
+		dl.StalledSince = nil
+		updates["stalled_since"] = nil
+	}
+
+	progress, progressOK := torrent["progress"].(float64)
+	downloaded, downloadedOK := torrent["downloaded"].(float64)
+	incomplete := progressOK && progress > 0 && progress < 1
+	if !incomplete || !downloadedOK {
+		if !incomplete && (dl.SpeedWindowStartedAt != nil || dl.SpeedWindowStartBytes != nil) {
+			dl.SpeedWindowStartedAt = nil
+			dl.SpeedWindowStartBytes = nil
+			updates["speed_window_started_at"] = nil
+			updates["speed_window_start_bytes"] = nil
+		}
+		return updates, ""
+	}
+
+	currentBytes := int64(downloaded)
+	if dl.SpeedWindowStartedAt == nil || dl.SpeedWindowStartBytes == nil {
+		startedAt, startBytes := now, currentBytes
+		dl.SpeedWindowStartedAt = &startedAt
+		dl.SpeedWindowStartBytes = &startBytes
+		updates["speed_window_started_at"] = &startedAt
+		updates["speed_window_start_bytes"] = &startBytes
+		return updates, ""
+	}
+
+	elapsed := now.Sub(*dl.SpeedWindowStartedAt)
+	if elapsed < longTermSpeedWindow {
+		return updates, ""
+	}
+	gainedBytes := currentBytes - *dl.SpeedWindowStartBytes
+	if gainedBytes < 0 {
+		gainedBytes = 0
+	}
+	averageSpeed := float64(gainedBytes) / elapsed.Seconds()
+	currentSpeed, speedOK := torrent["dlspeed"].(float64)
+	// A connected seed can still deliver only a few bytes per second forever.
+	// Do not require zero seeds for the long-window rule; instead require both
+	// the multi-hour average and current speed to be low, and keep torrents that
+	// are already within the final 5% so a nearly complete file is not discarded.
+	if averageSpeed < minLongTermAverageSpeed &&
+		speedOK && currentSpeed < unavailableSpeedCeiling &&
+		progress < 0.95 {
+		swarmNote := ""
+		if unavailable {
+			swarmNote = "且无完整可用分片"
+		}
+		return updates, fmt.Sprintf(
+			"%s 长期平均速度 %.1f KiB/s，低于 %.1f KiB/s%s，判定不可用慢种",
+			longTermSpeedWindow, averageSpeed/1024, float64(minLongTermAverageSpeed)/1024, swarmNote)
+	}
+
+	// Healthy enough for this window: roll the baseline so a later degradation
+	// is evaluated independently instead of being masked by old fast progress.
+	startedAt, startBytes := now, currentBytes
+	dl.SpeedWindowStartedAt = &startedAt
+	dl.SpeedWindowStartBytes = &startBytes
+	updates["speed_window_started_at"] = &startedAt
+	updates["speed_window_start_bytes"] = &startBytes
+	return updates, ""
+}
+
+func isUnavailableSwarm(torrent map[string]interface{}) bool {
+	hasMetadata, _ := torrent["has_metadata"].(bool)
+	progress, progressOK := torrent["progress"].(float64)
+	speed, speedOK := torrent["dlspeed"].(float64)
+	connectedSeeds, seedsOK := torrent["num_seeds"].(float64)
+	availability, availabilityOK := torrent["availability"].(float64)
+	if !hasMetadata || !progressOK || !speedOK || !seedsOK || !availabilityOK {
+		return false
+	}
+	if progress <= 0 || progress >= 1 || availability < 0 {
+		return false
+	}
+	return connectedSeeds <= 0 &&
+		speed < unavailableSpeedCeiling &&
+		availability <= progress+0.005
 }
 
 // shouldAbandonStalledDownload catches the important case missed by the old
@@ -478,6 +649,31 @@ func (s *QBitSyncer) deleteFromQBit(ctx context.Context, hash string) error {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("qBit 删除返回 status=%d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// setForceStart temporarily bypasses the payload queue for magnet metadata
+// discovery. The caller turns it off as soon as has_metadata becomes true.
+func (s *QBitSyncer) setForceStart(ctx context.Context, hash string, enabled bool) error {
+	data := url.Values{}
+	data.Set("hashes", strings.ToLower(hash))
+	data.Set("value", fmt.Sprintf("%t", enabled))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		s.baseURL+"/api/v2/torrents/setForceStart", strings.NewReader(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", s.baseURL)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("调用 qBit force-start 接口: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("qBit force-start 返回 status=%d: %s", resp.StatusCode, string(body))
 	}
 	return nil
 }

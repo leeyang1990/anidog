@@ -44,7 +44,18 @@ type Download struct {
 	// increased. qBittorrent can report stalledDL forever, so UpdatedAt is not
 	// useful for detecting a dead swarm because the sync job updates it every
 	// 15 seconds.
-	LastProgressAt  *time.Time `gorm:"index" json:"last_progress_at"`
+	LastProgressAt *time.Time `gorm:"index" json:"last_progress_at"`
+	// StalledSince is not reset by tiny byte trickles while the swarm still has
+	// no connected complete seed and exposes no pieces beyond our progress.
+	StalledSince *time.Time `gorm:"index" json:"stalled_since"`
+	// The speed window detects torrents that evade LastProgressAt by delivering
+	// a few bytes occasionally but remain unusably slow for hours.
+	SpeedWindowStartedAt  *time.Time `gorm:"index" json:"speed_window_started_at"`
+	SpeedWindowStartBytes *int64     `json:"speed_window_start_bytes"`
+	// A queued magnet is force-started only long enough to fetch metadata, then
+	// returned to the normal payload queue.
+	MetadataProbeStartedAt *time.Time `gorm:"index" json:"metadata_probe_started_at"`
+
 	DownloadedBytes *int64     `json:"downloaded_bytes"`
 	TotalBytes      *int64     `json:"total_bytes"`
 	DownloadSpeed   *int64     `json:"download_speed"`

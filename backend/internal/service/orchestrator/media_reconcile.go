@@ -74,6 +74,20 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 			zap.Uint("anime_id", anime.ID), zap.String("season_dir", seasonDir))
 		return MediaAuditResult{}
 	}
+	// qBittorrent preallocates/sparsely creates the final filename before a
+	// torrent is complete. Such a file must not be adopted as completed media,
+	// otherwise a later dead-swarm replacement is blocked by AnimeEpisode.
+	var activeTorrentEpisodes []int
+	if err := o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number IS NOT NULL AND download_type = ?", anime.ID, model.DownloadTypeTorrent).
+		Where("status IN ?", []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Pluck("episode_number", &activeTorrentEpisodes).Error; err != nil {
+		zap.L().Warn("媒体自愈：查询未完成 BT 任务失败", zap.Uint("anime_id", anime.ID), zap.Error(err))
+		return MediaAuditResult{}
+	}
+	for _, ep := range activeTorrentEpisodes {
+		delete(present, ep)
+	}
 
 	var completed []model.Download
 	if err := o.db.WithContext(ctx).
@@ -138,6 +152,52 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 		zap.Uint("anime_id", anime.ID), zap.String("anime", anime.Title),
 		zap.String("season_dir", seasonDir), zap.Ints("episodes", missing))
 	return MediaAuditResult{Success: true, Confirmed: true, Missing: missing, Snapshot: snapshot}
+}
+
+// RetryEpisodeAfterDeadTorrent repairs the episode state left by a partial
+// torrent and immediately runs the normal multi-source selection. This closes
+// the old 30-minute gap between dead-swarm detection and Mikan fallback.
+func (o *Orchestrator) RetryEpisodeAfterDeadTorrent(ctx context.Context, animeID uint, episode int) {
+	if animeID == 0 || episode <= 0 {
+		return
+	}
+	var anime model.Anime
+	if err := o.db.WithContext(ctx).First(&anime, animeID).Error; err != nil || !anime.IsSubscribed {
+		return
+	}
+	if anime.MediaManagementState == MediaStateArchived {
+		zap.L().Info("死种巡检：番剧已归档，不再自动补种",
+			zap.Uint("anime_id", animeID), zap.Int("episode", episode))
+		return
+	}
+	if err := o.checkMediaRootHealth(ctx, o.currentMediaRoot(ctx)); err != nil {
+		zap.L().Error("死种巡检：媒体存储不健康，停止自动补种",
+			zap.Uint("anime_id", animeID), zap.Int("episode", episode), zap.Error(err))
+		return
+	}
+
+	// If another active source already owns this episode, do not create a
+	// duplicate. Normally the dead row was just deleted and this count is zero.
+	var active int64
+	o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND status IN ?",
+			animeID, episode, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Count(&active)
+	if active > 0 {
+		return
+	}
+
+	now := time.Now()
+	_ = o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND status = ?", animeID, episode, model.DownloadStatusCompleted).
+		Updates(map[string]interface{}{"media_missing": true, "media_missing_at": &now}).Error
+	_ = o.db.WithContext(ctx).Model(&model.AnimeEpisode{}).
+		Where("anime_id = ? AND episode_number = ?", animeID, episode).
+		Update("downloaded", false).Error
+
+	zap.L().Warn("死种巡检：立即通过 Mikan/多源重新编排",
+		zap.Uint("anime_id", animeID), zap.String("anime", anime.Title), zap.Int("episode", episode))
+	o.CheckAnime(ctx, &anime, LoadGlobal(ctx, o.settingSvc))
 }
 
 func scanEpisodeFiles(seasonDir string, expectedSeason int) (map[int]bool, int, error) {

@@ -166,6 +166,7 @@ func main() {
 		// 注入通知服务：当一条下载从非完成态翻成 completed 时，
 		// QBitSyncer 会广播到所有 enabled 渠道（telegram/bark/...）
 		qbitSync.SetNotificationService(notifSvc)
+		qbitSync.SetDeadTorrentHandler(orch.RetryEpisodeAfterDeadTorrent)
 		sched.Register(qbitSync, 15*time.Second, true)
 	}
 

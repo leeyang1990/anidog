@@ -9,6 +9,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -22,12 +23,15 @@ import (
 // QBitSyncer 从 qBit 同步 BT 下载的真实进度/大小到 DB。
 // 设计为 scheduler.Job，可定时调用。
 type QBitSyncer struct {
-	db       *gorm.DB
-	baseURL  string
-	user     string
-	pass     string
-	client   *http.Client
-	notifSvc *notification.Service // 可空：未配置时不发通知
+	db                 *gorm.DB
+	baseURL            string
+	user               string
+	pass               string
+	client             *http.Client
+	notifSvc           *notification.Service // 可空：未配置时不发通知
+	deadTorrentHandler func(context.Context, uint, int)
+	queuePolicyMu      sync.Mutex
+	queuePolicyReady   bool
 }
 
 func NewQBitSyncer(db *gorm.DB, cfg *config.Config) *QBitSyncer {
@@ -48,6 +52,13 @@ func (s *QBitSyncer) SetNotificationService(n *notification.Service) {
 	s.notifSvc = n
 }
 
+// SetDeadTorrentHandler injects the episode-level recovery callback. It is
+// invoked only after qBittorrent has removed the torrent and the hash has been
+// blacklisted, so the orchestrator can immediately choose a different source.
+func (s *QBitSyncer) SetDeadTorrentHandler(handler func(context.Context, uint, int)) {
+	s.deadTorrentHandler = handler
+}
+
 func (s *QBitSyncer) Name() string { return "qbit_sync" }
 
 // Run 实现 scheduler.Job 接口。
@@ -62,6 +73,7 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	if err := s.ensureLogin(ctx); err != nil {
 		return err
 	}
+	s.ensureQueuePolicy(ctx)
 
 	torrents, err := s.listTorrents(ctx)
 	if err != nil {
@@ -135,6 +147,7 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			continue
 		}
 		updates := map[string]interface{}{}
+		now := time.Now()
 		if v, ok := qt["size"].(float64); ok && v > 0 {
 			size := int64(v)
 			updates["total_bytes"] = size
@@ -143,7 +156,12 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			updates["downloaded_bytes"] = int64(v)
 		}
 		if v, ok := qt["progress"].(float64); ok {
-			updates["progress"] = v * 100.0
+			progressPercent := v * 100.0
+			updates["progress"] = progressPercent
+			if dl.LastProgressAt == nil || progressPercent > dl.Progress+0.01 {
+				updates["last_progress_at"] = &now
+				dl.LastProgressAt = &now
+			}
 		}
 		if v, ok := qt["dlspeed"].(float64); ok {
 			updates["download_speed"] = int64(v)
@@ -213,6 +231,12 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 					continue
 				}
 			}
+			if shouldAbandonStalledDownload(state, qt, dl.LastProgressAt, now) {
+				if s.abandonDeadTorrent(ctx, &dl, "stalledDL 连续 2h 无任何进度，且无已连接做种、可用度未超过当前进度，判定为不完整 swarm") {
+					abandoned++
+				}
+				continue
+			}
 			if (state == "stalledDL" || state == "missingFiles") &&
 				time.Since(dl.CreatedAt) > 6*time.Hour {
 				numComplete, _ := qt["num_complete"].(float64)
@@ -249,6 +273,31 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			zap.Int("db_total", len(downloads)))
 	}
 	return nil
+}
+
+const stalledProgressTimeout = 2 * time.Hour
+
+// shouldAbandonStalledDownload catches the important case missed by the old
+// rules: a torrent downloaded 10%-90%, then all complete peers disappeared.
+// Tracker-reported seed counts are deliberately ignored because they are often
+// stale. We require no connected seed, no speed and availability no higher
+// than our own progress for two hours before removing anything.
+func shouldAbandonStalledDownload(state string, torrent map[string]interface{}, lastProgressAt *time.Time, now time.Time) bool {
+	if state != "stalledDL" || lastProgressAt == nil || now.Sub(*lastProgressAt) < stalledProgressTimeout {
+		return false
+	}
+	hasMetadata, _ := torrent["has_metadata"].(bool)
+	progress, progressOK := torrent["progress"].(float64)
+	speed, speedOK := torrent["dlspeed"].(float64)
+	connectedSeeds, seedsOK := torrent["num_seeds"].(float64)
+	availability, availabilityOK := torrent["availability"].(float64)
+	if !hasMetadata || !progressOK || !speedOK || !seedsOK || !availabilityOK {
+		return false
+	}
+	if progress <= 0 || progress >= 1 || speed > 0 || connectedSeeds > 0 || availability < 0 {
+		return false
+	}
+	return availability <= progress+0.005
 }
 
 // notifyCompletion 在某条 download 翻成 completed 时推一条通知。
@@ -330,8 +379,11 @@ func (s *QBitSyncer) abandonDeadTorrent(ctx context.Context, dl *model.Download,
 
 	// 1. 从 qBit 删除（带文件）
 	if err := s.deleteFromQBit(ctx, hash); err != nil {
-		zap.L().Warn("从 qBit 删除死种失败（继续其他步骤）",
+		// 保留 DB 行，下一轮继续尝试。否则 qBit 中的孤儿种子仍会占槽，
+		// 而数据库已无法再找到并清理它。
+		zap.L().Warn("从 qBit 删除死种失败，保留任务等待下轮巡检",
 			zap.String("hash", hash), zap.Error(err))
+		return false
 	}
 
 	// 2. 写黑名单（先写黑名单再删 download 行：万一删 download 行后宕机，
@@ -367,6 +419,15 @@ func (s *QBitSyncer) abandonDeadTorrent(ctx context.Context, dl *model.Download,
 		zap.String("hash", hash),
 		zap.String("name", dl.Name),
 		zap.String("reason", reason))
+
+	if s.deadTorrentHandler != nil && dl.AnimeID != nil && dl.EpisodeNumber != nil {
+		animeID, episode := *dl.AnimeID, *dl.EpisodeNumber
+		go func() {
+			recoveryCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			s.deadTorrentHandler(recoveryCtx, animeID, episode)
+		}()
+	}
 	return true
 }
 
@@ -399,6 +460,50 @@ func (s *QBitSyncer) deleteFromQBit(ctx context.Context, hash string) error {
 		return fmt.Errorf("qBit 删除返回 status=%d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// ensureQueuePolicy makes slow/dead torrents stop consuming all active download
+// slots. The health patrol still removes confirmed dead swarms; this preference
+// allows healthy queued candidates to start during the two-hour observation
+// window.
+func (s *QBitSyncer) ensureQueuePolicy(ctx context.Context) {
+	s.queuePolicyMu.Lock()
+	defer s.queuePolicyMu.Unlock()
+	if s.queuePolicyReady {
+		return
+	}
+	preferences := map[string]interface{}{
+		"dont_count_slow_torrents":       true,
+		"slow_torrent_dl_rate_threshold": 10,
+		"slow_torrent_inactive_timer":    60,
+	}
+	raw, err := json.Marshal(preferences)
+	if err != nil {
+		return
+	}
+	data := url.Values{}
+	data.Set("json", string(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		s.baseURL+"/api/v2/app/setPreferences", strings.NewReader(data.Encode()))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", s.baseURL)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		zap.L().Warn("设置 qBit 慢种队列策略失败，下轮重试", zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		zap.L().Warn("设置 qBit 慢种队列策略失败，下轮重试",
+			zap.Int("status", resp.StatusCode), zap.String("body", string(body)))
+		return
+	}
+	s.queuePolicyReady = true
+	zap.L().Info("qBit 慢种队列策略已启用", zap.Int("slow_rate_kib", 10), zap.Int("inactive_seconds", 60))
 }
 
 // mapQBitState 把 qBit 状态映射到我们的 status

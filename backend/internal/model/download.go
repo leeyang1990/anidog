@@ -33,13 +33,18 @@ const (
 
 // Download 下载数据库模型
 type Download struct {
-	ID              uint       `gorm:"primaryKey" json:"id"`
-	TorrentID       string     `gorm:"uniqueIndex;not null" json:"torrent_id"`
-	Name            string     `gorm:"index;not null" json:"name"`
-	URL             string     `gorm:"not null" json:"url"`
-	SavePath        *string    `json:"save_path"`
-	Status          string     `gorm:"index;default:'pending'" json:"status"`
-	Progress        float64    `gorm:"default:0" json:"progress"`
+	ID        uint    `gorm:"primaryKey" json:"id"`
+	TorrentID string  `gorm:"uniqueIndex;not null" json:"torrent_id"`
+	Name      string  `gorm:"index;not null" json:"name"`
+	URL       string  `gorm:"not null" json:"url"`
+	SavePath  *string `json:"save_path"`
+	Status    string  `gorm:"index;default:'pending'" json:"status"`
+	Progress  float64 `gorm:"default:0" json:"progress"`
+	// LastProgressAt records the last time downloaded bytes/progress actually
+	// increased. qBittorrent can report stalledDL forever, so UpdatedAt is not
+	// useful for detecting a dead swarm because the sync job updates it every
+	// 15 seconds.
+	LastProgressAt  *time.Time `gorm:"index" json:"last_progress_at"`
 	DownloadedBytes *int64     `json:"downloaded_bytes"`
 	TotalBytes      *int64     `json:"total_bytes"`
 	DownloadSpeed   *int64     `json:"download_speed"`

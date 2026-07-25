@@ -148,20 +148,22 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		}
 		updates := map[string]interface{}{}
 		now := time.Now()
+		progressAdvanced := downloadProgressAdvanced(&dl, qt)
 		if v, ok := qt["size"].(float64); ok && v > 0 {
 			size := int64(v)
 			updates["total_bytes"] = size
 		}
 		if v, ok := qt["downloaded"].(float64); ok {
-			updates["downloaded_bytes"] = int64(v)
+			downloadedBytes := int64(v)
+			updates["downloaded_bytes"] = downloadedBytes
 		}
 		if v, ok := qt["progress"].(float64); ok {
 			progressPercent := v * 100.0
 			updates["progress"] = progressPercent
-			if dl.LastProgressAt == nil || progressPercent > dl.Progress+0.01 {
-				updates["last_progress_at"] = &now
-				dl.LastProgressAt = &now
-			}
+		}
+		if dl.LastProgressAt == nil || progressAdvanced {
+			updates["last_progress_at"] = &now
+			dl.LastProgressAt = &now
 		}
 		if v, ok := qt["dlspeed"].(float64); ok {
 			updates["download_speed"] = int64(v)
@@ -276,6 +278,19 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 }
 
 const stalledProgressTimeout = 2 * time.Hour
+
+func downloadProgressAdvanced(dl *model.Download, torrent map[string]interface{}) bool {
+	if downloaded, ok := torrent["downloaded"].(float64); ok {
+		return dl.DownloadedBytes == nil || int64(downloaded) > *dl.DownloadedBytes
+	}
+	// Some magnets revise total_bytes after metadata/tracker updates, which can
+	// make percentage temporarily go backwards while bytes continue growing.
+	// Percentage is only a fallback for provider responses without byte data.
+	if progress, ok := torrent["progress"].(float64); ok {
+		return progress*100 > dl.Progress+0.01
+	}
+	return false
+}
 
 // shouldAbandonStalledDownload catches the important case missed by the old
 // rules: a torrent downloaded 10%-90%, then all complete peers disappeared.

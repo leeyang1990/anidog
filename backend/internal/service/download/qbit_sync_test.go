@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anidog/anidog-go/internal/model"
 )
 
 func TestQBitSyncLoginAcceptsNoContent(t *testing.T) {
@@ -53,6 +55,18 @@ func TestShouldAbandonStalledDownload(t *testing.T) {
 	withSeed["num_seeds"] = float64(1)
 	if shouldAbandonStalledDownload("stalledDL", withSeed, &stale, now) {
 		t.Fatal("a torrent with a connected seed must be kept")
+	}
+}
+
+func TestDownloadedBytesAreThePrimaryProgressSignal(t *testing.T) {
+	previousBytes := int64(10_000)
+	dl := &model.Download{DownloadedBytes: &previousBytes, Progress: 7.72}
+	torrent := map[string]interface{}{
+		"downloaded": float64(11_000),
+		"progress":   0.0755,
+	}
+	if !downloadProgressAdvanced(dl, torrent) {
+		t.Fatal("increasing downloaded bytes must count as progress even when percentage decreases")
 	}
 }
 

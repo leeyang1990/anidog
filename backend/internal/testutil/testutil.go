@@ -44,6 +44,7 @@ func InitTestDB() *gorm.DB {
 		&model.NotificationChannel{},
 		&model.StreamRule{},
 		&model.Setting{},
+		&model.AbandonedTorrent{},
 	)
 
 	// Clean all tables for a fresh start
@@ -55,6 +56,7 @@ func InitTestDB() *gorm.DB {
 	db.Exec("DELETE FROM notificationchannel")
 	db.Exec("DELETE FROM streamrule")
 	db.Exec("DELETE FROM setting")
+	db.Exec("DELETE FROM abandoned_torrent")
 	db.Exec("DELETE FROM anime")
 	db.Exec("DELETE FROM user")
 

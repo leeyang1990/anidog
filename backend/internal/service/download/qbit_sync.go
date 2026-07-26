@@ -116,6 +116,7 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	orphaned := 0
 	abandoned := 0
 	activeMetadataProbes := 0
+	qualityReplacementAllowed := s.qualityReplacementAllowed(ctx, time.Now())
 	for i := range downloads {
 		if downloads[i].MetadataProbeStartedAt != nil &&
 			(downloads[i].Status == model.DownloadStatusPending ||
@@ -182,6 +183,14 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		if v, ok := qt["dlspeed"].(float64); ok {
 			updates["download_speed"] = int64(v)
 		}
+		if v, ok := qt["availability"].(float64); ok && v >= 0 {
+			availability := v
+			updates["availability"] = &availability
+		}
+		if v, ok := qt["num_seeds"].(float64); ok && v >= 0 {
+			connectedSeeds := int(v)
+			updates["connected_seeds"] = &connectedSeeds
+		}
 		if v, ok := qt["eta"].(float64); ok && v > 0 && v < 8640000 {
 			eta := int(v)
 			updates["eta"] = eta
@@ -219,9 +228,27 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 				}
 			}
 
-			healthUpdates, longTermReason := observeLongTermTorrentHealth(&dl, qt, now)
+			otherTorrentFast := hasOtherFastTorrent(torrents, *dl.InfoHash)
+			probeUpdates, probeReason := observeInitialTorrentQuality(&dl, qt, now, otherTorrentFast)
+			for key, value := range probeUpdates {
+				updates[key] = value
+			}
+			healthUpdates, longTermReason := observeLongTermTorrentHealth(&dl, qt, now, otherTorrentFast)
 			for key, value := range healthUpdates {
 				updates[key] = value
+			}
+			if needsWastedSample(&dl, now) {
+				if wasted, err := s.getTotalWasted(ctx, *dl.InfoHash); err != nil {
+					zap.L().Debug("读取种子浪费流量失败", zap.Uint("id", dl.ID), zap.Error(err))
+				} else {
+					updates["total_wasted_bytes"] = &wasted
+					updates["wasted_sampled_at"] = &now
+					dl.TotalWastedBytes = &wasted
+					dl.WastedSampledAt = &now
+					if probeReason == "" {
+						probeReason = wastedQualityReason(&dl, qt, now, otherTorrentFast)
+					}
+				}
 			}
 
 			newStatus := mapQBitState(state)
@@ -263,9 +290,16 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			//
 			//  D. 连续 4h 无完整可用分片：偶发几个字节不会重置计时。
 			//
-			//  E. 4h 字节窗口平均 <5 KiB/s，当前仍低速且完成度 <95%：
-			//     处理能连上 peer、却会拖几天甚至几周的半死种。
+			//  E. 入队后 15min 真实吞吐试跑：可用度不足直接淘汰；普通低速仅在
+			//     其他任务能高速下载或没有完整 peer 时淘汰，防止全局断网误判。
 			//
+			//  F. 2h 字节窗口平均 <16 KiB/s，当前仍低速且完成度 <95%：
+			//     有独立健康证据时换源；没有证据则观察到 6h 硬期限。
+			//
+			//  G. 浪费流量 >=64MiB 且超过已下载量 15%，同时当前仍低速：
+			//     识别反复坏块、重连或无效传输。
+			//
+			// 质量类淘汰全局 10min 最多一个，避免网络故障导致批量换源。
 			// 命中任一档：写黑名单 + 从 qBit 删除 + 从 DB 删除
 			// （Orchestrator 下一轮就会从剩下的 mikan_rss 候选里挑下一名次的种）。
 			metadataStartedAt := dl.CreatedAt
@@ -294,8 +328,16 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 				}
 			}
 			if longTermReason != "" {
-				if s.abandonDeadTorrent(ctx, &dl, longTermReason) {
+				if qualityReplacementAllowed && s.abandonDeadTorrent(ctx, &dl, "质量巡检："+longTermReason) {
 					abandoned++
+					qualityReplacementAllowed = false
+				}
+				continue
+			}
+			if probeReason != "" {
+				if qualityReplacementAllowed && s.abandonDeadTorrent(ctx, &dl, "质量巡检："+probeReason) {
+					abandoned++
+					qualityReplacementAllowed = false
 				}
 				continue
 			}
@@ -365,7 +407,11 @@ func rejectedCandidateCleanup() map[string]interface{} {
 		"stalled_since":             nil,
 		"speed_window_started_at":   nil,
 		"speed_window_start_bytes":  nil,
+		"quality_probe_started_at":  nil,
+		"quality_probe_start_bytes": nil,
+		"quality_probe_completed":   false,
 		"metadata_probe_started_at": nil,
+		"wasted_sampled_at":         nil,
 		"next_retry_at":             nil,
 	}
 }
@@ -385,11 +431,19 @@ func (s *QBitSyncer) triggerEpisodeRecovery(animeID *uint, episodeNumber *int) {
 const (
 	stalledProgressTimeout       = 2 * time.Hour
 	continuousUnavailableTimeout = 4 * time.Hour
-	longTermSpeedWindow          = 4 * time.Hour
-	minLongTermAverageSpeed      = 5 * 1024 // bytes/s
-	unavailableSpeedCeiling      = 10 * 1024
+	initialQualityProbeWindow    = 15 * time.Minute
+	minInitialAverageSpeed       = 32 * 1024
+	initialSpeedCeiling          = 64 * 1024
+	longTermSpeedWindow          = 2 * time.Hour
+	maxSlowObservationWindow     = 6 * time.Hour
+	minLongTermAverageSpeed      = 16 * 1024 // bytes/s
+	unavailableSpeedCeiling      = 32 * 1024
+	fastPeerEvidenceSpeed        = 256 * 1024
+	minWastedBytes               = 64 * 1024 * 1024
+	maxWastedRatio               = 0.15
 	metadataProbeTimeout         = 90 * time.Second
 	maxConcurrentMetadataProbes  = 3
+	qualityReplacementCooldown   = 10 * time.Minute
 )
 
 const (
@@ -414,7 +468,66 @@ func downloadProgressAdvanced(dl *model.Download, torrent map[string]interface{}
 //  1. continuous swarm unavailability, which tiny byte trickles cannot reset;
 //  2. downloaded bytes over a multi-hour window, which catches permanently
 //     slow torrents even if their instantaneous qBit state keeps changing.
-func observeLongTermTorrentHealth(dl *model.Download, torrent map[string]interface{}, now time.Time) (map[string]interface{}, string) {
+func observeInitialTorrentQuality(dl *model.Download, torrent map[string]interface{}, now time.Time, otherTorrentFast bool) (map[string]interface{}, string) {
+	updates := map[string]interface{}{}
+	if dl.QualityProbeCompleted {
+		return updates, ""
+	}
+	state, _ := torrent["state"].(string)
+	if state != "downloading" && state != "stalledDL" && state != "forcedDL" {
+		return updates, ""
+	}
+	hasMetadata, _ := torrent["has_metadata"].(bool)
+	progress, progressOK := torrent["progress"].(float64)
+	downloaded, downloadedOK := torrent["downloaded"].(float64)
+	if !hasMetadata || !progressOK || !downloadedOK || progress >= 0.95 {
+		return updates, ""
+	}
+	currentBytes := int64(downloaded)
+	if dl.QualityProbeStartedAt == nil || dl.QualityProbeStartBytes == nil {
+		startedAt, startBytes := now, currentBytes
+		dl.QualityProbeStartedAt = &startedAt
+		dl.QualityProbeStartBytes = &startBytes
+		updates["quality_probe_started_at"] = &startedAt
+		updates["quality_probe_start_bytes"] = &startBytes
+		return updates, ""
+	}
+	elapsed := now.Sub(*dl.QualityProbeStartedAt)
+	if elapsed < initialQualityProbeWindow {
+		return updates, ""
+	}
+	gained := currentBytes - *dl.QualityProbeStartBytes
+	if gained < 0 {
+		gained = 0
+	}
+	average := float64(gained) / elapsed.Seconds()
+	currentSpeed, _ := torrent["dlspeed"].(float64)
+	seeds, _ := torrent["num_seeds"].(float64)
+	availability, availabilityOK := torrent["availability"].(float64)
+
+	// Availability below one means the currently discovered swarm cannot
+	// assemble a complete copy. This is objective even during a local outage.
+	if availabilityOK && availability >= 0 && availability < 1 && seeds <= 0 &&
+		average < initialSpeedCeiling {
+		return updates, fmt.Sprintf(
+			"15 分钟试跑后可用度仅 %.1f%%、无已连接完整做种，当前 swarm 无法拼出完整文件",
+			availability*100)
+	}
+	// For a merely slow torrent require corroboration from another fast torrent
+	// on the same client, or no connected seed. This prevents a WAN/NAS outage
+	// from causing a mass replacement storm.
+	if average < minInitialAverageSpeed && currentSpeed < initialSpeedCeiling &&
+		(seeds <= 0 || otherTorrentFast) {
+		return updates, fmt.Sprintf(
+			"15 分钟真实吞吐试跑平均 %.1f KiB/s、当前 %.1f KiB/s，低于可用阈值",
+			average/1024, currentSpeed/1024)
+	}
+	dl.QualityProbeCompleted = true
+	updates["quality_probe_completed"] = true
+	return updates, ""
+}
+
+func observeLongTermTorrentHealth(dl *model.Download, torrent map[string]interface{}, now time.Time, otherTorrentFast bool) (map[string]interface{}, string) {
 	updates := map[string]interface{}{}
 	unavailable := isUnavailableSwarm(torrent)
 
@@ -471,12 +584,16 @@ func observeLongTermTorrentHealth(dl *model.Download, torrent map[string]interfa
 	averageSpeed := float64(gainedBytes) / elapsed.Seconds()
 	currentSpeed, speedOK := torrent["dlspeed"].(float64)
 	// A connected seed can still deliver only a few bytes per second forever.
-	// Do not require zero seeds for the long-window rule; instead require both
-	// the multi-hour average and current speed to be low, and keep torrents that
-	// are already within the final 5% so a nearly complete file is not discarded.
-	if averageSpeed < minLongTermAverageSpeed &&
+	// At two hours we require corroboration from swarm unavailability or another
+	// fast torrent. Without corroboration the same baseline remains in place
+	// until six hours, rather than being reset and evading the hard deadline.
+	slow := averageSpeed < minLongTermAverageSpeed &&
 		speedOK && currentSpeed < unavailableSpeedCeiling &&
-		progress < 0.95 {
+		progress < 0.95
+	if slow {
+		if !unavailable && !otherTorrentFast && elapsed < maxSlowObservationWindow {
+			return updates, ""
+		}
 		swarmNote := ""
 		if unavailable {
 			swarmNote = "且无完整可用分片"
@@ -494,6 +611,85 @@ func observeLongTermTorrentHealth(dl *model.Download, torrent map[string]interfa
 	updates["speed_window_started_at"] = &startedAt
 	updates["speed_window_start_bytes"] = &startBytes
 	return updates, ""
+}
+
+func hasOtherFastTorrent(torrents []map[string]interface{}, hash string) bool {
+	for _, torrent := range torrents {
+		currentHash, _ := torrent["hash"].(string)
+		speed, _ := torrent["dlspeed"].(float64)
+		if !strings.EqualFold(currentHash, hash) && speed >= fastPeerEvidenceSpeed {
+			return true
+		}
+	}
+	return false
+}
+
+func needsWastedSample(dl *model.Download, now time.Time) bool {
+	if dl.WastedSampledAt != nil && now.Sub(*dl.WastedSampledAt) < 5*time.Minute {
+		return false
+	}
+	if dl.QualityProbeStartedAt != nil && !dl.QualityProbeCompleted &&
+		now.Sub(*dl.QualityProbeStartedAt) >= initialQualityProbeWindow {
+		return true
+	}
+	return dl.SpeedWindowStartedAt != nil &&
+		now.Sub(*dl.SpeedWindowStartedAt) >= longTermSpeedWindow
+}
+
+func wastedQualityReason(dl *model.Download, torrent map[string]interface{}, now time.Time, otherTorrentFast bool) string {
+	if dl.TotalWastedBytes == nil || *dl.TotalWastedBytes < minWastedBytes ||
+		dl.DownloadedBytes == nil || *dl.DownloadedBytes <= 0 {
+		return ""
+	}
+	ratio := float64(*dl.TotalWastedBytes) / float64(*dl.DownloadedBytes)
+	speed, _ := torrent["dlspeed"].(float64)
+	progress, _ := torrent["progress"].(float64)
+	if ratio < maxWastedRatio || speed >= initialSpeedCeiling || progress >= 0.95 {
+		return ""
+	}
+	seeds, _ := torrent["num_seeds"].(float64)
+	if seeds > 0 && !otherTorrentFast &&
+		(dl.QualityProbeStartedAt == nil || now.Sub(*dl.QualityProbeStartedAt) < maxSlowObservationWindow) {
+		return ""
+	}
+	return fmt.Sprintf("浪费流量 %.1f MiB，占已下载流量 %.1f%%，且当前有效速度仅 %.1f KiB/s",
+		float64(*dl.TotalWastedBytes)/(1024*1024), ratio*100, speed/1024)
+}
+
+func (s *QBitSyncer) qualityReplacementAllowed(ctx context.Context, now time.Time) bool {
+	var count int64
+	err := s.db.WithContext(ctx).Model(&model.AbandonedTorrent{}).
+		Where("abandoned_at >= ? AND reason LIKE ?", now.Add(-qualityReplacementCooldown), "质量巡检：%").
+		Count(&count).Error
+	return err == nil && count == 0
+}
+
+func (s *QBitSyncer) getTotalWasted(ctx context.Context, hash string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		s.baseURL+"/api/v2/torrents/properties?hash="+url.QueryEscape(strings.ToLower(hash)), nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Referer", s.baseURL)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("查询 qBit 种子属性: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("查询 qBit 种子属性 status=%d: %s", resp.StatusCode, string(body))
+	}
+	var properties struct {
+		TotalWasted float64 `json:"total_wasted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&properties); err != nil {
+		return 0, err
+	}
+	if properties.TotalWasted < 0 {
+		return 0, nil
+	}
+	return int64(properties.TotalWasted), nil
 }
 
 func isUnavailableSwarm(torrent map[string]interface{}) bool {

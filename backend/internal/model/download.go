@@ -55,17 +55,27 @@ type Download struct {
 	// a few bytes occasionally but remain unusably slow for hours.
 	SpeedWindowStartedAt  *time.Time `gorm:"index" json:"speed_window_started_at"`
 	SpeedWindowStartBytes *int64     `json:"speed_window_start_bytes"`
+	// QualityProbe is a short, one-shot observation window after metadata is
+	// available. It catches torrents whose advertised seed count looks healthy
+	// but whose peers provide no usable payload.
+	QualityProbeStartedAt  *time.Time `gorm:"index" json:"quality_probe_started_at"`
+	QualityProbeStartBytes *int64     `json:"quality_probe_start_bytes"`
+	QualityProbeCompleted  bool       `gorm:"default:false" json:"quality_probe_completed"`
 	// A queued magnet is force-started only long enough to fetch metadata, then
 	// returned to the normal payload queue.
 	MetadataProbeStartedAt *time.Time `gorm:"index" json:"metadata_probe_started_at"`
 
-	DownloadedBytes *int64     `json:"downloaded_bytes"`
-	TotalBytes      *int64     `json:"total_bytes"`
-	DownloadSpeed   *int64     `json:"download_speed"`
-	ETA             *int       `json:"eta"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	CompletedAt     *time.Time `json:"completed_at"`
+	DownloadedBytes  *int64     `json:"downloaded_bytes"`
+	TotalBytes       *int64     `json:"total_bytes"`
+	DownloadSpeed    *int64     `json:"download_speed"`
+	Availability     *float64   `json:"availability"`
+	ConnectedSeeds   *int       `json:"connected_seeds"`
+	TotalWastedBytes *int64     `json:"total_wasted_bytes"`
+	WastedSampledAt  *time.Time `json:"wasted_sampled_at"`
+	ETA              *int       `json:"eta"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	CompletedAt      *time.Time `json:"completed_at"`
 	// MediaMissing describes current storage state without rewriting the fact
 	// that this download once completed successfully.
 	MediaMissing   bool       `gorm:"index;default:false" json:"media_missing"`

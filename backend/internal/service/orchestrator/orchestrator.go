@@ -377,6 +377,28 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 			o.persistMediaAuditResult(ctx, anime, state, triggerEpisode, expected, result)
 		}
 	}
+
+	// 已有候选正在下载的剧集也要维护竞速队列。过去 downloadedEpisodes
+	// 会直接跳过这些集，导致首条 Mikan/BT 入队后永远没有机会补入其他
+	// 来源或次优 Hash。缺失集由下面的正常流程处理，这里只补“已覆盖但
+	// 竞速槽未满”的已播剧集。
+	missingSet := make(map[int]bool, len(missing))
+	for _, ep := range missing {
+		missingSet[ep] = true
+	}
+	for _, ep := range o.activeEpisodeRaces(ctx, anime.ID) {
+		if missingSet[ep] {
+			continue
+		}
+		if ad, has := airDates[ep]; has && !episode.IsAired(ad, now) {
+			continue
+		}
+		if !o.episodeRaceNeedsFill(ctx, anime.ID, ep, pref) {
+			continue
+		}
+		o.tryDownloadEpisode(ctx, anime, ep, pref)
+	}
+
 	if len(missing) == 0 {
 		if len(skippedUnaired) > 0 {
 			zap.L().Debug("orchestrator: 番剧无可下载集（剩余均为待发布）",
@@ -663,6 +685,9 @@ func (o *Orchestrator) tryBT(
 	if o.dlSvc == nil || !o.dlSvc.HasExecutor(model.DownloadTypeTorrent) {
 		return false, 0, 0, "qBittorrent 当前不可用，跳过 BT 入队", "", 0
 	}
+	if !allowAdditional && o.isDuplicate(ctx, anime.ID, ep, tier) {
+		return false, 0, 0, "该来源已有下载记录（同集），跳过", "", 0
+	}
 	// 选启用的 indexer
 	enabled := make([]indexer.Indexer, 0, len(pref.EnabledIndexers))
 	for _, name := range pref.EnabledIndexers {
@@ -823,18 +848,14 @@ func (o *Orchestrator) tryBT(
 		return false, resultCount, rankedOut, "候选缺少 magnet/torrent URL", bestTitle, bestScore
 	}
 
-	// 去重 1：该 (anime, ep, source_type) 是否已有 downloading/completed 的记录
-	if !allowAdditional && o.isDuplicate(ctx, anime.ID, ep, tier) {
-		return false, resultCount, rankedOut, "该来源已有下载记录（同集），跳过", bestTitle, bestScore
-	}
-	// 去重 2：同一个 anime 下同一 URL 已经提交过（批量包场景：01-12 Fin 不要为每集重复入队）
+	// 去重 1：同一个 anime 下同一 URL 已经提交过（批量包场景：01-12 Fin 不要为每集重复入队）
 	if o.isDuplicateURL(ctx, anime.ID, url) {
 		if allowAdditional {
 			return false, resultCount, rankedOut, "合集种子已经覆盖当前集，无需重复补位", bestTitle, bestScore
 		}
 		return true, resultCount, rankedOut, "合集种子已入队（当前集在批量包内）", bestTitle, bestScore
 	}
-	// 去重 3：同 anime 下同 InfoHash 已经存在记录（含 failed/completed），不论 source/episode。
+	// 去重 2：同 anime 下同 InfoHash 已经存在记录（含 failed/completed），不论 source/episode。
 	// 防止 sync 误标 failed 后 Orchestrator 再次拿同 magnet 入队产生双胞胎。
 	if o.isDuplicateInfoHash(ctx, anime.ID, top.InfoHash) {
 		return false, resultCount, rankedOut, "该 InfoHash 已存在历史记录，跳过", bestTitle, bestScore
@@ -1038,6 +1059,41 @@ func (o *Orchestrator) hasActiveSourceCandidate(ctx context.Context, animeID uin
 			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
 		Count(&count)
 	return count > 0
+}
+
+func (o *Orchestrator) activeEpisodeRaces(ctx context.Context, animeID uint) []int {
+	var episodes []int
+	o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number IS NOT NULL AND status IN ?",
+			animeID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Distinct("episode_number").
+		Pluck("episode_number", &episodes)
+	var completed []int
+	o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number IS NOT NULL AND status = ?",
+			animeID, model.DownloadStatusCompleted).
+		Distinct("episode_number").
+		Pluck("episode_number", &completed)
+	done := make(map[int]bool, len(completed))
+	for _, ep := range completed {
+		done[ep] = true
+	}
+	filtered := episodes[:0]
+	for _, ep := range episodes {
+		if !done[ep] {
+			filtered = append(filtered, ep)
+		}
+	}
+	sort.Ints(filtered)
+	return filtered
+}
+
+func (o *Orchestrator) episodeRaceNeedsFill(ctx context.Context, animeID uint, ep int, pref Preference) bool {
+	if o.activeEpisodeTorrentCount(ctx, animeID, ep) < maxConcurrentEpisodeTorrents {
+		return true
+	}
+	return !pref.IsSourceDisabled(SourceStream) &&
+		!o.hasActiveSourceCandidate(ctx, animeID, ep, SourceStream)
 }
 
 // downloadedEpisodes 查询某 anime 的已完成/进行中集数（跨所有 source_type）。

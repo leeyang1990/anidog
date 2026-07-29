@@ -29,6 +29,7 @@ type QBitSyncer struct {
 	pass               string
 	client             *http.Client
 	notifSvc           *notification.Service // 可空：未配置时不发通知
+	raceService        *Service
 	deadTorrentHandler func(context.Context, uint, int)
 	slowTorrentHandler func(context.Context, uint, int)
 	rateLimitLoader    func(context.Context) (downloadKiB, uploadKiB int64)
@@ -52,6 +53,10 @@ func NewQBitSyncer(db *gorm.DB, cfg *config.Config) *QBitSyncer {
 // 走 setter 注入避免构造函数循环膨胀，未注入时 notify() 直接 no-op。
 func (s *QBitSyncer) SetNotificationService(n *notification.Service) {
 	s.notifSvc = n
+}
+
+func (s *QBitSyncer) SetRaceService(service *Service) {
+	s.raceService = service
 }
 
 // SetDeadTorrentHandler injects the episode-level recovery callback. It is
@@ -125,7 +130,6 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	abandoned := 0
 	activeMetadataProbes := 0
 	alternativeSearchAllowed := s.alternativeSearchAllowed(ctx, time.Now())
-	completedWinners := make([]model.Download, 0)
 	for i := range downloads {
 		if downloads[i].MetadataProbeStartedAt != nil &&
 			(downloads[i].Status == model.DownloadStatusPending ||
@@ -172,6 +176,7 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		}
 		updates := map[string]interface{}{}
 		now := time.Now()
+		completeViaRace := false
 		progressAdvanced := downloadProgressAdvanced(&dl, qt)
 		if v, ok := qt["size"].(float64); ok && v > 0 {
 			size := int64(v)
@@ -273,11 +278,15 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 					zap.String("qbit_state", state))
 			}
 			if newStatus != "" && newStatus != dl.Status && !fakeCompleted {
-				updates["status"] = newStatus
-				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil {
+				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil &&
+					s.raceService != nil && dl.AnimeID != nil && dl.EpisodeNumber != nil {
+					completeViaRace = true
+				} else {
+					updates["status"] = newStatus
+				}
+				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil && !completeViaRace {
 					now := time.Now()
 					updates["completed_at"] = &now
-					completedWinners = append(completedWinners, dl)
 					// 状态从非 completed 翻成 completed，且本次同步前还没标完成 →
 					// 是这一轮新发现的"完成事件"，触发通知。
 					// 放在循环里发是 fire-and-forget，不阻塞同步主流程。
@@ -383,9 +392,9 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			}
 			updated++
 		}
-	}
-	for i := range completedWinners {
-		s.cancelSiblingTorrents(ctx, &completedWinners[i])
+		if completeViaRace {
+			s.raceService.CompleteEpisodeRace(ctx, dl.ID, "", "")
+		}
 	}
 
 	if updated > 0 || orphaned > 0 || abandoned > 0 {
@@ -921,57 +930,6 @@ func uintOrZero(p *uint) uint {
 		return 0
 	}
 	return *p
-}
-
-// cancelSiblingTorrents ends the race only after one candidate has completed.
-// Slow candidates are preserved until this point, so a failed alternative can
-// never destroy the only partial copy.
-func (s *QBitSyncer) cancelSiblingTorrents(ctx context.Context, winner *model.Download) {
-	if winner == nil || winner.AnimeID == nil || winner.EpisodeNumber == nil {
-		return
-	}
-	var siblings []model.Download
-	if err := s.db.WithContext(ctx).
-		Where("anime_id = ? AND episode_number = ? AND id <> ?",
-			*winner.AnimeID, *winner.EpisodeNumber, winner.ID).
-		Where("download_type = ? AND status IN ?",
-			model.DownloadTypeTorrent,
-			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
-		Find(&siblings).Error; err != nil {
-		zap.L().Warn("查询同集竞速任务失败", zap.Uint("winner_id", winner.ID), zap.Error(err))
-		return
-	}
-	for i := range siblings {
-		sibling := &siblings[i]
-		if sibling.InfoHash == nil || *sibling.InfoHash == "" {
-			continue
-		}
-		// Competing torrents can reference the same final filename. Remove only
-		// the qBit job here; deleting files could erase the winner's completed
-		// media. Orphan partials are left for the normal media cleanup path.
-		if err := s.removeFromQBit(ctx, *sibling.InfoHash, false); err != nil {
-			zap.L().Warn("完成竞速后清理慢种失败，保留到下轮",
-				zap.Uint("winner_id", winner.ID), zap.Uint("sibling_id", sibling.ID), zap.Error(err))
-			continue
-		}
-		note := fmt.Sprintf("同集候选 #%d 已完成，结束并行竞速", winner.ID)
-		if err := s.db.WithContext(ctx).Model(&model.Download{}).
-			Where("id = ?", sibling.ID).
-			Updates(map[string]interface{}{
-				"status":              model.DownloadStatusSuperseded,
-				"download_speed":      0,
-				"seeking_alternative": false,
-				"quality_note":        note,
-			}).Error; err != nil {
-			zap.L().Warn("标记竞速慢种为 superseded 失败",
-				zap.Uint("sibling_id", sibling.ID), zap.Error(err))
-			continue
-		}
-		zap.L().Info("同集候选竞速结束，已清理未完成慢种",
-			zap.Uint("winner_id", winner.ID),
-			zap.Uint("sibling_id", sibling.ID),
-			zap.String("name", sibling.Name))
-	}
 }
 
 // deleteFromQBit 调用 qBit /api/v2/torrents/delete 删除种子（含文件）

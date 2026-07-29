@@ -13,11 +13,16 @@ const (
 	SourceBangumi = "bangumi"
 	SourceRSS     = "rss"
 	SourceBT      = "bt"
+	SourceMikan   = "mikan"
 )
 
 // Task represents a download to be executed. Created by handlers/services,
 // converted to a model.Download record by Service.
 type Task struct {
+	// RuntimeID is assigned by Service and identifies the concrete executor
+	// process. Callers leave it empty.
+	RuntimeID string
+
 	// Name is the human-readable name (e.g. "Frieren - 第1集")
 	Name string
 
@@ -65,7 +70,8 @@ func (t *Task) Validate() error {
 		return fmt.Errorf("invalid download type: %s", t.DownloadType)
 	}
 	validSources := map[string]bool{
-		SourceManual: true, SourceStream: true, SourceBangumi: true, SourceRSS: true, SourceBT: true,
+		SourceManual: true, SourceStream: true, SourceBangumi: true,
+		SourceRSS: true, SourceBT: true, SourceMikan: true,
 	}
 	if !validSources[t.Source] {
 		return fmt.Errorf("invalid source: %s", t.Source)

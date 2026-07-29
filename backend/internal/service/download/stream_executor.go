@@ -53,12 +53,14 @@ func (e *StreamExecutor) Execute(ctx context.Context, task *Task, progressCB Pro
 		}
 	}
 
-	filePath, err := e.streamMgr.DownloadEpisode(ctx, &ep, task.StreamRule, task.SavePath, task.AnimeName, anime, episodeNumber, streamCB)
+	filePath, finalPath, err := e.streamMgr.DownloadEpisode(
+		ctx, task.RuntimeID, &ep, task.StreamRule, task.SavePath,
+		task.AnimeName, anime, episodeNumber, streamCB)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Result{FilePath: filePath}, nil
+	return &Result{FilePath: filePath, FinalPath: finalPath}, nil
 }
 
 // Cancel cancels an in-progress stream download.

@@ -91,7 +91,7 @@ func TestTaskValidate_StreamMissingRule(t *testing.T) {
 }
 
 func TestTaskValidate_AllSources(t *testing.T) {
-	sources := []string{SourceManual, SourceStream, SourceBangumi, SourceRSS}
+	sources := []string{SourceManual, SourceStream, SourceBangumi, SourceRSS, SourceBT, SourceMikan}
 	for _, src := range sources {
 		task := &Task{
 			Name:         "test",

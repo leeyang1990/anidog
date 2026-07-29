@@ -344,29 +344,11 @@ func TestCompletedCandidateCleansUpOnlyItsIncompleteSiblings(t *testing.T) {
 	if err := db.Create(&slow).Error; err != nil {
 		t.Fatal(err)
 	}
-	deletedHash := ""
-	deleteFiles := ""
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v2/torrents/delete" {
-			http.NotFound(w, r)
-			return
-		}
-		body := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(body)
-		values, _ := url.ParseQuery(string(body))
-		deletedHash = values.Get("hashes")
-		deleteFiles = values.Get("deleteFiles")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	s := &QBitSyncer{db: db, baseURL: server.URL, client: server.Client()}
-	s.cancelSiblingTorrents(context.Background(), &winner)
-	if deletedHash != strings.ToLower(slowHash) {
-		t.Fatalf("deleted hash=%q", deletedHash)
-	}
-	if deleteFiles != "false" {
-		t.Fatalf("race cleanup must preserve files, deleteFiles=%q", deleteFiles)
+	exec := &recordingExecutor{}
+	s := &Service{db: db, executors: map[string]Executor{model.DownloadTypeTorrent: exec}}
+	s.settleEpisodeRace(context.Background(), &winner)
+	if exec.removedID != "slow" || exec.removeFiles {
+		t.Fatalf("race cleanup=%q removeFiles=%t", exec.removedID, exec.removeFiles)
 	}
 	var saved model.Download
 	if err := db.First(&saved, slow.ID).Error; err != nil {
@@ -375,6 +357,22 @@ func TestCompletedCandidateCleansUpOnlyItsIncompleteSiblings(t *testing.T) {
 	if saved.Status != model.DownloadStatusSuperseded || saved.SeekingAlternative {
 		t.Fatalf("sibling race state not closed: %#v", saved)
 	}
+}
+
+type recordingExecutor struct {
+	removedID   string
+	removeFiles bool
+}
+
+func (e *recordingExecutor) Execute(context.Context, *Task, ProgressCallback) (*Result, error) {
+	return &Result{}, nil
+}
+func (e *recordingExecutor) Cancel(string) error { return nil }
+func (e *recordingExecutor) Pause(string) error  { return nil }
+func (e *recordingExecutor) Resume(string) error { return nil }
+func (e *recordingExecutor) Remove(id string, files bool) error {
+	e.removedID, e.removeFiles = id, files
+	return nil
 }
 
 func TestSetForceStart(t *testing.T) {

@@ -8,7 +8,8 @@ type ProgressCallback func(progress float64, downloadedBytes, totalBytes int64)
 
 // Result is returned by Executor.Execute on success.
 type Result struct {
-	FilePath string // Set by stream executor; empty for torrent
+	FilePath  string // Staged stream file; empty for torrent
+	FinalPath string // Atomic promotion target for stream candidates
 	TorrentID string // Set by torrent executor (qBittorrent hash); empty for stream
 }
 

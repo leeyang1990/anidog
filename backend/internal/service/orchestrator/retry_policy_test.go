@@ -44,12 +44,17 @@ func TestSlowTorrentDoesNotBlockAlternativeCandidate(t *testing.T) {
 		{
 			TorrentID: "slow-active", Name: "slow", URL: "magnet:?xt=urn:btih:SLOW",
 			Status: model.DownloadStatusDownloading, DownloadType: model.DownloadTypeTorrent,
-			AnimeID: &animeID, EpisodeNumber: &episodeSlow, SeekingAlternative: true,
+			Source: SourceBT, AnimeID: &animeID, EpisodeNumber: &episodeSlow, SeekingAlternative: true,
+		},
+		{
+			TorrentID: "mikan-active", Name: "mikan", URL: "magnet:?xt=urn:btih:MIKAN",
+			Status: model.DownloadStatusDownloading, DownloadType: model.DownloadTypeTorrent,
+			Source: SourceMikan, AnimeID: &animeID, EpisodeNumber: &episodeSlow,
 		},
 		{
 			TorrentID: "normal-active", Name: "normal", URL: "magnet:?xt=urn:btih:NORMAL",
 			Status: model.DownloadStatusDownloading, DownloadType: model.DownloadTypeTorrent,
-			AnimeID: &animeID, EpisodeNumber: &episodeNormal,
+			Source: SourceBT, AnimeID: &animeID, EpisodeNumber: &episodeNormal,
 		},
 	}
 	if err := db.Create(&rows).Error; err != nil {
@@ -58,14 +63,17 @@ func TestSlowTorrentDoesNotBlockAlternativeCandidate(t *testing.T) {
 
 	o := &Orchestrator{db: db}
 	covered := o.downloadedEpisodes(context.Background(), animeID)
-	if covered[episodeSlow] {
-		t.Fatal("slow fallback must not block an alternative candidate")
+	if !covered[episodeSlow] {
+		t.Fatal("normal mikan candidate should cover the episode while slow bt keeps racing")
 	}
 	if !covered[episodeNormal] {
 		t.Fatal("normal active torrent must continue to cover its episode")
 	}
 	if o.isDuplicate(context.Background(), animeID, episodeSlow, SourceBT) {
-		t.Fatal("slow fallback must not trip episode duplicate protection")
+		t.Fatal("slow bt must release only the bt source slot")
+	}
+	if !o.isDuplicate(context.Background(), animeID, episodeSlow, SourceMikan) {
+		t.Fatal("active mikan candidate must keep the independent mikan source slot")
 	}
 }
 

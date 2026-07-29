@@ -176,17 +176,13 @@ func (o *Orchestrator) RetryEpisodeAfterDeadTorrent(ctx context.Context, animeID
 		return
 	}
 
-	// A normal active source still owns the episode. Slow sources marked
-	// seeking_alternative remain active but deliberately do not block a race.
-	var active int64
-	o.db.WithContext(ctx).Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND status IN ?",
-			animeID, episode, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
-		Where("seeking_alternative = ?", false).
-		Count(&active)
-	if active > 0 {
-		return
-	}
+	// 不再因为“同集仍有其他候选”而提前退出。这里直接运行该集的多源入队：
+	// 每个来源由 isDuplicate 独立占槽；被标记 seeking_alternative 的慢种
+	// 继续下载但会释放自己的槽位，因此可以补入不同 Hash。这样某个尚未判慢
+	// 的候选不会意外阻止整个竞速队列补位。
+	lock := o.animeLock(animeID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	now := time.Now()
 	_ = o.db.WithContext(ctx).Model(&model.Download{}).
@@ -196,9 +192,9 @@ func (o *Orchestrator) RetryEpisodeAfterDeadTorrent(ctx context.Context, animeID
 		Where("anime_id = ? AND episode_number = ?", animeID, episode).
 		Update("downloaded", false).Error
 
-	zap.L().Warn("死种巡检：立即通过 Mikan/多源重新编排",
+	zap.L().Warn("下载质量巡检：立即补齐多源竞速队列",
 		zap.Uint("anime_id", animeID), zap.String("anime", anime.Title), zap.Int("episode", episode))
-	o.CheckAnime(ctx, &anime, LoadGlobal(ctx, o.settingSvc))
+	o.tryDownloadEpisode(ctx, &anime, episode, MergeWithAnime(LoadGlobal(ctx, o.settingSvc), &anime))
 }
 
 func scanEpisodeFiles(seasonDir string, expectedSeason int) (map[int]bool, int, error) {

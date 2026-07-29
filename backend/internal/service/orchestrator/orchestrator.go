@@ -423,9 +423,12 @@ func latestAiredEpisode(expected int, airDates map[int]string, now time.Time) in
 	return latest
 }
 
-// tryDownloadEpisode 按优先级尝试每个源下载指定集，成功（入队）即返回 true。
+// tryDownloadEpisode 按优先级为指定集补齐所有可用来源槽位。优先级只决定
+// 入队顺序，不再意味着“命中一个就舍弃其余来源”；最终由 download.Service
+// 对同集候选做先完成者胜出的仲裁。
 func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anime, ep int, pref Preference) bool {
 	retryCount := o.retryCountForEpisode(ctx, anime.ID, ep)
+	started := false
 	for _, srcType := range pref.Priority {
 		if pref.IsSourceDisabled(srcType) {
 			o.recordDiag(anime.ID, ep, srcType, 0, 0, "源已禁用", "", 0)
@@ -455,10 +458,10 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 
 		o.recordDiag(anime.ID, ep, srcType, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore)
 		if ok {
-			return true
+			started = true
 		}
 	}
-	return false
+	return started
 }
 
 // ---- Stream 源适配 ----
@@ -782,8 +785,8 @@ func (o *Orchestrator) tryBT(
 	}
 
 	// 去重 1：该 (anime, ep, source_type) 是否已有 downloading/completed 的记录
-	if o.isDuplicate(ctx, anime.ID, ep, SourceBT) {
-		return false, resultCount, rankedOut, "已有 BT 下载记录（同集），跳过", bestTitle, bestScore
+	if o.isDuplicate(ctx, anime.ID, ep, tier) {
+		return false, resultCount, rankedOut, "该来源已有下载记录（同集），跳过", bestTitle, bestScore
 	}
 	// 去重 2：同一个 anime 下同一 URL 已经提交过（批量包场景：01-12 Fin 不要为每集重复入队）
 	if o.isDuplicateURL(ctx, anime.ID, url) {
@@ -813,7 +816,7 @@ func (o *Orchestrator) tryBT(
 		Name:          fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
 		URL:           url,
 		DownloadType:  model.DownloadTypeTorrent,
-		Source:        SourceBT,
+		Source:        tier,
 		AnimeName:     anime.Title,
 		AnimeID:       &anime.ID,
 		EpisodeNumber: &epCopy,

@@ -71,7 +71,7 @@ func (m *StreamManager) GetEpisodes(ctx context.Context, rule *model.StreamRule,
 // DownloadEpisode 下载单集。
 //   - anime: 可选，用于按 Plex/Emby 规范生成路径。nil 时回退到 {base}/{animeName}/{ep}.mp4
 //   - episodeNumber: 集数（1-based），从 Plex 规范生成文件名时必需
-func (m *StreamManager) DownloadEpisode(ctx context.Context, episode *EpisodeInfo, rule *model.StreamRule, savePath, animeName string, anime *model.Anime, episodeNumber int, progressCB func(float64, int64)) (string, error) {
+func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, episode *EpisodeInfo, rule *model.StreamRule, savePath, animeName string, anime *model.Anime, episodeNumber int, progressCB func(float64, int64)) (string, string, error) {
 	// 1. 拦截视频 URL
 	referer := ""
 	if rule.Referer != nil {
@@ -84,7 +84,7 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, episode *EpisodeInf
 
 	video, err := m.interceptor.InterceptVideoURL(ctx, episode.URL, referer, userAgent)
 	if err != nil {
-		return "", fmt.Errorf("拦截视频 URL 失败: %w", err)
+		return "", "", fmt.Errorf("拦截视频 URL 失败: %w", err)
 	}
 
 	// 2. 构建输出文件路径
@@ -106,17 +106,30 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, episode *EpisodeInf
 
 	// 确保目录存在
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		return "", fmt.Errorf("创建目录失败: %w", err)
+		return "", "", fmt.Errorf("创建目录失败: %w", err)
 	}
 
-	// 3. 使用 ffmpeg 下载
-	resultPath, err := m.downloader.Download(ctx, "", video.URL, outputPath, video.VideoType, video.Referer, progressCB)
+	// 3. 每个候选写入独立 staging 文件。赢家确认后才由 download.Service
+	// 原子提升到标准媒体路径，避免 BT/流媒体竞速时互相覆盖。
+	stagingPath := buildRaceStagingPath(outputPath, taskID)
+	resultPath, err := m.downloader.Download(ctx, taskID, video.URL, stagingPath, video.VideoType, video.Referer, progressCB)
 	if err != nil {
-		return "", fmt.Errorf("ffmpeg 下载失败: %w", err)
+		_ = os.Remove(stagingPath)
+		return "", "", fmt.Errorf("ffmpeg 下载失败: %w", err)
 	}
 
-	zap.L().Info("流媒体下载完成", zap.String("episode", episode.Name), zap.String("path", resultPath))
-	return resultPath, nil
+	zap.L().Info("流媒体候选下载完成，等待竞速仲裁",
+		zap.String("episode", episode.Name), zap.String("staging_path", resultPath))
+	return resultPath, outputPath, nil
+}
+
+func buildRaceStagingPath(finalPath, taskID string) string {
+	ext := filepath.Ext(finalPath)
+	base := strings.TrimSuffix(finalPath, ext)
+	if taskID == "" {
+		taskID = "standalone"
+	}
+	return base + ".anidog-" + sanitizeFileName(taskID) + ".part" + ext
 }
 
 // CancelDownload 取消下载

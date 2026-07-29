@@ -3,12 +3,14 @@ package download
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
@@ -103,6 +105,7 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 		s.hub.BroadcastDownloadProgress(torrentID, task.Name, 0, animeID)
 	}
 
+	task.RuntimeID = torrentID
 	go s.execute(dl.ID, torrentID, task)
 
 	return &dl, nil
@@ -189,6 +192,12 @@ func (s *Service) Remove(dlID uint, removeFiles bool) error {
 
 // execute runs the download in a goroutine, updating DB state as it goes.
 func (s *Service) execute(dlID uint, torrentID string, task *Task) {
+	// Create 会预先写入 RuntimeID；重试/服务重启恢复的旧记录则从
+	// download.torrent_id 恢复。统一在这里兜底，确保流媒体竞速候选可被
+	// 精确取消，且每个 staging 文件都有稳定、唯一的名字。
+	if task.RuntimeID == "" {
+		task.RuntimeID = torrentID
+	}
 	exec, ok := s.executors[task.DownloadType]
 	if !ok {
 		err := fmt.Errorf("无可用的 %s 下载执行器", task.DownloadType)
@@ -239,6 +248,11 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		// 先读 retry_count，分类 + 算下次重试时间，统一写回。
 		var prev model.Download
 		_ = s.db.First(&prev, dlID).Error
+		if prev.Status == model.DownloadStatusSuperseded {
+			zap.L().Info("竞速候选已被赢家取消，忽略执行器退出错误",
+				zap.Uint("id", dlID), zap.String("name", task.Name))
+			return
+		}
 		kind, delay := classifyError(err, prev.RetryCount)
 		extra := map[string]interface{}{
 			"failure_kind": kind,
@@ -286,23 +300,145 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		return
 	}
 
-	extra := map[string]interface{}{
-		"progress": 100.0,
-	}
+	stagingPath, finalPath := "", ""
 	if result != nil {
-		if result.FilePath != "" {
-			extra["file_path"] = result.FilePath
-		}
-		// 不覆盖 torrent_id：该字段是 uniqueIndex，Create 时生成的值是唯一 ID；
-		// provider 返回的 hash（或占位 "new_torrent"）如果覆盖会导致 UNIQUE 冲突，
-		// 整个 UPDATE 失败，状态卡在 downloading。真正的 BT info hash 应走单独字段存。
+		stagingPath, finalPath = result.FilePath, result.FinalPath
 	}
-	s.updateStatus(dlID, model.DownloadStatusCompleted, extra)
-
-	if s.hub != nil {
+	if s.CompleteEpisodeRace(context.Background(), dlID, stagingPath, finalPath) && s.hub != nil {
 		s.hub.BroadcastDownloadComplete(torrentID, task.Name)
 	}
-	zap.L().Info("下载完成", zap.String("name", task.Name))
+}
+
+// CompleteEpisodeRace atomically elects the first completed candidate for an
+// anime episode. Stream candidates are promoted from a unique staging path
+// only after winning; losing candidates never overwrite the media file.
+func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPath, finalPath string) bool {
+	var candidate model.Download
+	if err := s.db.WithContext(ctx).First(&candidate, dlID).Error; err != nil {
+		_ = removeStagingFile(stagingPath)
+		return false
+	}
+	won := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if candidate.AnimeID != nil {
+			var anime model.Anime
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				First(&anime, *candidate.AnimeID).Error; err != nil {
+				return err
+			}
+		}
+		if candidate.AnimeID != nil && candidate.EpisodeNumber != nil {
+			var completedCount int64
+			if err := tx.Model(&model.Download{}).
+				Where("id <> ? AND anime_id = ? AND episode_number = ? AND status = ?",
+					candidate.ID, *candidate.AnimeID, *candidate.EpisodeNumber, model.DownloadStatusCompleted).
+				Count(&completedCount).Error; err != nil {
+				return err
+			}
+			if completedCount > 0 {
+				return tx.Model(&model.Download{}).Where("id = ?", candidate.ID).
+					Updates(map[string]interface{}{
+						"status":              model.DownloadStatusSuperseded,
+						"download_speed":      0,
+						"seeking_alternative": false,
+						"quality_note":        "同集已有更早完成的候选，本任务结束竞速",
+					}).Error
+			}
+		}
+		if stagingPath != "" && finalPath != "" && stagingPath != finalPath {
+			if err := os.Rename(stagingPath, finalPath); err != nil {
+				return fmt.Errorf("提升竞速赢家文件: %w", err)
+			}
+		}
+		now := time.Now()
+		updates := map[string]interface{}{
+			"status":              model.DownloadStatusCompleted,
+			"progress":            100.0,
+			"completed_at":        &now,
+			"failure_kind":        "",
+			"last_error":          "",
+			"next_retry_at":       nil,
+			"seeking_alternative": false,
+		}
+		if finalPath != "" {
+			updates["file_path"] = finalPath
+		}
+		if err := tx.Model(&model.Download{}).Where("id = ?", candidate.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		won = true
+		return nil
+	})
+	if err != nil {
+		zap.L().Error("剧集竞速仲裁失败", zap.Uint("id", dlID), zap.Error(err))
+		_ = removeStagingFile(stagingPath)
+		return false
+	}
+	if !won {
+		_ = removeStagingFile(stagingPath)
+		if exec := s.executors[candidate.DownloadType]; exec != nil {
+			_ = exec.Remove(candidate.TorrentID, false)
+		}
+		return false
+	}
+	s.updateAnimeProgress(dlID)
+	s.resolvePriorFailures(dlID)
+	s.notifyCompletion(dlID)
+	s.settleEpisodeRace(ctx, &candidate)
+	zap.L().Info("剧集竞速产生赢家",
+		zap.Uint("id", dlID), zap.String("name", candidate.Name), zap.String("source", candidate.Source))
+	return true
+}
+
+func removeStagingFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func (s *Service) settleEpisodeRace(ctx context.Context, winner *model.Download) {
+	if winner == nil || winner.AnimeID == nil || winner.EpisodeNumber == nil {
+		return
+	}
+	var siblings []model.Download
+	if err := s.db.WithContext(ctx).
+		Where("id <> ? AND anime_id = ? AND episode_number = ? AND status IN ?",
+			winner.ID, *winner.AnimeID, *winner.EpisodeNumber,
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Find(&siblings).Error; err != nil {
+		zap.L().Warn("查询剧集竞速候选失败", zap.Uint("winner_id", winner.ID), zap.Error(err))
+		return
+	}
+	for i := range siblings {
+		sibling := &siblings[i]
+		note := fmt.Sprintf("同集候选 #%d 已完成，结束多源竞速", winner.ID)
+		if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", sibling.ID).
+			Updates(map[string]interface{}{
+				"status":              model.DownloadStatusSuperseded,
+				"download_speed":      0,
+				"seeking_alternative": false,
+				"quality_note":        note,
+			}).Error; err != nil {
+			continue
+		}
+		if exec := s.executors[sibling.DownloadType]; exec != nil {
+			if err := exec.Remove(sibling.TorrentID, false); err != nil {
+				zap.L().Warn("取消竞速候选失败",
+					zap.Uint("winner_id", winner.ID), zap.Uint("candidate_id", sibling.ID), zap.Error(err))
+				_ = s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", sibling.ID).
+					Updates(map[string]interface{}{
+						"status":       sibling.Status,
+						"quality_note": "竞速赢家已完成，但取消本候选失败；下轮继续收敛",
+					}).Error
+				continue
+			}
+		}
+	}
 }
 
 // ListResult holds paginated download list results.

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,83 @@ func TestQBitSyncLoginAcceptsNoContent(t *testing.T) {
 	s := &QBitSyncer{baseURL: server.URL, user: "admin", pass: "secret", client: server.Client()}
 	if err := s.ensureLogin(context.Background()); err != nil {
 		t.Fatalf("204 login should succeed: %v", err)
+	}
+}
+
+func TestResolveTorrentRaceCompletionPromotesOneCanonicalMediaFile(t *testing.T) {
+	db := testutil.InitTestDB()
+	season, year := 1, 2026
+	seriesTitle := "同一个研讨会的染谷同学是AV女优的事"
+	anime := model.Anime{
+		Title:       seriesTitle,
+		SeriesTitle: &seriesTitle,
+		Season:      &season,
+		Year:        &year,
+	}
+	if err := db.Create(&anime).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	mediaRoot := filepath.Join(t.TempDir(), "Anime")
+	hash := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	savePath := BuildTorrentRaceSavePath(mediaRoot, anime.ID, 2, hash, "")
+	contentPath := filepath.Join(savePath, "release")
+	if err := os.MkdirAll(contentPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	videoPath := filepath.Join(contentPath, "[Group] title [02][CHS].mkv")
+	if err := os.WriteFile(videoPath, []byte("complete-video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contentPath, "readme.txt"), []byte("larger non-video file"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	episode := 2
+	dl := model.Download{
+		AnimeID:       &anime.ID,
+		EpisodeNumber: &episode,
+		SavePath:      &savePath,
+	}
+
+	s := &QBitSyncer{db: db}
+	staging, final, err := s.resolveTorrentRaceCompletion(context.Background(), &dl, map[string]interface{}{
+		"content_path": contentPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staging != videoPath {
+		t.Fatalf("staging=%q want %q", staging, videoPath)
+	}
+	wantFinal := filepath.Join(mediaRoot, seriesTitle+" (2026)", "Season 01", seriesTitle+" S01E02.mkv")
+	if final != wantFinal {
+		t.Fatalf("final=%q want %q", final, wantFinal)
+	}
+}
+
+func TestResolveTorrentRaceCompletionRejectsEscapedContentPath(t *testing.T) {
+	db := testutil.InitTestDB()
+	anime := model.Anime{Title: "安全测试"}
+	if err := db.Create(&anime).Error; err != nil {
+		t.Fatal(err)
+	}
+	mediaRoot := filepath.Join(t.TempDir(), "Anime")
+	savePath := BuildTorrentRaceSavePath(mediaRoot, anime.ID, 1, "ABCDEF", "")
+	outside := filepath.Join(mediaRoot, "outside.mp4")
+	if err := os.MkdirAll(mediaRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	episode := 1
+	dl := model.Download{AnimeID: &anime.ID, EpisodeNumber: &episode, SavePath: &savePath}
+
+	s := &QBitSyncer{db: db}
+	if _, _, err := s.resolveTorrentRaceCompletion(context.Background(), &dl, map[string]interface{}{
+		"content_path": outside,
+	}); err == nil {
+		t.Fatal("escaped qBittorrent content path must be rejected")
 	}
 }
 

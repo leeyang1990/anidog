@@ -721,6 +721,9 @@ func (o *Orchestrator) tryBT(
 	if len(ranked) == 0 {
 		return false, resultCount, rankedOut, "所有候选均不符合偏好（集数不匹配/分辨率不符/字幕组不符）", "", 0
 	}
+	preferred := retainPreferredLanguage(ranked, pref.Languages)
+	rankedOut += len(ranked) - len(preferred)
+	ranked = preferred
 
 	// 否决黑名单以及本番已经失败过的 InfoHash。必须在选 top 之前过滤，
 	// 否则第一名失败后会每轮都再次选中第一名，并在后面的去重检查处停止，
@@ -878,8 +881,9 @@ func (o *Orchestrator) tryBT(
 		AnimeName:     anime.Title,
 		AnimeID:       &anime.ID,
 		EpisodeNumber: &epCopy,
-		SavePath:      dlservice.BuildAnimeSavePath(o.currentMediaRoot(ctx), anime),
-		RetryCount:    retryCount,
+		SavePath: dlservice.BuildTorrentRaceSavePath(
+			o.currentMediaRoot(ctx), anime.ID, ep, top.InfoHash, url),
+		RetryCount: retryCount,
 	}
 	if _, err := o.dlSvc.Create(ctx, task); err != nil {
 		return false, resultCount, rankedOut, "创建下载任务失败: " + err.Error(), bestTitle, bestScore
@@ -892,6 +896,54 @@ func (o *Orchestrator) tryBT(
 		zap.Float64("score", top.Score),
 	)
 	return true, resultCount, rankedOut, fmt.Sprintf("已从 %s 入队（score=%.1f）", top.SourceName, top.Score), bestTitle, bestScore
+}
+
+// retainPreferredLanguage turns an explicit language preference into a hard
+// race boundary whenever matching candidates exist. This prevents a faster
+// CHT-only release from beating an available CHS release.
+func retainPreferredLanguage(ranked []indexer.ScoredCandidate, preferred []string) []indexer.ScoredCandidate {
+	if len(ranked) == 0 || len(preferred) == 0 {
+		return ranked
+	}
+	wanted := make(map[string]bool, len(preferred))
+	for _, lang := range preferred {
+		lang = strings.TrimSpace(strings.ToLower(lang))
+		if lang != "" {
+			wanted[lang] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return ranked
+	}
+	hasMatch := false
+	for _, candidate := range ranked {
+		if candidateHasLanguage(candidate, wanted) {
+			hasMatch = true
+			break
+		}
+	}
+	if !hasMatch {
+		return ranked
+	}
+	out := make([]indexer.ScoredCandidate, 0, len(ranked))
+	for _, candidate := range ranked {
+		if candidateHasLanguage(candidate, wanted) {
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func candidateHasLanguage(candidate indexer.ScoredCandidate, wanted map[string]bool) bool {
+	if candidate.Parsed == nil {
+		return false
+	}
+	for _, lang := range candidate.Parsed.Lang {
+		if wanted[strings.ToLower(lang)] {
+			return true
+		}
+	}
+	return false
 }
 
 // currentMediaRoot keeps BT output aligned with the download directory changed

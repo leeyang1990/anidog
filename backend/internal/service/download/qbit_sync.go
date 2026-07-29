@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/notification"
+	"github.com/anidog/anidog-go/internal/service/stream"
 )
 
 // QBitSyncer 从 qBit 同步 BT 下载的真实进度/大小到 DB。
@@ -177,6 +180,8 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		updates := map[string]interface{}{}
 		now := time.Now()
 		completeViaRace := false
+		completionStagingPath := ""
+		completionFinalPath := ""
 		progressAdvanced := downloadProgressAdvanced(&dl, qt)
 		if v, ok := qt["size"].(float64); ok && v > 0 {
 			size := int64(v)
@@ -280,7 +285,15 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			if newStatus != "" && newStatus != dl.Status && !fakeCompleted {
 				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil &&
 					s.raceService != nil && dl.AnimeID != nil && dl.EpisodeNumber != nil {
-					completeViaRace = true
+					stagingPath, finalPath, err := s.resolveTorrentRaceCompletion(ctx, &dl, qt)
+					if err != nil {
+						zap.L().Warn("BT 竞速候选已完成但暂时无法归档",
+							zap.Uint("id", dl.ID), zap.Error(err))
+					} else {
+						completeViaRace = true
+						completionStagingPath = stagingPath
+						completionFinalPath = finalPath
+					}
 				} else {
 					updates["status"] = newStatus
 				}
@@ -393,7 +406,8 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			updated++
 		}
 		if completeViaRace {
-			s.raceService.CompleteEpisodeRace(ctx, dl.ID, "", "")
+			s.raceService.CompleteEpisodeRace(
+				ctx, dl.ID, completionStagingPath, completionFinalPath)
 		}
 	}
 
@@ -406,6 +420,95 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			zap.Int("db_total", len(downloads)))
 	}
 	return nil
+}
+
+func (s *QBitSyncer) resolveTorrentRaceCompletion(
+	ctx context.Context,
+	dl *model.Download,
+	torrent map[string]interface{},
+) (string, string, error) {
+	if dl == nil || dl.SavePath == nil {
+		return "", "", nil
+	}
+	mediaRoot, isolated := TorrentRaceMediaRoot(*dl.SavePath)
+	if !isolated {
+		// Historical/manual torrents keep the legacy completion behavior.
+		return "", "", nil
+	}
+	contentPath, _ := torrent["content_path"].(string)
+	contentPath = filepath.Clean(strings.TrimSpace(contentPath))
+	if contentPath == "" || contentPath == "." {
+		return "", "", fmt.Errorf("qBittorrent 未返回 content_path")
+	}
+	if !pathWithin(contentPath, *dl.SavePath) {
+		return "", "", fmt.Errorf("候选文件越过隔离目录: %s", contentPath)
+	}
+	stagingPath, err := largestRaceMediaFile(contentPath)
+	if err != nil {
+		return "", "", err
+	}
+	if dl.AnimeID == nil || dl.EpisodeNumber == nil {
+		return "", "", fmt.Errorf("隔离候选缺少番剧或集数")
+	}
+	var anime model.Anime
+	if err := s.db.WithContext(ctx).First(&anime, *dl.AnimeID).Error; err != nil {
+		return "", "", fmt.Errorf("读取番剧: %w", err)
+	}
+	ext := strings.ToLower(filepath.Ext(stagingPath))
+	finalPath := stream.BuildMediaPath(mediaRoot, &anime, *dl.EpisodeNumber, ext)
+	return stagingPath, finalPath, nil
+}
+
+func pathWithin(path, parent string) bool {
+	rel, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func largestRaceMediaFile(contentPath string) (string, error) {
+	info, err := os.Stat(contentPath)
+	if err != nil {
+		return "", fmt.Errorf("读取候选文件: %w", err)
+	}
+	if !info.IsDir() {
+		if !isRaceMediaExtension(filepath.Ext(contentPath)) {
+			return "", fmt.Errorf("候选不是可识别视频: %s", contentPath)
+		}
+		return contentPath, nil
+	}
+	var bestPath string
+	var bestSize int64
+	err = filepath.WalkDir(contentPath, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !isRaceMediaExtension(filepath.Ext(path)) {
+			return nil
+		}
+		entryInfo, statErr := entry.Info()
+		if statErr != nil {
+			return statErr
+		}
+		if entryInfo.Size() > bestSize {
+			bestPath, bestSize = path, entryInfo.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("扫描候选目录: %w", err)
+	}
+	if bestPath == "" {
+		return "", fmt.Errorf("候选目录内没有视频文件: %s", contentPath)
+	}
+	return bestPath, nil
+}
+
+func isRaceMediaExtension(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts", ".webm":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildOrphanError(previous string) string {
@@ -1003,6 +1106,7 @@ func (s *QBitSyncer) ensureQueuePolicy(ctx context.Context) {
 	uploadLimit := qbitRateLimitBytes(uploadKiB)
 	preferences := map[string]interface{}{
 		"dont_count_slow_torrents":       true,
+		"incomplete_files_ext":           true,
 		"slow_torrent_dl_rate_threshold": 10,
 		"slow_torrent_inactive_timer":    60,
 		"max_active_downloads":           defaultMaxActiveDownloads,

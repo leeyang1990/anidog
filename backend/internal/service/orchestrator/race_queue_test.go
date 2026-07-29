@@ -10,6 +10,7 @@ import (
 	"github.com/anidog/anidog-go/internal/model"
 	downloadservice "github.com/anidog/anidog-go/internal/service/download"
 	"github.com/anidog/anidog-go/internal/service/indexer"
+	"github.com/anidog/anidog-go/internal/service/titleparse"
 	"github.com/anidog/anidog-go/internal/testutil"
 )
 
@@ -107,8 +108,27 @@ func TestSingleAvailableTierFillsEpisodeRaceQueueWithDistinctHashes(t *testing.T
 		if row.Source != SourceMikan {
 			t.Fatalf("candidate source=%q, want %q", row.Source, SourceMikan)
 		}
+		if row.SavePath == nil || !downloadservice.IsTorrentRaceSavePath(*row.SavePath) {
+			t.Fatalf("candidate is not isolated from media library: %v", row.SavePath)
+		}
 	}
 	if len(seen) != maxConcurrentEpisodeTorrents {
 		t.Fatalf("queued hashes are not distinct: %v", seen)
+	}
+}
+
+func TestRetainPreferredLanguageRejectsExplicitConflicts(t *testing.T) {
+	candidates := []indexer.ScoredCandidate{
+		{Candidate: indexer.Candidate{Title: "CHS", Parsed: titleparse.Parse("[Test] Show [02][简体内嵌]")}},
+		{Candidate: indexer.Candidate{Title: "CHT", Parsed: titleparse.Parse("[Test] Show [02][繁体内嵌]")}},
+		{Candidate: indexer.Candidate{Title: "BOTH", Parsed: titleparse.Parse("[Test] Show [02][简繁内封]")}},
+	}
+	got := retainPreferredLanguage(candidates, []string{"simplified"})
+	if len(got) != 2 || got[0].Title != "CHS" || got[1].Title != "BOTH" {
+		t.Fatalf("simplified preference kept unexpected candidates: %+v", got)
+	}
+	fallback := retainPreferredLanguage(candidates, []string{"japanese"})
+	if len(fallback) != len(candidates) {
+		t.Fatalf("unavailable preferred language must retain fallback candidates")
 	}
 }

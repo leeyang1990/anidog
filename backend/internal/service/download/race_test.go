@@ -115,3 +115,42 @@ func TestCompleteEpisodeRaceRejectsLateStreamCandidate(t *testing.T) {
 		t.Fatalf("late candidate status=%s", saved.Status)
 	}
 }
+
+func TestCompleteEpisodeRaceRecoversAfterFileMovedBeforeDatabaseCommit(t *testing.T) {
+	db := testutil.InitTestDB()
+	anime := model.Anime{Title: "race recovery"}
+	if err := db.Create(&anime).Error; err != nil {
+		t.Fatal(err)
+	}
+	episode := 4
+	candidate := model.Download{
+		TorrentID: "hash-recovery", Name: "bt", URL: "magnet:?xt=urn:btih:RECOVERY",
+		Status: model.DownloadStatusDownloading, DownloadType: model.DownloadTypeTorrent,
+		Source: SourceBT, AnimeID: &anime.ID, EpisodeNumber: &episode,
+	}
+	if err := db.Create(&candidate).Error; err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "missing-after-prior-rename.mkv")
+	final := filepath.Join(dir, "episode.mkv")
+	if err := os.WriteFile(final, []byte("already-promoted"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{
+		db: db,
+		executors: map[string]Executor{
+			model.DownloadTypeTorrent: &recordingExecutor{},
+		},
+	}
+	if !service.CompleteEpisodeRace(context.Background(), candidate.ID, staging, final) {
+		t.Fatal("retry should reconcile a file that was already promoted")
+	}
+	var saved model.Download
+	if err := db.First(&saved, candidate.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != model.DownloadStatusCompleted || saved.FilePath == nil || *saved.FilePath != final {
+		t.Fatalf("candidate was not reconciled: %#v", saved)
+	}
+}

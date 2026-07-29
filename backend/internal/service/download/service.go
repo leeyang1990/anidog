@@ -346,8 +346,23 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 			}
 		}
 		if stagingPath != "" && finalPath != "" && stagingPath != finalPath {
-			if err := os.Rename(stagingPath, finalPath); err != nil {
-				return fmt.Errorf("提升竞速赢家文件: %w", err)
+			if err := os.MkdirAll(filepath.Dir(finalPath), 0755); err != nil {
+				return fmt.Errorf("创建竞速赢家目录: %w", err)
+			}
+			if _, err := os.Stat(finalPath); err == nil {
+				// 文件移动与数据库事务无法成为同一个原子操作。若上一次调用已
+				// 完成 rename、但数据库提交失败，下一轮应继续补齐 DB 状态。
+				if _, stagingErr := os.Stat(stagingPath); stagingErr == nil {
+					return fmt.Errorf("正式媒体文件已存在，拒绝覆盖: %s", finalPath)
+				} else if !os.IsNotExist(stagingErr) {
+					return fmt.Errorf("检查竞速暂存文件: %w", stagingErr)
+				}
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("检查正式媒体文件: %w", err)
+			} else {
+				if err := os.Rename(stagingPath, finalPath); err != nil {
+					return fmt.Errorf("提升竞速赢家文件: %w", err)
+				}
 			}
 		}
 		now := time.Now()
@@ -371,7 +386,7 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 	})
 	if err != nil {
 		zap.L().Error("剧集竞速仲裁失败", zap.Uint("id", dlID), zap.Error(err))
-		_ = removeStagingFile(stagingPath)
+		// 保留完整候选，qBit/stream 下一轮同步可以重试归档。
 		return false
 	}
 	if !won {
@@ -385,6 +400,17 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 	s.resolvePriorFailures(dlID)
 	s.notifyCompletion(dlID)
 	s.settleEpisodeRace(ctx, &candidate)
+	// 隔离 BT 候选归档后，qBittorrent 仍指向旧 staging 路径。
+	// 仅移除任务、不删除文件；正式媒体已原子移动到规范路径。
+	if stagingPath != "" && candidate.DownloadType == model.DownloadTypeTorrent {
+		if exec := s.executors[candidate.DownloadType]; exec != nil {
+			if err := exec.Remove(candidate.TorrentID, false); err != nil {
+				zap.L().Warn("移除竞速赢家的 qBit 任务失败",
+					zap.Uint("id", candidate.ID), zap.Error(err))
+			}
+		}
+		removeTorrentRaceDirectory(candidate.SavePath)
+	}
 	zap.L().Info("剧集竞速产生赢家",
 		zap.Uint("id", dlID), zap.String("name", candidate.Name), zap.String("source", candidate.Source))
 	return true
@@ -427,7 +453,9 @@ func (s *Service) settleEpisodeRace(ctx context.Context, winner *model.Download)
 			continue
 		}
 		if exec := s.executors[sibling.DownloadType]; exec != nil {
-			if err := exec.Remove(sibling.TorrentID, false); err != nil {
+			removeFiles := sibling.DownloadType == model.DownloadTypeTorrent &&
+				sibling.SavePath != nil && IsTorrentRaceSavePath(*sibling.SavePath)
+			if err := exec.Remove(sibling.TorrentID, removeFiles); err != nil {
 				zap.L().Warn("取消竞速候选失败",
 					zap.Uint("winner_id", winner.ID), zap.Uint("candidate_id", sibling.ID), zap.Error(err))
 				_ = s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", sibling.ID).
@@ -437,7 +465,20 @@ func (s *Service) settleEpisodeRace(ctx context.Context, winner *model.Download)
 					}).Error
 				continue
 			}
+			if removeFiles {
+				removeTorrentRaceDirectory(sibling.SavePath)
+			}
 		}
+	}
+}
+
+func removeTorrentRaceDirectory(path *string) {
+	if path == nil || !IsTorrentRaceSavePath(*path) {
+		return
+	}
+	if err := os.RemoveAll(*path); err != nil {
+		zap.L().Warn("清理 BT 竞速隔离目录失败",
+			zap.String("path", *path), zap.Error(err))
 	}
 }
 

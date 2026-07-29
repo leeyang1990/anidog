@@ -429,6 +429,7 @@ func latestAiredEpisode(expected int, airDates map[int]string, now time.Time) in
 func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anime, ep int, pref Preference) bool {
 	retryCount := o.retryCountForEpisode(ctx, anime.ID, ep)
 	started := false
+	activeTorrentTiers := make(map[string]bool, 2)
 	for _, srcType := range pref.Priority {
 		if pref.IsSourceDisabled(srcType) {
 			o.recordDiag(anime.ID, ep, srcType, 0, 0, "源已禁用", "", 0)
@@ -449,7 +450,7 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 			ok, diagResultCount, diagReason = o.tryStream(ctx, anime, ep, retryCount)
 		case SourceBT, SourceMikan:
 			ok, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore =
-				o.tryBT(ctx, anime, ep, pref, retryCount, srcType)
+				o.tryBT(ctx, anime, ep, pref, retryCount, srcType, false)
 		default:
 			// SourceRSS 已不再作为 orchestrator 的主动源（被动通道由 RSSRefreshJob 处理）。
 			// 其他未知 srcType 也忽略。
@@ -459,6 +460,43 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 		o.recordDiag(anime.ID, ep, srcType, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore)
 		if ok {
 			started = true
+			if srcType == SourceBT || srcType == SourceMikan {
+				activeTorrentTiers[srcType] = true
+			}
+		}
+	}
+
+	// 第一轮先给每个维度一次机会，避免高优先级 BT 独占全部并发槽。
+	// 随后按同一优先级循环，用不同 Hash 的次优候选补满队列。这样仅
+	// Mikan 有结果时也能立即让多个字幕组竞速，不必先等慢种巡检。
+	for o.activeEpisodeTorrentCount(ctx, anime.ID, ep) < maxConcurrentEpisodeTorrents {
+		added := false
+		for _, tier := range pref.Priority {
+			if tier != SourceBT && tier != SourceMikan {
+				continue
+			}
+			if pref.IsSourceDisabled(tier) {
+				continue
+			}
+			if !activeTorrentTiers[tier] && !o.hasActiveSourceCandidate(ctx, anime.ID, ep, tier) {
+				continue
+			}
+			ok, resultCount, rankedOut, reason, bestTitle, bestScore :=
+				o.tryBT(ctx, anime, ep, pref, retryCount, tier, true)
+			if !ok {
+				continue
+			}
+			started = true
+			added = true
+			activeTorrentTiers[tier] = true
+			o.recordDiag(anime.ID, ep, tier, resultCount, rankedOut,
+				"竞速队列补位："+reason, bestTitle, bestScore)
+			if o.activeEpisodeTorrentCount(ctx, anime.ID, ep) >= maxConcurrentEpisodeTorrents {
+				break
+			}
+		}
+		if !added {
+			break
 		}
 	}
 	return started
@@ -618,6 +656,7 @@ func (o *Orchestrator) tryBT(
 	pref Preference,
 	retryCount int,
 	tier string,
+	allowAdditional bool,
 ) (
 	ok bool, resultCount int, rankedOut int, reason, bestTitle string, bestScore float64,
 ) {
@@ -785,11 +824,14 @@ func (o *Orchestrator) tryBT(
 	}
 
 	// 去重 1：该 (anime, ep, source_type) 是否已有 downloading/completed 的记录
-	if o.isDuplicate(ctx, anime.ID, ep, tier) {
+	if !allowAdditional && o.isDuplicate(ctx, anime.ID, ep, tier) {
 		return false, resultCount, rankedOut, "该来源已有下载记录（同集），跳过", bestTitle, bestScore
 	}
 	// 去重 2：同一个 anime 下同一 URL 已经提交过（批量包场景：01-12 Fin 不要为每集重复入队）
 	if o.isDuplicateURL(ctx, anime.ID, url) {
+		if allowAdditional {
+			return false, resultCount, rankedOut, "合集种子已经覆盖当前集，无需重复补位", bestTitle, bestScore
+		}
 		return true, resultCount, rankedOut, "合集种子已入队（当前集在批量包内）", bestTitle, bestScore
 	}
 	// 去重 3：同 anime 下同 InfoHash 已经存在记录（含 failed/completed），不论 source/episode。
@@ -797,12 +839,7 @@ func (o *Orchestrator) tryBT(
 	if o.isDuplicateInfoHash(ctx, anime.ID, top.InfoHash) {
 		return false, resultCount, rankedOut, "该 InfoHash 已存在历史记录，跳过", bestTitle, bestScore
 	}
-	var activeEpisodeTorrents int64
-	o.db.WithContext(ctx).Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND download_type = ? AND status IN ?",
-			anime.ID, ep, model.DownloadTypeTorrent,
-			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
-		Count(&activeEpisodeTorrents)
+	activeEpisodeTorrents := o.activeEpisodeTorrentCount(ctx, anime.ID, ep)
 	if activeEpisodeTorrents >= maxConcurrentEpisodeTorrents {
 		return false, resultCount, rankedOut,
 			fmt.Sprintf("同集已有 %d 个候选并行探测，达到安全上限", activeEpisodeTorrents),
@@ -982,6 +1019,26 @@ func firstRoadWithEpisode(episodes []stream.EpisodeInfo, ep int) string {
 }
 
 const maxConcurrentEpisodeTorrents = 3
+
+func (o *Orchestrator) activeEpisodeTorrentCount(ctx context.Context, animeID uint, ep int) int64 {
+	var count int64
+	o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND download_type = ? AND status IN ?",
+			animeID, ep, model.DownloadTypeTorrent,
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Count(&count)
+	return count
+}
+
+func (o *Orchestrator) hasActiveSourceCandidate(ctx context.Context, animeID uint, ep int, source string) bool {
+	var count int64
+	o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND source = ? AND status IN ?",
+			animeID, ep, source,
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Count(&count)
+	return count > 0
+}
 
 // downloadedEpisodes 查询某 anime 的已完成/进行中集数（跨所有 source_type）。
 // 已标记 seeking_alternative 的慢种仍在 qBit 中继续下载，但不再独占该集，

@@ -69,6 +69,22 @@ func TestCompleteEpisodeRacePromotesFirstStreamAndCancelsTorrent(t *testing.T) {
 	}
 }
 
+func TestExecutorTaskIDPrefersTorrentInfoHash(t *testing.T) {
+	hash := "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+	torrent := model.Download{
+		TorrentID:    "torrent_temporary",
+		DownloadType: model.DownloadTypeTorrent,
+		InfoHash:     &hash,
+	}
+	if got := executorTaskID(&torrent); got != hash {
+		t.Fatalf("torrent control id=%q want info hash", got)
+	}
+	stream := model.Download{TorrentID: "stream_runtime", DownloadType: model.DownloadTypeStream}
+	if got := executorTaskID(&stream); got != stream.TorrentID {
+		t.Fatalf("stream control id=%q want runtime id", got)
+	}
+}
+
 func TestCompleteEpisodeRaceRejectsLateStreamCandidate(t *testing.T) {
 	db := testutil.InitTestDB()
 	anime := model.Anime{Title: "race anime"}

@@ -426,7 +426,7 @@ func TestCompletedCandidateCleansUpOnlyItsIncompleteSiblings(t *testing.T) {
 	exec := &recordingExecutor{}
 	s := &Service{db: db, executors: map[string]Executor{model.DownloadTypeTorrent: exec}}
 	s.settleEpisodeRace(context.Background(), &winner)
-	if exec.removedID != "slow" || exec.removeFiles {
+	if exec.removedID != slowHash || exec.removeFiles {
 		t.Fatalf("race cleanup=%q removeFiles=%t", exec.removedID, exec.removeFiles)
 	}
 	var saved model.Download
@@ -525,6 +525,50 @@ func TestSyncStartsMetadataProbeForQueuedMagnet(t *testing.T) {
 	}
 	if forceCalls != 1 || saved.MetadataProbeStartedAt == nil {
 		t.Fatalf("metadata probe not started: calls=%d started_at=%v", forceCalls, saved.MetadataProbeStartedAt)
+	}
+}
+
+func TestSyncNeverReactivatesSupersededCandidate(t *testing.T) {
+	db := testutil.InitTestDB()
+	hash := "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+	row := model.Download{
+		TorrentID:    "temporary-id",
+		Name:         "late race loser",
+		URL:          "magnet:?xt=urn:btih:" + hash,
+		Status:       model.DownloadStatusSuperseded,
+		DownloadType: model.DownloadTypeTorrent,
+		InfoHash:     &hash,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/v2/app/setPreferences":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v2/torrents/info":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{{
+				"hash": hash, "state": "downloading", "has_metadata": true,
+				"progress": 0.5, "downloaded": float64(50), "dlspeed": float64(1024),
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	s := &QBitSyncer{db: db, baseURL: server.URL, user: "admin", pass: "secret", client: server.Client()}
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var saved model.Download
+	if err := db.First(&saved, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != model.DownloadStatusSuperseded || saved.Progress != 0 {
+		t.Fatalf("terminal candidate regressed: status=%s progress=%v", saved.Status, saved.Progress)
 	}
 }
 

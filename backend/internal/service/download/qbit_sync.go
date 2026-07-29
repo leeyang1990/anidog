@@ -144,6 +144,13 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		if dl.InfoHash == nil {
 			continue
 		}
+		// 终态只能由用户操作或新建候选改变。遗留的 qBit 任务即使仍在
+		// seeding/downloading，也不能把赢家或已淘汰候选重新翻回活动状态。
+		if dl.Status == model.DownloadStatusCompleted ||
+			dl.Status == model.DownloadStatusSuperseded ||
+			dl.Status == model.DownloadStatusFailed {
+			continue
+		}
 		qt, ok := byHash[strings.ToUpper(*dl.InfoHash)]
 		if !ok {
 			// qBit 里找不到这个 hash。它可能被用户/系统主动删除，也可能是

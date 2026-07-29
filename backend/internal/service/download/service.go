@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -123,7 +124,7 @@ func (s *Service) Cancel(dlID uint) error {
 		return fmt.Errorf("无对应执行器")
 	}
 
-	if err := exec.Cancel(dl.TorrentID); err != nil {
+	if err := exec.Cancel(executorTaskID(&dl)); err != nil {
 		zap.L().Warn("取消下载失败", zap.Error(err))
 	}
 
@@ -143,7 +144,7 @@ func (s *Service) Pause(dlID uint) (*model.Download, error) {
 		return nil, fmt.Errorf("无对应执行器")
 	}
 
-	if err := exec.Pause(dl.TorrentID); err != nil {
+	if err := exec.Pause(executorTaskID(&dl)); err != nil {
 		return nil, err
 	}
 
@@ -164,7 +165,7 @@ func (s *Service) Resume(dlID uint) (*model.Download, error) {
 		return nil, fmt.Errorf("无对应执行器")
 	}
 
-	if err := exec.Resume(dl.TorrentID); err != nil {
+	if err := exec.Resume(executorTaskID(&dl)); err != nil {
 		return nil, err
 	}
 
@@ -182,7 +183,7 @@ func (s *Service) Remove(dlID uint, removeFiles bool) error {
 
 	exec := s.executors[dl.DownloadType]
 	if exec != nil {
-		if err := exec.Remove(dl.TorrentID, removeFiles); err != nil {
+		if err := exec.Remove(executorTaskID(&dl), removeFiles); err != nil {
 			zap.L().Warn("移除下载文件失败", zap.Error(err))
 		}
 	}
@@ -392,7 +393,7 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 	if !won {
 		_ = removeStagingFile(stagingPath)
 		if exec := s.executors[candidate.DownloadType]; exec != nil {
-			_ = exec.Remove(candidate.TorrentID, false)
+			_ = exec.Remove(executorTaskID(&candidate), false)
 		}
 		return false
 	}
@@ -404,7 +405,7 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 	// 仅移除任务、不删除文件；正式媒体已原子移动到规范路径。
 	if stagingPath != "" && candidate.DownloadType == model.DownloadTypeTorrent {
 		if exec := s.executors[candidate.DownloadType]; exec != nil {
-			if err := exec.Remove(candidate.TorrentID, false); err != nil {
+			if err := exec.Remove(executorTaskID(&candidate), false); err != nil {
 				zap.L().Warn("移除竞速赢家的 qBit 任务失败",
 					zap.Uint("id", candidate.ID), zap.Error(err))
 			}
@@ -455,7 +456,7 @@ func (s *Service) settleEpisodeRace(ctx context.Context, winner *model.Download)
 		if exec := s.executors[sibling.DownloadType]; exec != nil {
 			removeFiles := sibling.DownloadType == model.DownloadTypeTorrent &&
 				sibling.SavePath != nil && IsTorrentRaceSavePath(*sibling.SavePath)
-			if err := exec.Remove(sibling.TorrentID, removeFiles); err != nil {
+			if err := exec.Remove(executorTaskID(sibling), removeFiles); err != nil {
 				zap.L().Warn("取消竞速候选失败",
 					zap.Uint("winner_id", winner.ID), zap.Uint("candidate_id", sibling.ID), zap.Error(err))
 				_ = s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", sibling.ID).
@@ -470,6 +471,20 @@ func (s *Service) settleEpisodeRace(ctx context.Context, winner *model.Download)
 			}
 		}
 	}
+}
+
+// qBittorrent's add API returns no hash. TorrentID therefore starts as a
+// synthetic UI/runtime ID, while InfoHash is the stable identifier accepted
+// by qBittorrent control APIs.
+func executorTaskID(dl *model.Download) string {
+	if dl != nil && dl.DownloadType == model.DownloadTypeTorrent &&
+		dl.InfoHash != nil && strings.TrimSpace(*dl.InfoHash) != "" {
+		return strings.TrimSpace(*dl.InfoHash)
+	}
+	if dl == nil {
+		return ""
+	}
+	return dl.TorrentID
 }
 
 func removeTorrentRaceDirectory(path *string) {

@@ -668,7 +668,8 @@ func (o *Orchestrator) tryBT(
 			rankedOut++
 			continue
 		}
-		if c.InfoHash != "" && (o.hasHistoricalFailure(ctx, c.InfoHash) ||
+		if c.InfoHash != "" && (o.hasActiveInfoHash(ctx, anime.ID, c.InfoHash) ||
+			o.hasHistoricalFailure(ctx, c.InfoHash) ||
 			o.hasAnimeInfoHashFailure(ctx, anime.ID, c.InfoHash)) {
 			rankedOut++
 			continue
@@ -792,6 +793,17 @@ func (o *Orchestrator) tryBT(
 	// 防止 sync 误标 failed 后 Orchestrator 再次拿同 magnet 入队产生双胞胎。
 	if o.isDuplicateInfoHash(ctx, anime.ID, top.InfoHash) {
 		return false, resultCount, rankedOut, "该 InfoHash 已存在历史记录，跳过", bestTitle, bestScore
+	}
+	var activeEpisodeTorrents int64
+	o.db.WithContext(ctx).Model(&model.Download{}).
+		Where("anime_id = ? AND episode_number = ? AND download_type = ? AND status IN ?",
+			anime.ID, ep, model.DownloadTypeTorrent,
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Count(&activeEpisodeTorrents)
+	if activeEpisodeTorrents >= maxConcurrentEpisodeTorrents {
+		return false, resultCount, rankedOut,
+			fmt.Sprintf("同集已有 %d 个候选并行探测，达到安全上限", activeEpisodeTorrents),
+			bestTitle, bestScore
 	}
 
 	// 入队（使用 magnet，走 torrent 执行器）
@@ -966,12 +978,17 @@ func firstRoadWithEpisode(episodes []stream.EpisodeInfo, ep int) string {
 	return road
 }
 
-// downloadedEpisodes 查询某 anime 的已完成/进行中集数（跨所有 source_type）
+const maxConcurrentEpisodeTorrents = 3
+
+// downloadedEpisodes 查询某 anime 的已完成/进行中集数（跨所有 source_type）。
+// 已标记 seeking_alternative 的慢种仍在 qBit 中继续下载，但不再独占该集，
+// 这样调度器可以并行加入不同 Hash。
 func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map[int]bool {
 	var rows []struct {
-		EpisodeNumber *int
-		Status        string
-		MediaMissing  bool
+		EpisodeNumber      *int
+		Status             string
+		MediaMissing       bool
+		SeekingAlternative bool
 	}
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
@@ -981,12 +998,12 @@ func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map
 			model.DownloadStatusDownloading,
 			model.DownloadStatusPending,
 		}).
-		Select("episode_number, status, media_missing").
+		Select("episode_number, status, media_missing, seeking_alternative").
 		Scan(&rows)
 
 	out := make(map[int]bool, len(rows))
 	for _, r := range rows {
-		if r.EpisodeNumber != nil && !r.MediaMissing {
+		if r.EpisodeNumber != nil && !r.MediaMissing && !r.SeekingAlternative {
 			out[*r.EpisodeNumber] = true
 		}
 	}
@@ -1038,6 +1055,7 @@ func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, so
 		Where("status IN ? OR (status = ? AND media_missing = ?)", []string{
 			model.DownloadStatusDownloading, model.DownloadStatusPending,
 		}, model.DownloadStatusCompleted, false).
+		Where("seeking_alternative = ? OR status = ?", false, model.DownloadStatusCompleted).
 		Count(&count)
 	if count > 0 {
 		return true
@@ -1093,6 +1111,20 @@ func (o *Orchestrator) isDuplicateInfoHash(ctx context.Context, animeID uint, in
 	return count > 0
 }
 
+func (o *Orchestrator) hasActiveInfoHash(ctx context.Context, animeID uint, infoHash string) bool {
+	if infoHash == "" {
+		return false
+	}
+	var count int64
+	o.db.WithContext(ctx).
+		Model(&model.Download{}).
+		Where("anime_id = ? AND info_hash = ? AND status IN ?",
+			animeID, strings.ToUpper(infoHash),
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Count(&count)
+	return count > 0
+}
+
 // hasHistoricalFailure 判断某个 InfoHash 是否在黑名单（abandoned_torrent）里。
 // 用于在排序后剔除"已知没活种"的 magnet：例如 qbit_sync 把超过 6h 仍 0 元数据
 // 的种子写入黑名单后，Orchestrator 下一轮看到同 hash 的候选就直接跳过。
@@ -1103,12 +1135,20 @@ func (o *Orchestrator) hasHistoricalFailure(ctx context.Context, infoHash string
 	if infoHash == "" {
 		return false
 	}
-	var count int64
-	o.db.WithContext(ctx).
-		Model(&model.AbandonedTorrent{}).
+	var row model.AbandonedTorrent
+	if err := o.db.WithContext(ctx).
 		Where("info_hash = ?", strings.ToUpper(infoHash)).
-		Count(&count)
-	return count > 0
+		First(&row).Error; err != nil {
+		return false
+	}
+	if row.Kind == model.FailureKindPermanent {
+		return true
+	}
+	cooldown := 72 * time.Hour
+	if strings.Contains(row.Reason, "慢种") || strings.Contains(row.Reason, "平均速度") {
+		cooldown = 12 * time.Hour
+	}
+	return time.Since(row.AbandonedAt) < cooldown
 }
 
 // hasAnimeInfoHashFailure 判断该番是否已经尝试并失败/淘汰过某个种子。

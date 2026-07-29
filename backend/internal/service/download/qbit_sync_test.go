@@ -78,7 +78,7 @@ func TestObserveLongTermHealthTinyTrickleDoesNotResetStall(t *testing.T) {
 	dl := &model.Download{StalledSince: &stalledSince, LastProgressAt: &lastProgress}
 	torrent := unavailableTorrent(0.25, 25_000_000)
 
-	_, reason := observeLongTermTorrentHealth(dl, torrent, now, false)
+	_, reason := observeLongTermTorrentHealth(dl, torrent, now)
 	if !strings.Contains(reason, "偶发字节不重置") {
 		t.Fatalf("expected continuous-stall rejection, got %q", reason)
 	}
@@ -96,7 +96,7 @@ func TestObserveLongTermHealthRejectsLowAverageSpeed(t *testing.T) {
 	}
 	torrent := unavailableTorrent(0.25, 21_000_000)
 
-	_, reason := observeLongTermTorrentHealth(dl, torrent, now, false)
+	_, reason := observeLongTermTorrentHealth(dl, torrent, now)
 	if !strings.Contains(reason, "长期平均速度") {
 		t.Fatalf("expected long-term speed rejection, got %q", reason)
 	}
@@ -115,13 +115,13 @@ func TestObserveLongTermHealthRejectsConnectedButUnusablySlowSeed(t *testing.T) 
 	torrent["availability"] = 1.0
 	torrent["dlspeed"] = float64(512)
 
-	_, reason := observeLongTermTorrentHealth(dl, torrent, now, true)
+	_, reason := observeLongTermTorrentHealth(dl, torrent, now)
 	if !strings.Contains(reason, "不可用慢种") {
 		t.Fatalf("expected connected but unusably slow seed rejection, got %q", reason)
 	}
 }
 
-func TestObserveLongTermHealthKeepsBaselineUntilHardDeadline(t *testing.T) {
+func TestObserveLongTermHealthFlagsSlowTorrentWithoutFastPeerEvidence(t *testing.T) {
 	now := time.Now()
 	startBytes := int64(20_000_000)
 	torrent := unavailableTorrent(0.25, 21_000_000)
@@ -134,18 +134,8 @@ func TestObserveLongTermHealthKeepsBaselineUntilHardDeadline(t *testing.T) {
 		SpeedWindowStartedAt:  &twoHoursAgo,
 		SpeedWindowStartBytes: &startBytes,
 	}
-	updates, reason := observeLongTermTorrentHealth(dl, torrent, now, false)
-	if reason != "" {
-		t.Fatalf("uncorroborated slow torrent should remain under observation: %q", reason)
-	}
-	if _, reset := updates["speed_window_started_at"]; reset {
-		t.Fatal("slow observation baseline must not reset before the hard deadline")
-	}
-
-	sixHoursAgo := now.Add(-maxSlowObservationWindow - time.Minute)
-	dl.SpeedWindowStartedAt = &sixHoursAgo
-	if _, reason := observeLongTermTorrentHealth(dl, torrent, now, false); !strings.Contains(reason, "不可用慢种") {
-		t.Fatalf("expected hard-deadline rejection, got %q", reason)
+	if _, reason := observeLongTermTorrentHealth(dl, torrent, now); !strings.Contains(reason, "不可用慢种") {
+		t.Fatalf("expected non-destructive slow-torrent signal, got %q", reason)
 	}
 }
 
@@ -157,7 +147,7 @@ func TestObserveLongTermHealthResetsWhenCompleteSeedConnects(t *testing.T) {
 	torrent["num_seeds"] = float64(1)
 	torrent["availability"] = 1.0
 
-	updates, reason := observeLongTermTorrentHealth(dl, torrent, now, false)
+	updates, reason := observeLongTermTorrentHealth(dl, torrent, now)
 	if reason != "" {
 		t.Fatalf("healthy swarm should be kept: %s", reason)
 	}
@@ -177,13 +167,13 @@ func TestInitialQualityProbeRejectsIncompleteSwarm(t *testing.T) {
 	torrent := unavailableTorrent(0.06, 10_100_000)
 	torrent["state"] = "stalledDL"
 
-	_, reason := observeInitialTorrentQuality(dl, torrent, now, false)
+	_, reason := observeInitialTorrentQuality(dl, torrent, now)
 	if !strings.Contains(reason, "无法拼出完整文件") {
 		t.Fatalf("expected incomplete swarm rejection, got %q", reason)
 	}
 }
 
-func TestInitialQualityProbeUsesOtherFastTorrentAsLocalHealthEvidence(t *testing.T) {
+func TestInitialQualityProbeFlagsSlowTorrentWithoutDestructiveCorroboration(t *testing.T) {
 	now := time.Now()
 	started := now.Add(-initialQualityProbeWindow - time.Minute)
 	startBytes := int64(10_000_000)
@@ -197,12 +187,8 @@ func TestInitialQualityProbeUsesOtherFastTorrentAsLocalHealthEvidence(t *testing
 	torrent["availability"] = 2.5
 	torrent["dlspeed"] = float64(1024)
 
-	if _, reason := observeInitialTorrentQuality(dl, torrent, now, false); reason != "" {
-		t.Fatalf("must not replace during an uncorroborated local outage: %q", reason)
-	}
-	dl.QualityProbeCompleted = false
-	if _, reason := observeInitialTorrentQuality(dl, torrent, now, true); !strings.Contains(reason, "真实吞吐") {
-		t.Fatalf("expected slow peer rejection with local health evidence, got %q", reason)
+	if _, reason := observeInitialTorrentQuality(dl, torrent, now); !strings.Contains(reason, "真实吞吐") {
+		t.Fatalf("expected slow peer race signal, got %q", reason)
 	}
 }
 
@@ -217,7 +203,7 @@ func TestInitialQualityProbeDoesNotCountQueuedTime(t *testing.T) {
 	torrent := unavailableTorrent(0, 0)
 	torrent["state"] = "queuedDL"
 
-	updates, reason := observeInitialTorrentQuality(dl, torrent, now, true)
+	updates, reason := observeInitialTorrentQuality(dl, torrent, now)
 	if reason != "" || len(updates) != 0 {
 		t.Fatalf("queued time must not fail the quality probe: updates=%#v reason=%q", updates, reason)
 	}
@@ -270,20 +256,124 @@ func TestQualityReplacementCooldown(t *testing.T) {
 	db := testutil.InitTestDB()
 	now := time.Now()
 	s := &QBitSyncer{db: db}
-	if !s.qualityReplacementAllowed(context.Background(), now) {
-		t.Fatal("replacement should initially be allowed")
+	if !s.alternativeSearchAllowed(context.Background(), now) {
+		t.Fatal("alternative search should initially be allowed")
 	}
-	row := model.AbandonedTorrent{
-		InfoHash:    "ABCDEF",
-		Reason:      "质量巡检：15 分钟真实吞吐过低",
-		Kind:        model.FailureKindTransient,
-		AbandonedAt: now.Add(-time.Minute),
+	searchAt := now.Add(-time.Minute)
+	row := model.Download{
+		TorrentID:           "slow-candidate",
+		Name:                "slow",
+		URL:                 "magnet:?xt=urn:btih:ABCDEF",
+		Status:              model.DownloadStatusDownloading,
+		DownloadType:        model.DownloadTypeTorrent,
+		AlternativeSearchAt: &searchAt,
 	}
 	if err := db.Create(&row).Error; err != nil {
 		t.Fatal(err)
 	}
-	if s.qualityReplacementAllowed(context.Background(), now) {
-		t.Fatal("replacement must be rate-limited during cooldown")
+	if s.alternativeSearchAllowed(context.Background(), now) {
+		t.Fatal("alternative search must be rate-limited during cooldown")
+	}
+}
+
+func TestKeepSlowTorrentStartsAlternativeSearchWithoutDeletingIt(t *testing.T) {
+	db := testutil.InitTestDB()
+	animeID, episode := uint(7), 2
+	hash := "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+	row := model.Download{
+		TorrentID:     "slow-kept",
+		Name:          "episode 2",
+		URL:           "magnet:?xt=urn:btih:" + hash,
+		Status:        model.DownloadStatusDownloading,
+		DownloadType:  model.DownloadTypeTorrent,
+		AnimeID:       &animeID,
+		EpisodeNumber: &episode,
+		InfoHash:      &hash,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	called := make(chan struct{}, 1)
+	s := &QBitSyncer{db: db}
+	s.SetSlowTorrentHandler(func(_ context.Context, gotAnimeID uint, gotEpisode int) {
+		if gotAnimeID != animeID || gotEpisode != episode {
+			t.Errorf("unexpected search target anime=%d episode=%d", gotAnimeID, gotEpisode)
+		}
+		called <- struct{}{}
+	})
+	if !s.keepSlowTorrentAndSearch(context.Background(), &row, "平均速度过低") {
+		t.Fatal("slow torrent should start an alternative search")
+	}
+	var saved model.Download
+	if err := db.First(&saved, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != model.DownloadStatusDownloading || !saved.SeekingAlternative ||
+		saved.AlternativeSearchAt == nil {
+		t.Fatalf("slow torrent was not retained correctly: %#v", saved)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("alternative search callback was not triggered")
+	}
+	if s.keepSlowTorrentAndSearch(context.Background(), &saved, "still slow") {
+		t.Fatal("an already-racing slow torrent must not retrigger the callback")
+	}
+}
+
+func TestCompletedCandidateCleansUpOnlyItsIncompleteSiblings(t *testing.T) {
+	db := testutil.InitTestDB()
+	animeID, episode := uint(7), 2
+	winnerHash := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	slowHash := "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	winner := model.Download{
+		TorrentID: "winner", Name: "winner", URL: "magnet:?xt=urn:btih:" + winnerHash,
+		Status: model.DownloadStatusCompleted, DownloadType: model.DownloadTypeTorrent,
+		AnimeID: &animeID, EpisodeNumber: &episode, InfoHash: &winnerHash,
+	}
+	slow := model.Download{
+		TorrentID: "slow", Name: "slow", URL: "magnet:?xt=urn:btih:" + slowHash,
+		Status: model.DownloadStatusDownloading, DownloadType: model.DownloadTypeTorrent,
+		AnimeID: &animeID, EpisodeNumber: &episode, InfoHash: &slowHash,
+		SeekingAlternative: true,
+	}
+	if err := db.Create(&winner).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&slow).Error; err != nil {
+		t.Fatal(err)
+	}
+	deletedHash := ""
+	deleteFiles := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v2/torrents/delete" {
+			http.NotFound(w, r)
+			return
+		}
+		body := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(body)
+		values, _ := url.ParseQuery(string(body))
+		deletedHash = values.Get("hashes")
+		deleteFiles = values.Get("deleteFiles")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	s := &QBitSyncer{db: db, baseURL: server.URL, client: server.Client()}
+	s.cancelSiblingTorrents(context.Background(), &winner)
+	if deletedHash != strings.ToLower(slowHash) {
+		t.Fatalf("deleted hash=%q", deletedHash)
+	}
+	if deleteFiles != "false" {
+		t.Fatalf("race cleanup must preserve files, deleteFiles=%q", deleteFiles)
+	}
+	var saved model.Download
+	if err := db.First(&saved, slow.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != model.DownloadStatusSuperseded || saved.SeekingAlternative {
+		t.Fatalf("sibling race state not closed: %#v", saved)
 	}
 }
 

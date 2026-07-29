@@ -61,6 +61,11 @@ type Download struct {
 	QualityProbeStartedAt  *time.Time `gorm:"index" json:"quality_probe_started_at"`
 	QualityProbeStartBytes *int64     `json:"quality_probe_start_bytes"`
 	QualityProbeCompleted  bool       `gorm:"default:false" json:"quality_probe_completed"`
+	// SeekingAlternative means this torrent remains active as a slow fallback,
+	// but must no longer block the orchestrator from racing a different hash.
+	SeekingAlternative  bool       `gorm:"index;default:false" json:"seeking_alternative"`
+	AlternativeSearchAt *time.Time `gorm:"index" json:"alternative_search_at"`
+	QualityNote         string     `gorm:"type:text" json:"quality_note"`
 	// A queued magnet is force-started only long enough to fetch metadata, then
 	// returned to the normal payload queue.
 	MetadataProbeStartedAt *time.Time `gorm:"index" json:"metadata_probe_started_at"`

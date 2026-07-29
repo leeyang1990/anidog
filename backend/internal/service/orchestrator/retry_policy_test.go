@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/testutil"
@@ -32,6 +33,71 @@ func TestRetryCountForEpisodeIgnoresRejectedCandidate(t *testing.T) {
 	o := &Orchestrator{db: db}
 	if got := o.retryCountForEpisode(context.Background(), animeID, episode); got != 1 {
 		t.Fatalf("got retry count %d, want 1", got)
+	}
+}
+
+func TestSlowTorrentDoesNotBlockAlternativeCandidate(t *testing.T) {
+	db := testutil.InitTestDB()
+	animeID := uint(7)
+	episodeSlow, episodeNormal := 2, 3
+	rows := []model.Download{
+		{
+			TorrentID: "slow-active", Name: "slow", URL: "magnet:?xt=urn:btih:SLOW",
+			Status: model.DownloadStatusDownloading, DownloadType: model.DownloadTypeTorrent,
+			AnimeID: &animeID, EpisodeNumber: &episodeSlow, SeekingAlternative: true,
+		},
+		{
+			TorrentID: "normal-active", Name: "normal", URL: "magnet:?xt=urn:btih:NORMAL",
+			Status: model.DownloadStatusDownloading, DownloadType: model.DownloadTypeTorrent,
+			AnimeID: &animeID, EpisodeNumber: &episodeNormal,
+		},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	o := &Orchestrator{db: db}
+	covered := o.downloadedEpisodes(context.Background(), animeID)
+	if covered[episodeSlow] {
+		t.Fatal("slow fallback must not block an alternative candidate")
+	}
+	if !covered[episodeNormal] {
+		t.Fatal("normal active torrent must continue to cover its episode")
+	}
+	if o.isDuplicate(context.Background(), animeID, episodeSlow, SourceBT) {
+		t.Fatal("slow fallback must not trip episode duplicate protection")
+	}
+}
+
+func TestTransientSlowHashUsesShortHalfOpenCooldown(t *testing.T) {
+	db := testutil.InitTestDB()
+	oldSlow := model.AbandonedTorrent{
+		InfoHash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		Reason:   "4h 长期平均速度 1.0 KiB/s，判定不可用慢种",
+		Kind:     model.FailureKindTransient, AbandonedAt: time.Now().Add(-13 * time.Hour),
+	}
+	recentSlow := model.AbandonedTorrent{
+		InfoHash: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+		Reason:   "长期平均速度过低，判定不可用慢种",
+		Kind:     model.FailureKindTransient, AbandonedAt: time.Now().Add(-time.Hour),
+	}
+	oldDead := model.AbandonedTorrent{
+		InfoHash: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+		Reason:   "metaDL 超时无元数据，判死种",
+		Kind:     model.FailureKindTransient, AbandonedAt: time.Now().Add(-13 * time.Hour),
+	}
+	if err := db.Create(&[]model.AbandonedTorrent{oldSlow, recentSlow, oldDead}).Error; err != nil {
+		t.Fatal(err)
+	}
+	o := &Orchestrator{db: db}
+	if o.hasHistoricalFailure(context.Background(), oldSlow.InfoHash) {
+		t.Fatal("slow hash should enter half-open after 12 hours")
+	}
+	if !o.hasHistoricalFailure(context.Background(), recentSlow.InfoHash) {
+		t.Fatal("recent slow hash must remain cooling")
+	}
+	if !o.hasHistoricalFailure(context.Background(), oldDead.InfoHash) {
+		t.Fatal("confirmed dead hash should keep the longer cooldown")
 	}
 }
 

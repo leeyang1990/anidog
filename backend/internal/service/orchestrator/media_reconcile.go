@@ -176,12 +176,13 @@ func (o *Orchestrator) RetryEpisodeAfterDeadTorrent(ctx context.Context, animeID
 		return
 	}
 
-	// If another active source already owns this episode, do not create a
-	// duplicate. Normally the dead row was just deleted and this count is zero.
+	// A normal active source still owns the episode. Slow sources marked
+	// seeking_alternative remain active but deliberately do not block a race.
 	var active int64
 	o.db.WithContext(ctx).Model(&model.Download{}).
 		Where("anime_id = ? AND episode_number = ? AND status IN ?",
 			animeID, episode, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Where("seeking_alternative = ?", false).
 		Count(&active)
 	if active > 0 {
 		return

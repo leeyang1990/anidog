@@ -169,6 +169,7 @@ func main() {
 		// QBitSyncer 会广播到所有 enabled 渠道（telegram/bark/...）
 		qbitSync.SetNotificationService(notifSvc)
 		qbitSync.SetDeadTorrentHandler(orch.RetryEpisodeAfterDeadTorrent)
+		qbitSync.SetSlowTorrentHandler(orch.RetryEpisodeAfterDeadTorrent)
 		qbitSync.SetRateLimitLoader(func(ctx context.Context) (downloadKiB, uploadKiB int64) {
 			read := func(key string) int64 {
 				raw, ok, err := settingSvc.Get(ctx, key)

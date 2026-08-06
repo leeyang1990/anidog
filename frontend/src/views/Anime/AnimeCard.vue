@@ -1,5 +1,5 @@
 <template>
-  <div
+  <article
     class="bg-card rounded-2xl border-2 border-ac-sand overflow-hidden hover:shadow-lg hover:-translate-y-0.5 hover:border-ac-grass transition-all duration-200 cursor-pointer group"
     @click="$emit('click', item)"
   >
@@ -11,14 +11,28 @@
       <div v-else class="w-full h-full flex items-center justify-center text-ac-wood-dark">
         <FilmOutline class="size-6" />
       </div>
-      <!-- 评分 -->
-      <span v-if="item.rating_score" class="absolute top-1.5 left-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold bg-ac-sun text-white shadow font-num">
-        ⭐ {{ item.rating_score.toFixed(1) }}
-      </span>
-      <!-- 已追番标记 -->
-      <span v-if="item.is_subscribed" class="absolute top-1.5 right-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold bg-ac-grass text-white shadow">
-        🌿 已追
-      </span>
+      <div class="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-ac-night/35 to-transparent" />
+
+      <!-- 海报状态角标：统一使用高对比胶囊，不受海报底色影响 -->
+      <div class="absolute top-2 inset-x-2 flex items-start justify-between gap-1.5 pointer-events-none">
+        <span
+          v-if="item.rating_score"
+          class="inline-flex h-6 shrink-0 items-center gap-1 rounded-full border border-white/45 bg-ac-night/75 px-2 text-[11px] font-extrabold leading-none text-white shadow-md backdrop-blur-sm font-num"
+          :aria-label="`评分 ${formatRating(item.rating_score)}`"
+        >
+          <Star class="size-3.5 text-ac-sun" aria-hidden="true" />
+          {{ formatRating(item.rating_score) }}
+        </span>
+        <span v-else />
+
+        <span
+          v-if="item.is_subscribed"
+          class="inline-flex h-6 shrink-0 items-center gap-1 rounded-full border border-white/45 bg-ac-grass-dark/90 px-2 text-[11px] font-bold leading-none text-white shadow-md backdrop-blur-sm"
+        >
+          <CheckmarkCircle class="size-3.5" aria-hidden="true" />
+          已追
+        </span>
+      </div>
       <!-- 追番按钮（悬浮） -->
       <div v-if="!item.is_subscribed" class="absolute bottom-0 inset-x-0 bg-gradient-to-t from-ac-night/70 to-transparent p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
@@ -30,17 +44,24 @@
         </button>
       </div>
     </div>
-    <div class="px-2 py-2">
-      <h3 class="text-xs font-bold line-clamp-1 leading-snug text-foreground">{{ item.name_cn || item.name }}</h3>
-      <p v-if="item.air_date" class="text-[10px] text-muted-foreground mt-0.5 font-num">{{ item.air_date }}</p>
+    <div class="px-2.5 py-2.5 min-h-[3.75rem]">
+      <h3 class="text-xs font-bold line-clamp-2 leading-snug text-foreground" :title="item.name_cn || item.name">
+        {{ item.name_cn || item.name }}
+      </h3>
+      <p v-if="item.air_date" class="text-[10px] text-muted-foreground mt-1 font-num">{{ item.air_date }}</p>
     </div>
-  </div>
+  </article>
 </template>
 
 <script setup>
-import { FilmOutline } from '@vicons/ionicons5'
+import { CheckmarkCircle, FilmOutline, Star } from '@vicons/ionicons5'
 import { toResizedImage } from '@/utils/image'
 
 defineProps({ item: { type: Object, required: true } })
 defineEmits(['click', 'subscribe'])
+
+function formatRating(value) {
+  const rating = Number(value)
+  return Number.isFinite(rating) ? rating.toFixed(1) : value
+}
 </script>

@@ -14,23 +14,24 @@
       <div class="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-ac-night/35 to-transparent" />
 
       <!-- 海报状态角标：统一使用高对比胶囊，不受海报底色影响 -->
-      <div class="absolute top-2 inset-x-2 flex items-start justify-between gap-1.5 pointer-events-none">
+      <div class="absolute top-1.5 inset-x-1.5 xl:top-2 xl:inset-x-2 flex items-start justify-between gap-1 xl:gap-1.5 pointer-events-none">
         <span
           v-if="item.rating_score"
-          class="inline-flex h-6 shrink-0 items-center gap-1 rounded-full border border-white/45 bg-ac-night/75 px-2 text-[11px] font-extrabold leading-none text-white shadow-md backdrop-blur-sm font-num"
+          class="inline-flex h-5 xl:h-6 shrink-0 items-center gap-0.5 xl:gap-1 rounded-full border border-white/45 bg-ac-night/75 px-1.5 xl:px-2 text-[10px] xl:text-[11px] font-extrabold leading-none text-white shadow-md backdrop-blur-sm font-num"
           :aria-label="`评分 ${formatRating(item.rating_score)}`"
         >
-          <Star class="size-3.5 text-ac-sun" aria-hidden="true" />
+          <Star class="size-3 xl:size-3.5 text-ac-sun" aria-hidden="true" />
           {{ formatRating(item.rating_score) }}
         </span>
         <span v-else />
 
         <span
           v-if="item.is_subscribed"
-          class="inline-flex h-6 shrink-0 items-center gap-1 rounded-full border border-white/45 bg-ac-grass-dark/90 px-2 text-[11px] font-bold leading-none text-white shadow-md backdrop-blur-sm"
+          class="inline-flex size-5 xl:size-auto xl:h-6 shrink-0 items-center justify-center xl:gap-1 rounded-full border border-white/45 bg-ac-grass-dark/90 xl:px-2 xl:text-[11px] font-bold leading-none text-white shadow-md backdrop-blur-sm"
+          aria-label="已追番"
         >
-          <CheckmarkCircle class="size-3.5" aria-hidden="true" />
-          已追
+          <CheckmarkCircle class="size-3 xl:size-3.5" aria-hidden="true" />
+          <span class="hidden xl:inline">已追</span>
         </span>
       </div>
       <!-- 追番按钮（悬浮） -->

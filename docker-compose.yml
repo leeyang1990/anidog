@@ -23,7 +23,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-anidog}
       POSTGRES_USER: ${POSTGRES_USER:-anidog}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -66,14 +66,14 @@ services:
       qbittorrent:
         condition: service_started
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-anidog}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-anidog}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-anidog}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-anidog}?sslmode=disable
 
       DOWNLOADER_TYPE: qbittorrent
       DOWNLOADER_HOST: http://qbittorrent:8080
       DOWNLOADER_USERNAME: ${DOWNLOADER_USERNAME:-admin}
-      DOWNLOADER_PASSWORD: ${DOWNLOADER_PASSWORD:-adminadmin}
+      DOWNLOADER_PASSWORD: ${DOWNLOADER_PASSWORD:?请在 .env 中设置 DOWNLOADER_PASSWORD}
 
-      SECRET_KEY: ${SECRET_KEY:-CHANGE_ME_TO_RANDOM_32_BYTES}
+      SECRET_KEY: ${SECRET_KEY:?请在 .env 中设置 SECRET_KEY}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       RSS_CHECK_INTERVAL: ${RSS_CHECK_INTERVAL:-30}
 

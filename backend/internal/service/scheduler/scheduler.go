@@ -22,9 +22,11 @@ type scheduledJob struct {
 
 // Scheduler runs registered Jobs at their specified intervals.
 type Scheduler struct {
-	jobs   []scheduledJob
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu      sync.Mutex
+	jobs    []scheduledJob
+	cancel  context.CancelFunc
+	running bool
+	wg      sync.WaitGroup
 }
 
 func New() *Scheduler {
@@ -34,12 +36,20 @@ func New() *Scheduler {
 // Register adds a job to be run at the given interval.
 // If runImmediate is true, the job runs once immediately on Start.
 func (s *Scheduler) Register(job Job, interval time.Duration, runImmediate bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.jobs = append(s.jobs, scheduledJob{job: job, interval: interval, runImmediate: runImmediate})
 }
 
 func (s *Scheduler) Start() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
+	s.running = true
 
 	for _, sj := range s.jobs {
 		s.wg.Add(1)
@@ -54,11 +64,22 @@ func (s *Scheduler) Start() {
 }
 
 func (s *Scheduler) Stop() {
-	if s.cancel != nil {
-		s.cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running {
+		return
 	}
+	s.cancel()
 	s.wg.Wait()
+	s.cancel = nil
+	s.running = false
 	zap.L().Info("调度器已停止")
+}
+
+func (s *Scheduler) Running() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
 }
 
 func (s *Scheduler) runLoop(ctx context.Context, sj scheduledJob) {

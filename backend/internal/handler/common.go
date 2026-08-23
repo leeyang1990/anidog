@@ -94,6 +94,7 @@ func humanizeDuration(sec uint64) string {
 type SystemInfoDeps struct {
 	DB        *gorm.DB
 	QBitPing  func(ctx context.Context) (online bool, version string) // 可空
+	MediaRoot func(ctx context.Context) string                       // 可空；动态媒体目录
 }
 
 // getSystemInfo gathers system information using gopsutil + 运行时 + DB + qBit。
@@ -129,6 +130,27 @@ func getSystemInfo(version string, deps SystemInfoDeps) gin.H {
 			"used":         diskStat.Used,
 			"free":         diskStat.Free,
 			"used_percent": round1(diskStat.UsedPercent),
+		}
+	}
+	mediaDiskInfo := gin.H{}
+	if deps.MediaRoot != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		mediaRoot := deps.MediaRoot(ctx)
+		cancel()
+		if mediaRoot != "" {
+			if mediaStat, err := disk.Usage(mediaRoot); err != nil {
+				zap.L().Warn("获取媒体存储信息失败", zap.String("path", mediaRoot), zap.Error(err))
+			} else {
+				mediaDiskInfo = gin.H{
+					"path":         mediaRoot,
+					"total":        mediaStat.Total,
+					"used":         mediaStat.Used,
+					"free":         mediaStat.Free,
+					"used_percent": round1(mediaStat.UsedPercent),
+				}
+				diskInfo = mediaDiskInfo
+				diskPercent = mediaStat.UsedPercent
+			}
 		}
 	}
 
@@ -194,8 +216,9 @@ func getSystemInfo(version string, deps SystemInfoDeps) gin.H {
 			"num_gc":      ms.NumGC,       // GC 次数
 		},
 		"memory":    memInfo,
-		"disk":      diskInfo,
-		"database":  dbInfo,
+		"disk":       diskInfo,
+		"media_disk": mediaDiskInfo,
+		"database":   dbInfo,
 		"qbittorrent": qbitInfo,
 		"timestamp": time.Now(),
 	}

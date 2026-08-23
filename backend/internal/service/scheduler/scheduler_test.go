@@ -52,6 +52,35 @@ func TestScheduler_Stop(t *testing.T) {
 	}
 }
 
+func TestSchedulerStartAndStopAreIdempotent(t *testing.T) {
+	sched := New()
+	job := &mockJob{name: "idempotent"}
+	sched.Register(job, time.Hour, true)
+
+	sched.Start()
+	sched.Start()
+	time.Sleep(20 * time.Millisecond)
+	if got := job.count.Load(); got != 1 {
+		t.Fatalf("duplicate Start launched duplicate loops: count=%d", got)
+	}
+	if !sched.Running() {
+		t.Fatal("scheduler should be running")
+	}
+
+	sched.Stop()
+	sched.Stop()
+	if sched.Running() {
+		t.Fatal("scheduler should be stopped")
+	}
+
+	sched.Start()
+	time.Sleep(20 * time.Millisecond)
+	if got := job.count.Load(); got != 2 {
+		t.Fatalf("scheduler did not restart cleanly: count=%d", got)
+	}
+	sched.Stop()
+}
+
 func TestScheduler_ImmediateRun(t *testing.T) {
 	sched := New()
 	job := &mockJob{name: "immediate"}

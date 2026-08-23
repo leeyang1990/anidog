@@ -1,10 +1,13 @@
 package download
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/testutil"
 )
 
 func TestTaskValidate_ValidTorrent(t *testing.T) {
@@ -155,5 +158,66 @@ func TestResolveSavePath_Nil(t *testing.T) {
 	result := resolveSavePath(&config.Config{}, task)
 	if result != nil {
 		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestResolveTaskSavePathUsesRuntimeDownloadDirForAnimeTorrent(t *testing.T) {
+	db := testutil.InitTestDB()
+	if err := db.Create(&model.Setting{Key: "download_dir", Value: "/downloads/anime"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	animeID, episode := uint(42), 3
+	task := &Task{
+		Name:          "manual anime torrent",
+		URL:           "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+		DownloadType:  model.DownloadTypeTorrent,
+		Source:        SourceBT,
+		AnimeID:       &animeID,
+		EpisodeNumber: &episode,
+	}
+	service := NewService(db, &config.Config{MediaRoot: "/wrong-fallback"}, nil)
+	got := service.resolveTaskSavePath(context.Background(), task)
+	if got == nil || !IsTorrentRaceSavePath(*got) {
+		t.Fatalf("expected isolated torrent path, got %v", got)
+	}
+	wantPrefix := filepath.Join("/downloads/anime", torrentRaceDir, "anime-42", "episode-003")
+	if rel, err := filepath.Rel(wantPrefix, *got); err != nil || rel == ".." || filepath.IsAbs(rel) {
+		t.Fatalf("path %q is not under %q", *got, wantPrefix)
+	}
+}
+
+func TestResolveTaskSavePathPreservesExplicitPath(t *testing.T) {
+	db := testutil.InitTestDB()
+	animeID, episode := uint(1), 1
+	task := &Task{
+		DownloadType:  model.DownloadTypeTorrent,
+		AnimeID:       &animeID,
+		EpisodeNumber: &episode,
+		SavePath:      "/custom/path",
+	}
+	service := NewService(db, &config.Config{}, nil)
+	got := service.resolveTaskSavePath(context.Background(), task)
+	if got == nil || *got != task.SavePath {
+		t.Fatalf("explicit path changed: %v", got)
+	}
+}
+
+func TestEnsureMediaCapacityRejectsInsufficientFreeSpace(t *testing.T) {
+	db := testutil.InitTestDB()
+	root := t.TempDir()
+	if err := db.Create(&model.Setting{Key: "media.min_free_gb", Value: "999999999"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, &config.Config{MediaRoot: root}, nil)
+	if err := service.ensureMediaCapacity(context.Background()); err == nil {
+		t.Fatal("expected capacity guard to reject an impossible free-space requirement")
+	}
+}
+
+func TestEnsureMediaCapacityIsDisabledWithoutThresholds(t *testing.T) {
+	db := testutil.InitTestDB()
+	service := NewService(db, &config.Config{MediaRoot: "/path/that/does/not/exist"}, nil)
+	if err := service.ensureMediaCapacity(context.Background()); err != nil {
+		t.Fatalf("capacity guard should be opt-in: %v", err)
 	}
 }

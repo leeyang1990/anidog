@@ -64,8 +64,65 @@ func TestCompleteEpisodeRacePromotesFirstStreamAndCancelsTorrent(t *testing.T) {
 	if winner.Status != model.DownloadStatusCompleted || loser.Status != model.DownloadStatusSuperseded {
 		t.Fatalf("winner=%s loser=%s", winner.Status, loser.Status)
 	}
+	var savedEpisode model.AnimeEpisode
+	if err := db.Where("anime_id = ? AND episode_number = ?", anime.ID, episode).
+		First(&savedEpisode).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !savedEpisode.Downloaded || savedEpisode.FilePath == nil || *savedEpisode.FilePath != final {
+		t.Fatalf("episode state was not synchronized: %#v", savedEpisode)
+	}
 	if torrentExec.removedID != torrentCandidate.TorrentID || torrentExec.removeFiles {
 		t.Fatalf("torrent loser cleanup id=%q removeFiles=%t", torrentExec.removedID, torrentExec.removeFiles)
+	}
+}
+
+func TestReconcileCompletedEpisodeStatesClosesDuplicatesAndRepairsFlag(t *testing.T) {
+	db := testutil.InitTestDB()
+	anime := model.Anime{Title: "historical drift"}
+	if err := db.Create(&anime).Error; err != nil {
+		t.Fatal(err)
+	}
+	episode := 5
+	if err := db.Create(&model.AnimeEpisode{
+		AnimeID: anime.ID, EpisodeNumber: episode, Downloaded: false,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(t.TempDir(), "historical S01E05.mkv")
+	winner := model.Download{
+		TorrentID: "winner", Name: "winner", URL: "https://example.test/winner",
+		Status: model.DownloadStatusCompleted, DownloadType: model.DownloadTypeStream,
+		AnimeID: &anime.ID, EpisodeNumber: &episode, FilePath: &final,
+	}
+	duplicate := model.Download{
+		TorrentID: "duplicate", Name: "duplicate", URL: "magnet:?xt=urn:btih:DUPLICATE",
+		Status: model.DownloadStatusCompleted, DownloadType: model.DownloadTypeTorrent,
+		AnimeID: &anime.ID, EpisodeNumber: &episode,
+	}
+	if err := db.Create(&duplicate).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&winner).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	service := &Service{db: db, executors: map[string]Executor{}}
+	service.reconcileCompletedEpisodeStates(context.Background())
+
+	var savedWinner, savedDuplicate model.Download
+	_ = db.First(&savedWinner, winner.ID).Error
+	_ = db.First(&savedDuplicate, duplicate.ID).Error
+	if savedWinner.Status != model.DownloadStatusCompleted || savedDuplicate.Status != model.DownloadStatusSuperseded {
+		t.Fatalf("winner=%s duplicate=%s", savedWinner.Status, savedDuplicate.Status)
+	}
+	var savedEpisode model.AnimeEpisode
+	if err := db.Where("anime_id = ? AND episode_number = ?", anime.ID, episode).
+		First(&savedEpisode).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !savedEpisode.Downloaded || savedEpisode.FilePath == nil || *savedEpisode.FilePath != final {
+		t.Fatalf("episode drift was not repaired: %#v", savedEpisode)
 	}
 }
 

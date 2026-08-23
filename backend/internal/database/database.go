@@ -32,7 +32,6 @@ func initPostgreSQL(cfg *config.Config, gormLogger logger.Interface) *gorm.DB {
 	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
 
 	zap.L().Info("PostgreSQL 数据库初始化成功",
-		zap.String("host", cfg.DatabaseURL),
 		zap.Int("max_open_conns", cfg.DBMaxOpenConns),
 		zap.Int("max_idle_conns", cfg.DBMaxIdleConns),
 	)

@@ -65,26 +65,12 @@
             </div>
             <div class="flex-1 space-y-4">
               <div>
-                <h3 class="text-lg font-bold tracking-tight text-foreground">文件重命名</h3>
-                <p class="text-sm text-muted-foreground">配置下载文件的自动重命名规则</p>
+                <h3 class="text-lg font-bold tracking-tight text-foreground">文件归档命名</h3>
+                <p class="text-sm text-muted-foreground">下载完成时立即执行，不再依赖定时扫描任务</p>
               </div>
-              <div class="space-y-4">
-                <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">重命名方式</label>
-                  <AcSelect v-model="renameForm.rename_method" :options="renameOptions" />
-                </div>
-                <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">重命名示例</label>
-                  <AcInput :model-value="renameExample" readonly />
-                </div>
-                <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">扫描间隔(秒)</label>
-                  <AcInput v-model="renameForm.rename_interval" type="number" />
-                </div>
-                <AcButton variant="primary" :loading="saving.rename" @click="saveRenameSettings">
-                  <template #icon><SaveOutline class="size-4" /></template>
-                  保存设置
-                </AcButton>
+              <div class="rounded-2xl border-2 border-ac-sand bg-ac-cream/40 p-4 text-sm text-muted-foreground">
+                标准格式：<span class="font-num text-foreground">&lt;番剧名 (年份)&gt;/Season NN/番剧名 SnnEnn.ext</span>。
+                BT、RSS 与流媒体共用同一规则。
               </div>
             </div>
           </div>
@@ -110,14 +96,6 @@
                     <p class="text-xs text-muted-foreground">{{ schedulerForm.enabled ? '已启用' : '已禁用' }}</p>
                   </div>
                   <AcSwitch v-model="schedulerForm.enabled" />
-                </div>
-                <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">RSS刷新间隔(分钟)</label>
-                  <AcInput v-model="schedulerForm.rss_interval" type="number" />
-                </div>
-                <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">语言偏好</label>
-                  <AcSelect v-model="schedulerForm.language" :options="languageOptions" />
                 </div>
                 <AcButton variant="primary" :loading="saving.scheduler" @click="saveSchedulerSettings">
                   <template #icon><SaveOutline class="size-4" /></template>
@@ -284,12 +262,15 @@
               <div class="size-9 rounded-xl bg-ac-heart/30 flex items-center justify-center">
                 <ServerOutline class="size-4 text-ac-heart-dark" />
               </div>
-              <div class="text-sm text-muted-foreground font-bold flex-1">磁盘使用率</div>
+              <div class="text-sm text-muted-foreground font-bold flex-1">媒体存储使用率</div>
               <div class="text-lg font-bold font-num">{{ fmtPct(systemInfo.diskUsage) }}%</div>
             </div>
             <AcProgress :percent="clampPct(systemInfo.diskUsage)" variant="heart" :show-text="false" />
             <div class="text-xs text-muted-foreground mt-1.5">
               {{ fmtBytes(systemInfo.disk?.used) }} / {{ fmtBytes(systemInfo.disk?.total) }}
+            </div>
+            <div v-if="systemInfo.disk?.path" class="text-xs text-muted-foreground mt-1 font-num truncate" :title="systemInfo.disk.path">
+              {{ systemInfo.disk.path }} · 剩余 {{ fmtBytes(systemInfo.disk?.free) }}
             </div>
           </AcCard>
         </div>
@@ -337,7 +318,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { useToast } from '../../composables/useToast'
 import { get, put, post } from '../../utils/api'
@@ -377,33 +358,9 @@ const tabs = [
   { key: 'system', label: '系统信息' }
 ]
 
-const saving = ref({ basic: false, user: false, rename: false, scheduler: false, proxy: false })
+const saving = ref({ basic: false, user: false, scheduler: false, proxy: false })
 
-const renameForm = reactive({ rename_method: 'pn', rename_interval: 300 })
-
-const renameOptions = [
-  { label: '不重命名 (none)', value: 'none' },
-  { label: '标准命名: 标题 S01E01.mkv (pn)', value: 'pn' },
-  { label: '高级命名: 官方标题 S01E01.mkv (advance)', value: 'advance' },
-  { label: '字幕标准: 标题 S01E01.zh.srt (subtitle_pn)', value: 'subtitle_pn' },
-  { label: '字幕高级: 官方标题 S01E01.zh.srt (subtitle_advance)', value: 'subtitle_advance' }
-]
-
-const renameExample = computed(() => ({
-  none: '保持原文件名',
-  pn: '葬送的芙莉莲 S01E01.mkv',
-  advance: 'Sousou no Frieren S01E01.mkv',
-  subtitle_pn: '葬送的芙莉莲 S01E01.zh.srt',
-  subtitle_advance: 'Sousou no Frieren S01E01.zh.srt'
-}[renameForm.rename_method] || ''))
-
-const schedulerForm = reactive({ enabled: true, rss_interval: 30, language: 'zh' })
-
-const languageOptions = [
-  { label: '中文', value: 'zh' },
-  { label: '日本語', value: 'ja' },
-  { label: 'English', value: 'en' }
-]
+const schedulerForm = reactive({ enabled: true })
 
 const userForm = ref({
   username: authStore.user?.username || '',
@@ -439,11 +396,7 @@ const proxyForm = reactive({ http_proxy: '', testing: false, testResult: null })
 async function fetchSettings() {
   try {
     const data = await get('/settings')
-    if (data.rename_method) renameForm.rename_method = data.rename_method
-    if (data.rename_interval) renameForm.rename_interval = data.rename_interval
     if (data.enable_scheduler !== undefined) schedulerForm.enabled = data.enable_scheduler
-    if (data.rss_check_interval) schedulerForm.rss_interval = data.rss_check_interval
-    if (data.language) schedulerForm.language = data.language
     proxyForm.http_proxy = data.http_proxy || ''
   } catch (e) { console.error('获取设置失败:', e) }
 }
@@ -457,8 +410,17 @@ async function fetchSystemInfo() {
   } catch (e) { console.error('获取系统信息失败:', e) }
 }
 
-async function saveRenameSettings() { toast.warning('设置暂不支持在线修改，请修改配置文件后重启服务') }
-async function saveSchedulerSettings() { toast.warning('设置暂不支持在线修改，请修改配置文件后重启服务') }
+async function saveSchedulerSettings() {
+  saving.value.scheduler = true
+  try {
+    await put('/settings', { enable_scheduler: String(schedulerForm.enabled) })
+    toast.success(schedulerForm.enabled ? '后台调度已启用' : '后台调度已停用')
+  } catch (e) {
+    toast.error(e.message || '保存调度设置失败')
+  } finally {
+    saving.value.scheduler = false
+  }
+}
 
 async function testProxy() {
   proxyForm.testing = true

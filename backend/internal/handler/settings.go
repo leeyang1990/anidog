@@ -95,13 +95,14 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 		"rename_method":         true,
 		"rename_interval":       true,
 		"rss_check_interval":    true,
+		"enable_scheduler":      true,
 		"http_proxy":            true,
 	}
 
 	pairs := make(map[string]string)
 	for k, v := range req {
-		// 允许白名单或 download.* 前缀的所有 key
-		if !allowed[k] && !strings.HasPrefix(k, "download.") {
+		// 允许白名单、download.* 下载偏好以及 media.* 存储保护配置。
+		if !allowed[k] && !strings.HasPrefix(k, "download.") && !strings.HasPrefix(k, "media.") {
 			continue
 		}
 		pairs[k] = toString(v)

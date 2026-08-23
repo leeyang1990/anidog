@@ -108,13 +108,12 @@ func main() {
 	// 都会触发一次通知。这个调用得放在 dlSvc 创建之后，看上面 5b 阶段。
 	dlSvc.SetNotificationService(notifSvc)
 
-	// 下载根目录：BT/RSS 都按 <mediaRoot>/<番剧名 (年份)>/Season NN 组织
+	// 下载根目录：下载服务会把带番剧/集数的 BT 任务统一放进竞速隔离目录，
+	// 完成后再归档到 <mediaRoot>/<番剧名 (年份)>/Season NN。
 	mediaRoot := cfg.MediaRoot
 	if mediaRoot == "" {
 		mediaRoot = "/downloads"
 	}
-	rssEngine.SetMediaRoot(mediaRoot)
-
 	// 5d2. Orchestrator：多源剧集填坑调度器（替代旧的 bangumi.CheckAllSubscribed）
 	orch := orchestrator.New(db, dlSvc, streamManager, settingSvc, nil, mediaRoot, httpClient.Client())
 
@@ -140,11 +139,6 @@ func main() {
 		return pref.RSSEnabled
 	}
 	sched.Register(scheduler.NewRSSRefreshJob(rssEngine, rssEnabled), rssInterval, true)
-	renameInterval := time.Duration(cfg.RenameInterval) * time.Second
-	if renameInterval <= 0 {
-		renameInterval = 300 * time.Second
-	}
-	sched.Register(scheduler.NewRenameJob(), renameInterval, false)
 	// 追番更新检查（每 30 分钟）
 	// 番剧更新检查：改为由 Orchestrator 驱动多源下载
 	sched.Register(scheduler.NewBangumiCheckJob(orch), 30*time.Minute, false)
@@ -158,6 +152,8 @@ func main() {
 	sched.Register(scheduler.NewRetryFailedJob(db, retryConductor, retryPrefLoader), 5*time.Minute, false)
 	// 死种黑名单 TTL 清理（每 6h 一次，14 天过期）
 	sched.Register(scheduler.NewAbandonedTorrentTTLJob(db, 14*24*time.Hour), 6*time.Hour, true)
+	// 竞速历史维护：只清理 90 天前已 superseded 的候选，保留完成和失败记录。
+	sched.Register(scheduler.NewMaintenanceJob(db, 90*24*time.Hour), 24*time.Hour, false)
 	// 源健康检测（每 3 分钟）
 	sourceHealthSvc := bangumisvc.NewSourceHealthService(db)
 	sched.Register(scheduler.NewSourceHealthJob(sourceHealthSvc), 3*time.Minute, true)
@@ -203,8 +199,34 @@ func main() {
 		dlSvc.RecoverPending(context.Background())
 	}()
 
-	// 7. 启动调度器
-	sched.Start()
+	// 7. 启动调度器。数据库中的在线设置优先于配置文件；后续切换立即生效。
+	schedulerEnabled := cfg.EnableScheduler
+	if value, ok, err := settingSvc.Get(context.Background(), "enable_scheduler"); err == nil && ok {
+		if parsed, parseErr := strconv.ParseBool(value); parseErr == nil {
+			schedulerEnabled = parsed
+		}
+	}
+	cfg.EnableScheduler = schedulerEnabled
+	settingSvc.OnChange("enable_scheduler", func(value string) {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			zap.L().Warn("忽略无效的调度器开关", zap.String("value", value))
+			return
+		}
+		cfg.EnableScheduler = enabled
+		go func() {
+			if enabled {
+				sched.Start()
+			} else {
+				sched.Stop()
+			}
+		}()
+	})
+	if schedulerEnabled {
+		sched.Start()
+	} else {
+		zap.L().Info("调度器已按配置禁用")
+	}
 
 	// 8. 创建 Gin 引擎
 	if cfg.LogLevel != "DEBUG" {
@@ -227,7 +249,8 @@ func main() {
 	handler.NewDownloadHandler(dlSvc).RegisterRoutes(v1)
 	handler.NewSettingsHandler(settingSvc).
 		WithSystemDeps(handler.SystemInfoDeps{
-			DB: db,
+			DB:        db,
+			MediaRoot: dlSvc.MediaRoot,
 			QBitPing: func(ctx context.Context) (bool, string) {
 				if qbitClient == nil {
 					return false, ""
@@ -260,9 +283,13 @@ func main() {
 
 	// 健康检查
 	router.GET("/healthcheck", func(c *gin.Context) {
+		schedulerStatus := "stopped"
+		if sched.Running() {
+			schedulerStatus = "running"
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "ok",
-			"scheduler": "running",
+			"scheduler": schedulerStatus,
 		})
 	})
 

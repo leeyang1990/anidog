@@ -209,7 +209,7 @@
         <div class="flex-1 space-y-4">
           <div>
             <h3 class="text-lg font-bold tracking-tight text-foreground">下载与归档</h3>
-            <p class="text-sm text-muted-foreground">下载落盘目录、并发数与文件重命名规则</p>
+            <p class="text-sm text-muted-foreground">下载落盘目录、并发数与标准归档规则</p>
           </div>
 
           <div class="space-y-2">
@@ -218,23 +218,31 @@
             <p class="text-xs text-muted-foreground">所有源的文件按 <span class="font-num">&lt;番剧名 (年份)&gt;/Season NN</span> 归档到此目录下</p>
           </div>
 
+          <div class="space-y-2 md:max-w-sm">
+            <label class="text-sm font-bold text-foreground">并发下载数</label>
+            <AcInput v-model="form.max_concurrent" type="number" />
+            <p class="text-xs text-muted-foreground">同时进行的下载任务上限</p>
+          </div>
+
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div class="space-y-2">
-              <label class="text-sm font-bold text-foreground">并发下载数</label>
-              <AcInput v-model="form.max_concurrent" type="number" />
-              <p class="text-xs text-muted-foreground">同时进行的下载任务上限</p>
+              <label class="text-sm font-bold text-foreground">最少保留空间（GB）</label>
+              <AcInput v-model="form.media_min_free_gb" type="number" />
+              <p class="text-xs text-muted-foreground">低于该空间时拒绝创建新下载</p>
             </div>
             <div class="space-y-2">
-              <label class="text-sm font-bold text-foreground">重命名扫描间隔（秒）</label>
-              <AcInput v-model="form.rename_interval" type="number" />
-              <p class="text-xs text-muted-foreground">最小 60 秒，建议 300 秒</p>
+              <label class="text-sm font-bold text-foreground">最高使用率（%）</label>
+              <AcInput v-model="form.media_max_used_percent" type="number" />
+              <p class="text-xs text-muted-foreground">达到该比例时暂停新增下载</p>
             </div>
           </div>
 
-          <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">文件重命名方式</label>
-            <AcSelect v-model="form.rename_method" :options="renameOptions" />
-            <p class="text-xs text-muted-foreground">示例：<span class="font-num">{{ renameExample }}</span></p>
+          <div class="rounded-2xl border-2 border-ac-sand bg-ac-cream/40 p-4 text-sm">
+            <div class="font-bold text-foreground">完成即归档，无需定时扫描</div>
+            <p class="mt-1 text-xs text-muted-foreground">
+              BT、RSS 和流媒体完成后统一命名为
+              <span class="font-num">标题 S01E01.ext</span>，并原子移动到对应季度目录。
+            </p>
           </div>
         </div>
       </div>
@@ -248,7 +256,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { LayersOutline, DiamondOutline, TimerOutline, CheckmarkOutline, FolderOpenOutline } from '@vicons/ionicons5'
 import { get, put } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
@@ -274,8 +282,8 @@ const defaults = {
   // 下载与归档（原"下载管理 → 设置"弹窗）
   download_dir: '/downloads',
   max_concurrent: 3,
-  rename_method: 'pn',
-  rename_interval: 300,
+  media_min_free_gb: 100,
+  media_max_used_percent: 95,
 }
 
 const form = reactive({ ...JSON.parse(JSON.stringify(defaults)) })
@@ -301,22 +309,6 @@ const langOptions = [
   { label: '日文', value: 'japanese' },
   { label: '英文', value: 'english' },
 ]
-
-const renameOptions = [
-  { label: '不重命名 (none)', value: 'none' },
-  { label: '标准命名：标题 S01E01.mkv (pn)', value: 'pn' },
-  { label: '高级命名：官方标题 S01E01.mkv (advance)', value: 'advance' },
-  { label: '字幕标准：标题 S01E01.zh.srt (subtitle_pn)', value: 'subtitle_pn' },
-  { label: '字幕高级：官方标题 S01E01.zh.srt (subtitle_advance)', value: 'subtitle_advance' },
-]
-
-const renameExample = computed(() => ({
-  none: '保持原文件名',
-  pn: '葬送的芙莉莲 S01E01.mkv',
-  advance: 'Sousou no Frieren S01E01.mkv',
-  subtitle_pn: '葬送的芙莉莲 S01E01.zh.srt',
-  subtitle_advance: 'Sousou no Frieren S01E01.zh.srt',
-}[form.rename_method] || ''))
 
 function sourceLabel(src) {
   return { bt: '🧲 普通 BT 聚合', mikan: '🍊 Mikan', stream: '🎬 流媒体' }[src] || src
@@ -376,11 +368,11 @@ async function load() {
     form.bt_download_limit_kib = Math.max(0, parseInt(map['download.bt_download_limit_kib']) || 0)
     form.bt_upload_limit_kib = Math.max(0, parseInt(map['download.bt_upload_limit_kib']) || 0)
 
-    // 下载与归档（沿用原 DownloadList 的扁平 key：media_root/download_dir/max_concurrent/rename_*）
+    // 下载与归档
     form.download_dir = map['download_dir'] || map['media_root'] || defaults.download_dir
     form.max_concurrent = parseInt(map['max_concurrent']) || parseInt(map['stream_max_concurrent']) || defaults.max_concurrent
-    form.rename_method = map['rename_method'] || defaults.rename_method
-    form.rename_interval = parseInt(map['rename_interval']) || defaults.rename_interval
+    form.media_min_free_gb = Math.max(0, parseFloat(map['media.min_free_gb']) || defaults.media_min_free_gb)
+    form.media_max_used_percent = Math.max(0, parseFloat(map['media.max_used_percent']) || defaults.media_max_used_percent)
   } catch (e) { console.error('加载偏好失败', e) }
 }
 
@@ -407,8 +399,8 @@ async function save() {
     // 下载与归档（扁平 key，与后端白名单一致）
     'download_dir': form.download_dir,
     'max_concurrent': String(form.max_concurrent),
-    'rename_method': form.rename_method,
-    'rename_interval': String(form.rename_interval),
+    'media.min_free_gb': String(Math.max(0, parseFloat(form.media_min_free_gb) || 0)),
+    'media.max_used_percent': String(Math.max(0, parseFloat(form.media_max_used_percent) || 0)),
   }
   for (const [n, on] of Object.entries(form.indexer_enabled)) {
     payload['download.indexer_enabled.' + n] = String(on)

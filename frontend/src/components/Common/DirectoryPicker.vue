@@ -12,7 +12,7 @@
     </button>
 
     <!-- 下拉目录列表 -->
-    <div v-if="open" class="absolute z-50 left-0 right-0 mt-2 rounded-2xl border-2 border-ac-sand bg-card shadow-lg overflow-hidden" style="max-height: 320px">
+    <div v-if="open" class="mt-2 rounded-2xl border-2 border-ac-sand bg-card shadow-lg overflow-hidden">
       <!-- 顶栏：当前浏览路径 -->
       <div class="flex items-center gap-2 px-3 py-2 border-b-2 border-dashed border-ac-sand bg-ac-sand/30 text-xs">
         <span class="text-muted-foreground font-bold">浏览:</span>
@@ -39,6 +39,10 @@
           <div v-if="!directories.length" class="py-4 text-center text-xs text-muted-foreground">空目录</div>
         </template>
       </div>
+
+      <div v-if="pathFallback" class="px-3 py-2 border-t-2 border-dashed border-ac-sand bg-ac-sun/10 text-xs text-ac-wood-dark">
+        已保存的目录不存在，当前已回到下载根目录
+      </div>
     </div>
   </div>
 </template>
@@ -62,6 +66,7 @@ const currentPath = ref('')
 const parentPath = ref('')
 const directories = ref([])
 const loading = ref(false)
+const pathFallback = ref(false)
 const ROOT_PATH = '/downloads'
 
 const displayPath = computed(() => props.modelValue || '/')
@@ -80,16 +85,17 @@ function toggle() {
   }
 }
 
-async function fetchDir(path) {
+async function fetchDir(path, preserveFallback = false) {
   loading.value = true
   try {
     const data = await post('/filesystem/list', { path: path || '' })
     directories.value = (data.children || []).filter(x => x.is_dir)
     currentPath.value = data.path || ''
     parentPath.value = data.parent_path || ''
+    pathFallback.value = preserveFallback || Boolean(path && !data.path)
   } catch (e) {
     if (path) {
-      fetchDir('')
+      fetchDir('', true)
       return
     }
     toast.error(e.message || '读取目录失败')

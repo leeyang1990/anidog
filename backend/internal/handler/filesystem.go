@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,25 +21,100 @@ func NewFileSystemHandler(downloadDir string) *FileSystemHandler {
 	}
 }
 
+var errPathOutsideDownloadDir = errors.New("path outside download directory")
+
+// resolveDownloadPath 将客户端传入的相对路径限制在下载根目录内。
+// 除了拦截 ../，还会检查已存在的父目录，避免通过符号链接逃逸。
+func (h *FileSystemHandler) resolveDownloadPath(requestPath string) (string, string, error) {
+	absRoot, err := filepath.Abs(h.downloadDir)
+	if err != nil {
+		return "", "", err
+	}
+
+	cleanPath := filepath.Clean(requestPath)
+	if cleanPath == "." || cleanPath == string(filepath.Separator) {
+		cleanPath = ""
+	} else if filepath.IsAbs(cleanPath) {
+		return "", "", errPathOutsideDownloadDir
+	}
+
+	fullPath := filepath.Join(absRoot, cleanPath)
+	if !isPathWithin(absRoot, fullPath) {
+		return "", "", errPathOutsideDownloadDir
+	}
+
+	rootInfo, err := os.Lstat(absRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fullPath, cleanPath, nil
+		}
+		return "", "", err
+	}
+	if !rootInfo.IsDir() && rootInfo.Mode()&os.ModeSymlink == 0 {
+		return "", "", errors.New("download root is not a directory")
+	}
+
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return "", "", err
+	}
+	existingPath := fullPath
+	for {
+		if _, err = os.Lstat(existingPath); err == nil {
+			break
+		}
+		if !os.IsNotExist(err) {
+			return "", "", err
+		}
+		parent := filepath.Dir(existingPath)
+		if parent == existingPath || !isPathWithin(absRoot, parent) {
+			return "", "", errPathOutsideDownloadDir
+		}
+		existingPath = parent
+	}
+
+	realExisting, err := filepath.EvalSymlinks(existingPath)
+	if err != nil {
+		return "", "", err
+	}
+	if !isPathWithin(realRoot, realExisting) {
+		return "", "", errPathOutsideDownloadDir
+	}
+
+	return fullPath, cleanPath, nil
+}
+
+func isPathWithin(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func isValidEntryName(name string) bool {
+	return name != "" && name != "." && name != ".." && filepath.Base(name) == name
+}
+
 // DirectoryResponse 目录响应
 type DirectoryResponse struct {
-	Name      string                    `json:"name"`
-	Path      string                    `json:"path"`
-	IsDir     bool                      `json:"is_dir"`
-	Size      int64                     `json:"size"`
-	Children  []FileSystemEntryResponse `json:"children,omitempty"`
-	ParentPath string                   `json:"parent_path,omitempty"`
+	Name       string                    `json:"name"`
+	Path       string                    `json:"path"`
+	IsDir      bool                      `json:"is_dir"`
+	Size       int64                     `json:"size"`
+	Children   []FileSystemEntryResponse `json:"children,omitempty"`
+	ParentPath string                    `json:"parent_path,omitempty"`
 }
 
 // FileSystemEntryResponse 文件系统条目响应
 type FileSystemEntryResponse struct {
-	ID        uint                        `json:"id"`
-	Name      string                      `json:"name"`
-	Path      string                      `json:"path"`
-	IsDir     bool                        `json:"is_dir"`
-	Size      int64                       `json:"size"`
-	CreatedAt string                      `json:"created_at"`
-	Children  []FileSystemEntryResponse  `json:"children,omitempty"`
+	ID        uint                      `json:"id"`
+	Name      string                    `json:"name"`
+	Path      string                    `json:"path"`
+	IsDir     bool                      `json:"is_dir"`
+	Size      int64                     `json:"size"`
+	CreatedAt string                    `json:"created_at"`
+	Children  []FileSystemEntryResponse `json:"children,omitempty"`
 }
 
 // ListDirectoryRequest 列出目录请求
@@ -66,18 +142,14 @@ func (h *FileSystemHandler) ListDirectory(c *gin.Context) {
 		return
 	}
 
-	// 清理路径，防止 "../" 越权
-	cleanPath := filepath.Clean(req.Path)
-	if cleanPath == "." || cleanPath == "/" {
-		cleanPath = ""
-	}
-	fullPath := filepath.Join(h.downloadDir, cleanPath)
-
-	// 确保路径在 downloadDir 内
-	absFull, _ := filepath.Abs(fullPath)
-	absRoot, _ := filepath.Abs(h.downloadDir)
-	if !strings.HasPrefix(absFull, absRoot) {
+	fullPath, cleanPath, err := h.resolveDownloadPath(req.Path)
+	if errors.Is(err, errPathOutsideDownloadDir) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "禁止访问该路径"})
+		return
+	}
+	if err != nil {
+		zap.L().Error("解析目录失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析目录失败"})
 		return
 	}
 
@@ -143,8 +215,31 @@ func (h *FileSystemHandler) CreateDirectory(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数"})
 		return
 	}
+	if !isValidEntryName(req.DirName) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "目录名无效"})
+		return
+	}
 
-	fullPath := filepath.Join(h.downloadDir, req.Path, req.DirName)
+	_, parentPath, err := h.resolveDownloadPath(req.Path)
+	if errors.Is(err, errPathOutsideDownloadDir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "禁止访问该路径"})
+		return
+	}
+	if err != nil {
+		zap.L().Error("解析父目录失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析目录失败"})
+		return
+	}
+	fullPath, _, err := h.resolveDownloadPath(filepath.Join(parentPath, req.DirName))
+	if errors.Is(err, errPathOutsideDownloadDir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "禁止访问该路径"})
+		return
+	}
+	if err != nil {
+		zap.L().Error("解析目录失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析目录失败"})
+		return
+	}
 	if err := os.MkdirAll(fullPath, 0755); err != nil {
 		zap.L().Error("创建目录失败", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建目录失败"})
@@ -161,8 +256,35 @@ func (h *FileSystemHandler) DeleteEntry(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数"})
 		return
 	}
+	if !isValidEntryName(req.Name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "名称无效"})
+		return
+	}
 
-	fullPath := filepath.Join(h.downloadDir, req.Path, req.Name)
+	_, parentPath, err := h.resolveDownloadPath(req.Path)
+	if errors.Is(err, errPathOutsideDownloadDir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "禁止访问该路径"})
+		return
+	}
+	if err != nil {
+		zap.L().Error("解析父目录失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析路径失败"})
+		return
+	}
+	fullPath, cleanPath, err := h.resolveDownloadPath(filepath.Join(parentPath, req.Name))
+	if errors.Is(err, errPathOutsideDownloadDir) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "禁止访问该路径"})
+		return
+	}
+	if err != nil {
+		zap.L().Error("解析路径失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "解析路径失败"})
+		return
+	}
+	if cleanPath == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "禁止删除下载根目录"})
+		return
+	}
 	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "文件或目录不存在"})
 		return

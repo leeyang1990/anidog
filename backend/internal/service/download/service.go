@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shirou/gopsutil/v3/disk"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -62,9 +64,12 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 	if err := task.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid task: %w", err)
 	}
+	if err := s.ensureMediaCapacity(ctx); err != nil {
+		return nil, fmt.Errorf("媒体存储容量保护: %w", err)
+	}
 
 	torrentID := generateTorrentID(task.DownloadType)
-	savePath := resolveSavePath(s.cfg, task)
+	savePath := s.resolveTaskSavePath(ctx, task)
 
 	dl := model.Download{
 		TorrentID:     torrentID,
@@ -622,6 +627,7 @@ func (s *Service) ResumeAll(ctx context.Context) (int64, error) {
 func (s *Service) RecoverPending(ctx context.Context) {
 	s.normalizeHistoricalFailureKinds(ctx)
 	s.resolveHistoricalFailures(ctx)
+	s.reconcileCompletedEpisodeStates(ctx)
 	// 启动时做一次性数据迁移：历史 stream 下载的 stream_road_name 为 NULL，
 	// 用 anime 当前的 stream_road_name 回填（通常是"播放列表1"）
 	s.migrateStreamRoadName(ctx)
@@ -808,6 +814,115 @@ func (s *Service) resolveHistoricalFailures(ctx context.Context) {
 	}
 }
 
+// reconcileCompletedEpisodeStates repairs two kinds of historical drift:
+//  1. old qBit sync versions could turn superseded seeding tasks back into
+//     completed, leaving more than one winner for the same episode;
+//  2. a completed download did not always update animeepisode, so the UI
+//     could still show the episode as missing even though the media existed.
+//
+// Prefer a completed row carrying a concrete media path as the winner. When
+// no row has one, keep the earliest completion (then the lowest id) so the
+// result is deterministic. This only changes database state; media files are
+// never removed here.
+func (s *Service) reconcileCompletedEpisodeStates(ctx context.Context) {
+	var completed []model.Download
+	if err := s.db.WithContext(ctx).
+		Where("status = ? AND media_missing = ? AND anime_id IS NOT NULL AND episode_number IS NOT NULL",
+			model.DownloadStatusCompleted, false).
+		Order("anime_id ASC, episode_number ASC, completed_at ASC, id ASC").
+		Find(&completed).Error; err != nil {
+		zap.L().Warn("查询历史完成剧集失败", zap.Error(err))
+		return
+	}
+
+	type episodeKey struct {
+		animeID uint
+		episode int
+	}
+	groups := make(map[episodeKey][]model.Download)
+	for i := range completed {
+		dl := completed[i]
+		groups[episodeKey{animeID: *dl.AnimeID, episode: *dl.EpisodeNumber}] = append(
+			groups[episodeKey{animeID: *dl.AnimeID, episode: *dl.EpisodeNumber}], dl)
+	}
+
+	repairedEpisodes := 0
+	superseded := 0
+	for _, group := range groups {
+		winnerIndex := 0
+		for i := range group {
+			if group[i].FilePath != nil && strings.TrimSpace(*group[i].FilePath) != "" {
+				winnerIndex = i
+				break
+			}
+		}
+		winner := &group[winnerIndex]
+		if err := s.syncCompletedEpisodeState(ctx, winner); err != nil {
+			zap.L().Warn("修复已完成剧集状态失败",
+				zap.Uint("download_id", winner.ID), zap.Error(err))
+			continue
+		}
+		repairedEpisodes++
+
+		for i := range group {
+			if i == winnerIndex {
+				continue
+			}
+			result := s.db.WithContext(ctx).Model(&model.Download{}).
+				Where("id = ? AND status = ?", group[i].ID, model.DownloadStatusCompleted).
+				Updates(map[string]interface{}{
+					"status":       model.DownloadStatusSuperseded,
+					"quality_note": "同集已有完成记录，历史重复状态已收口",
+				})
+			if result.Error != nil {
+				zap.L().Warn("收口历史重复完成记录失败",
+					zap.Uint("download_id", group[i].ID), zap.Error(result.Error))
+				continue
+			}
+			superseded += int(result.RowsAffected)
+		}
+	}
+
+	if repairedEpisodes > 0 || superseded > 0 {
+		zap.L().Info("历史下载状态校准完成",
+			zap.Int("episodes", repairedEpisodes), zap.Int("superseded", superseded))
+	}
+}
+
+func (s *Service) syncCompletedEpisodeState(ctx context.Context, dl *model.Download) error {
+	if dl == nil || dl.AnimeID == nil || dl.EpisodeNumber == nil || *dl.EpisodeNumber <= 0 {
+		return nil
+	}
+	now := time.Now()
+	downloadID := dl.TorrentID
+	row := model.AnimeEpisode{
+		AnimeID:       *dl.AnimeID,
+		EpisodeNumber: *dl.EpisodeNumber,
+		Downloaded:    true,
+		DownloadID:    &downloadID,
+		UpdatedAt:     now,
+	}
+	updates := map[string]interface{}{
+		"downloaded":  true,
+		"download_id": downloadID,
+		"updated_at":  now,
+	}
+	if dl.FilePath != nil && strings.TrimSpace(*dl.FilePath) != "" {
+		path := strings.TrimSpace(*dl.FilePath)
+		row.FilePath = &path
+		updates["file_path"] = path
+	}
+	if dl.TotalBytes != nil && *dl.TotalBytes > 0 {
+		size := *dl.TotalBytes
+		row.FileSize = &size
+		updates["file_size"] = size
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "anime_id"}, {Name: "episode_number"}},
+		DoUpdates: clause.Assignments(updates),
+	}).Create(&row).Error
+}
+
 // updateAnimeProgress 在下载完成时更新 anime.current_episode（所有源类型通用）
 func (s *Service) updateAnimeProgress(dlID uint) {
 	var dl model.Download
@@ -817,6 +932,9 @@ func (s *Service) updateAnimeProgress(dlID uint) {
 	}
 	if dl.AnimeID == nil {
 		return
+	}
+	if err := s.syncCompletedEpisodeState(context.Background(), &dl); err != nil {
+		zap.L().Warn("同步已完成剧集状态失败", zap.Uint("download_id", dlID), zap.Error(err))
 	}
 
 	// 查询该 anime 所有已完成的集数（跨所有 source/download_type），取最大值
@@ -941,6 +1059,81 @@ func resolveSavePath(cfg *config.Config, task *Task) *string {
 			dir := filepath.Join(cfg.MediaRoot, task.DownloadType)
 			return &dir
 		}
+	}
+	return nil
+}
+
+// resolveTaskSavePath 把所有带番剧和集数信息的 BT 任务统一放进隔离目录。
+// Orchestrator、RSS 和手动选种最终都会经过 Service.Create，因此不会再因
+// 入口不同而绕过完成归档。调用方显式提供的路径仍优先保留。
+func (s *Service) resolveTaskSavePath(ctx context.Context, task *Task) *string {
+	if task.SavePath != "" {
+		return &task.SavePath
+	}
+	if task.DownloadType == model.DownloadTypeTorrent && task.AnimeID != nil && task.EpisodeNumber != nil {
+		path := BuildTorrentRaceSavePath(
+			s.currentMediaRoot(ctx),
+			*task.AnimeID,
+			*task.EpisodeNumber,
+			ExtractInfoHash(task.URL),
+			task.URL,
+		)
+		return &path
+	}
+	return resolveSavePath(s.cfg, task)
+}
+
+func (s *Service) currentMediaRoot(ctx context.Context) string {
+	for _, key := range []string{"download_dir", "media_root"} {
+		var setting model.Setting
+		if err := s.db.WithContext(ctx).Where("key = ?", key).First(&setting).Error; err == nil {
+			if value := strings.TrimSpace(setting.Value); value != "" {
+				return value
+			}
+		}
+	}
+	if value := strings.TrimSpace(s.cfg.MediaRoot); value != "" {
+		return value
+	}
+	return "/downloads"
+}
+
+// MediaRoot 返回当前真正生效的媒体根目录，供系统状态和其他只读探针使用。
+func (s *Service) MediaRoot(ctx context.Context) string {
+	return s.currentMediaRoot(ctx)
+}
+
+// ensureMediaCapacity 在管理员配置阈值后统一保护所有下载入口。
+// 阈值为 0 或未配置表示不启用对应限制。
+func (s *Service) ensureMediaCapacity(ctx context.Context) error {
+	readFloat := func(key string) float64 {
+		var setting model.Setting
+		if err := s.db.WithContext(ctx).Where("key = ?", key).First(&setting).Error; err != nil {
+			return 0
+		}
+		value, err := strconv.ParseFloat(strings.TrimSpace(setting.Value), 64)
+		if err != nil || value <= 0 {
+			return 0
+		}
+		return value
+	}
+	minFreeGB := readFloat("media.min_free_gb")
+	maxUsedPercent := readFloat("media.max_used_percent")
+	if minFreeGB == 0 && maxUsedPercent == 0 {
+		return nil
+	}
+
+	root := s.currentMediaRoot(ctx)
+	usage, err := disk.Usage(root)
+	if err != nil {
+		return fmt.Errorf("无法读取 %s 的容量: %w", root, err)
+	}
+	if maxUsedPercent > 0 && usage.UsedPercent >= maxUsedPercent {
+		return fmt.Errorf("%s 已使用 %.1f%%，达到 %.1f%% 上限", root, usage.UsedPercent, maxUsedPercent)
+	}
+	freeGB := float64(usage.Free) / float64(1024*1024*1024)
+	if minFreeGB > 0 && freeGB < minFreeGB {
+		return fmt.Errorf("%s 仅剩 %.1f GB，低于 %.1f GB 保留空间", root, freeGB, minFreeGB)
 	}
 	return nil
 }

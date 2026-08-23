@@ -14,11 +14,10 @@ import (
 
 // Engine fetches RSS feeds, matches entries against rules, and triggers downloads.
 type Engine struct {
-	db        *gorm.DB
-	dlSvc     dlservice.Downloader
-	parser    *Parser
-	matcher   *Matcher
-	mediaRoot string // 下载根目录，用于按番剧组织子目录
+	db      *gorm.DB
+	dlSvc   dlservice.Downloader
+	parser  *Parser
+	matcher *Matcher
 }
 
 // NewEngine creates a new RSS engine.
@@ -29,11 +28,6 @@ func NewEngine(db *gorm.DB, dlSvc dlservice.Downloader) *Engine {
 		parser:  NewParser(),
 		matcher: NewMatcher(),
 	}
-}
-
-// SetMediaRoot 设置下载根目录，用于生成番剧子目录路径
-func (e *Engine) SetMediaRoot(root string) {
-	e.mediaRoot = root
 }
 
 // CheckFeed fetches and processes a single RSS feed.
@@ -107,8 +101,6 @@ func (e *Engine) CheckFeed(ctx context.Context, feed *model.RSSFeed) (int, error
 		if matchedAnime != nil {
 			task.AnimeID = &matchedAnime.ID
 			task.AnimeName = matchedAnime.Title
-			// 按番剧名组织子目录
-			task.SavePath = dlservice.BuildAnimeSavePath(e.mediaRoot, matchedAnime)
 		}
 		if parsed.EpisodeNum != nil {
 			task.EpisodeNumber = parsed.EpisodeNum
@@ -182,6 +174,7 @@ func (e *Engine) findByTitleSubstring(title string) *model.Anime {
 	}
 	return nil
 }
+
 // containsMatch does a case-insensitive substring check.
 func containsMatch(title, keyword string) bool {
 	return len(keyword) > 0 && searchStr(title, keyword)

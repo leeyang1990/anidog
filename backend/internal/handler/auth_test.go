@@ -189,24 +189,52 @@ func TestRefresh_WithValidToken(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.DefaultCost)
 	authSvc.CreateUser(context.Background(), "refreshuser", "r@test.com", string(hash), false, true)
 
-	access, _, _ := authSvc.CreateTokenPair("refreshuser")
+	_, refresh, _ := authSvc.CreateTokenPair("refreshuser")
 
-	// Need auth middleware to set username in context
 	router := testutil.SetupRouter()
-	router.Use(func(c *gin.Context) {
-		// Simulate auth middleware setting username
-		c.Set("username", "refreshuser")
-		c.Next()
-	})
 	v1 := router.Group("/api/v1")
 	h.RegisterRoutes(v1)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
-	req.Header.Set("Authorization", "Bearer "+access)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	w := makeAuthRequest(router, http.MethodPost, "/api/v1/auth/refresh", map[string]string{
+		"refresh_token": refresh,
+	})
 
 	if w.Code != http.StatusOK {
-		t.Errorf("status = %d; want 200; body = %s", w.Code, w.Body.String())
+		t.Fatalf("status = %d; want 200; body = %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["access_token"] == nil || resp["refresh_token"] == nil {
+		t.Fatalf("refresh response missing tokens: %#v", resp)
+	}
+}
+
+func TestRefresh_RejectsAccessToken(t *testing.T) {
+	h, authSvc := setupAuthHandler()
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.DefaultCost)
+	authSvc.CreateUser(context.Background(), "refreshuser", "r@test.com", string(hash), false, true)
+	access, _, _ := authSvc.CreateTokenPair("refreshuser")
+
+	router := testutil.SetupRouter()
+	v1 := router.Group("/api/v1")
+	h.RegisterRoutes(v1)
+	w := makeAuthRequest(router, http.MethodPost, "/api/v1/auth/refresh", map[string]string{
+		"refresh_token": access,
+	})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d; want 401; body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRefresh_RequiresToken(t *testing.T) {
+	h, _ := setupAuthHandler()
+	router := testutil.SetupRouter()
+	v1 := router.Group("/api/v1")
+	h.RegisterRoutes(v1)
+	w := makeAuthRequest(router, http.MethodPost, "/api/v1/auth/refresh", map[string]string{})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400; body = %s", w.Code, w.Body.String())
 	}
 }

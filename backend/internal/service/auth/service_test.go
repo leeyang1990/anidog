@@ -76,6 +76,31 @@ func TestCreateTokenPair(t *testing.T) {
 	}
 }
 
+func TestRefreshTokenAcceptsOnlyRefreshToken(t *testing.T) {
+	svc := setupAuthSvc()
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.DefaultCost)
+	svc.db.Exec("INSERT INTO user (username, password_hash, is_active) VALUES (?, ?, ?)", "testuser", string(hash), true)
+	access, refresh, err := svc.CreateTokenPair("testuser")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newAccess, newRefresh, err := svc.RefreshToken(context.Background(), refresh)
+	if err != nil {
+		t.Fatalf("valid refresh token rejected: %v", err)
+	}
+	if newAccess == "" || newRefresh == "" {
+		t.Fatal("rotated token pair is incomplete")
+	}
+
+	if _, _, err := svc.RefreshToken(context.Background(), access); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("access token must not refresh a session: %v", err)
+	}
+	if _, _, err := svc.RefreshToken(context.Background(), refresh+"tampered"); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("tampered token must be rejected: %v", err)
+	}
+}
+
 func TestHashPassword(t *testing.T) {
 	svc := setupAuthSvc()
 	hash, err := svc.HashPassword("mypassword")

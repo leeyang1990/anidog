@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -17,6 +18,7 @@ func TestAuthMiddleware_PublicPaths(t *testing.T) {
 
 	publicPaths := []string{
 		"/api/v1/auth/login",
+		"/api/v1/auth/refresh",
 		"/api/v1/auth/register",
 		"/ws/connect",
 		"/healthcheck",
@@ -108,6 +110,7 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 	// Create a valid token
 	claims := jwt.MapClaims{
 		"sub": "testuser",
+		"exp": jwt.NewNumericDate(time.Now().Add(time.Hour)),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenStr, _ := token.SignedString([]byte(secret))
@@ -134,6 +137,31 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_RejectsRefreshToken(t *testing.T) {
+	secret := "test-secret"
+	cfg := &config.Config{SecretKey: secret}
+	claims := jwt.MapClaims{
+		"sub":  "testuser",
+		"type": "refresh",
+		"exp":  jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenStr, _ := token.SignedString([]byte(secret))
+
+	router := gin.New()
+	router.Use(AuthMiddleware(cfg))
+	router.GET("/api/v1/protected", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d; want 401", w.Code)
+	}
+}
+
 func TestIsPublicPath(t *testing.T) {
 	tests := []struct {
 		path string
@@ -145,7 +173,7 @@ func TestIsPublicPath(t *testing.T) {
 		{"/healthcheck", true},
 		{"/api/v1/anime", false},
 		{"/api/v1/downloads", false},
-		{"/api/v1/auth/refresh", false},
+		{"/api/v1/auth/refresh", true},
 		{"", false},
 	}
 	for _, tt := range tests {

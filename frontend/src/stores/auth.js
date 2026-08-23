@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
 // 不要在这里导入api.js，避免循环依赖
+
+let refreshRequest = null
 
 export const useAuthStore = defineStore('auth', {
   // 使用选项API而不是组合API，避免可能的响应式问题
   state: () => ({
     token: localStorage.getItem('token') || null,
-    refreshToken: localStorage.getItem('refreshToken') || null,
+    refreshTokenValue: localStorage.getItem('refreshToken') || null,
     user: null,
     isLoggedIn: !!localStorage.getItem('token')
   }),
@@ -64,19 +65,20 @@ export const useAuthStore = defineStore('auth', {
       }
     },
 
-    async refreshToken() {
-      if (!this.refreshToken) {
-        throw new Error('没有可用的刷新令牌')
-      }
+    async refreshAccessToken() {
+      if (refreshRequest) return refreshRequest
 
-      try {
+      refreshRequest = (async () => {
+        if (!this.refreshTokenValue) {
+          throw new Error('没有可用的刷新令牌')
+        }
         const response = await fetch('/api/v1/auth/refresh', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            refresh_token: this.refreshToken
+            refresh_token: this.refreshTokenValue
           })
         })
 
@@ -102,14 +104,20 @@ export const useAuthStore = defineStore('auth', {
         }
 
         return data.access_token
+      })()
+
+      try {
+        return await refreshRequest
       } catch (error) {
         console.error('刷新令牌失败:', error)
         this.logout()
         throw error
+      } finally {
+        refreshRequest = null
       }
     },
 
-    async fetchUserInfo() {
+    async fetchUserInfo(allowRefresh = true) {
       if (!this.token) {
         console.error('无法获取用户信息：没有认证令牌')
         return null
@@ -123,6 +131,11 @@ export const useAuthStore = defineStore('auth', {
             'Content-Type': 'application/json'
           }
         })
+
+        if (response.status === 401 && allowRefresh && this.refreshTokenValue) {
+          await this.refreshAccessToken()
+          return await this.fetchUserInfo(false)
+        }
 
         if (!response.ok) {
           console.error('获取用户信息失败，状态码:', response.status)
@@ -162,11 +175,11 @@ export const useAuthStore = defineStore('auth', {
     setRefreshToken(newToken) {
       if (!newToken) {
         localStorage.removeItem('refreshToken')
-        this.refreshToken = null
+        this.refreshTokenValue = null
         return
       }
-      
-      this.refreshToken = newToken
+
+      this.refreshTokenValue = newToken
       localStorage.setItem('refreshToken', newToken)
     },
 
@@ -176,11 +189,11 @@ export const useAuthStore = defineStore('auth', {
 
     logout() {
       this.token = null
-      this.refreshToken = null
+      this.refreshTokenValue = null
       this.user = null
       this.isLoggedIn = false
       localStorage.removeItem('token')
       localStorage.removeItem('refreshToken')
     }
   }
-}) 
+})

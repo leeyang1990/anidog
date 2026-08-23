@@ -50,14 +50,15 @@ func (h *AuthHandler) Login(c *gin.Context) {
 }
 
 func (h *AuthHandler) Refresh(c *gin.Context) {
-	username, _ := c.Get("username")
-	usernameStr, ok := username.(string)
-	if !ok {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"detail": "无效的认证凭据"})
+	var req struct {
+		RefreshToken string `json:"refresh_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"detail": "缺少刷新令牌"})
 		return
 	}
 
-	user, err := h.authSvc.ValidateUserActive(c.Request.Context(), usernameStr)
+	accessToken, refreshToken, err := h.authSvc.RefreshToken(c.Request.Context(), req.RefreshToken)
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, authsvc.ErrUserDisabled) {
@@ -67,7 +68,6 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	accessToken, refreshToken, _ := h.authSvc.CreateTokenPair(user.Username)
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  accessToken,
 		"refresh_token": refreshToken,

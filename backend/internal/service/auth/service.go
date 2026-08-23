@@ -13,10 +13,16 @@ import (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("用户名或密码错误")
-	ErrUserDisabled       = errors.New("账户已被禁用")
-	ErrUserNotFound       = errors.New("用户不存在")
+	ErrInvalidCredentials  = errors.New("用户名或密码错误")
+	ErrUserDisabled        = errors.New("账户已被禁用")
+	ErrUserNotFound        = errors.New("用户不存在")
+	ErrInvalidRefreshToken = errors.New("刷新令牌无效或已过期")
 )
+
+type tokenClaims struct {
+	Type string `json:"type"`
+	jwt.RegisteredClaims
+}
 
 type Service struct {
 	db        *gorm.DB
@@ -45,22 +51,61 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 
 // CreateTokenPair creates an access token and a refresh token.
 func (s *Service) CreateTokenPair(username string) (accessToken, refreshToken string, err error) {
-	accessClaims := jwt.MapClaims{
-		"sub": username,
-		"exp": jwt.NewNumericDate(time.Now().Add(s.tokenTTL)),
+	now := time.Now()
+	accessClaims := tokenClaims{
+		Type: "access",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   username,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(s.tokenTTL)),
+		},
 	}
 	accessTok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	accessToken, _ = accessTok.SignedString([]byte(s.secretKey))
+	accessToken, err = accessTok.SignedString([]byte(s.secretKey))
+	if err != nil {
+		return "", "", err
+	}
 
-	refreshClaims := jwt.MapClaims{
-		"sub":  username,
-		"type": "refresh",
-		"exp":  jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+	refreshClaims := tokenClaims{
+		Type: "refresh",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   username,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
+		},
 	}
 	refreshTok := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshToken, _ = refreshTok.SignedString([]byte(s.secretKey))
+	refreshToken, err = refreshTok.SignedString([]byte(s.secretKey))
+	if err != nil {
+		return "", "", err
+	}
 
 	return accessToken, refreshToken, nil
+}
+
+// RefreshToken validates a refresh-only JWT, verifies the account is still
+// active, and rotates both tokens. Access tokens can never enter this path.
+func (s *Service) RefreshToken(ctx context.Context, rawToken string) (accessToken, refreshToken string, err error) {
+	claims := &tokenClaims{}
+	token, err := jwt.ParseWithClaims(
+		rawToken,
+		claims,
+		func(token *jwt.Token) (interface{}, error) {
+			if token.Method != jwt.SigningMethodHS256 {
+				return nil, jwt.ErrSignatureInvalid
+			}
+			return []byte(s.secretKey), nil
+		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil || !token.Valid || claims.Type != "refresh" || claims.Subject == "" {
+		return "", "", ErrInvalidRefreshToken
+	}
+	if _, err := s.ValidateUserActive(ctx, claims.Subject); err != nil {
+		return "", "", err
+	}
+	return s.CreateTokenPair(claims.Subject)
 }
 
 // HashPassword hashes a plaintext password.

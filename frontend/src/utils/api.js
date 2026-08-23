@@ -14,7 +14,7 @@ class ApiError extends Error {
 }
 
 // 基础请求函数
-async function request(endpoint, options = {}, retryCount = 0) {
+async function request(endpoint, options = {}, retryCount = 0, authRetried = false) {
   const authStore = useAuthStore()
 
   // 非公开端点要求有 token；否则直接跳登录，避免反复送无头请求
@@ -48,20 +48,13 @@ async function request(endpoint, options = {}, retryCount = 0) {
     // 检查响应状态
     if (!response.ok) {
       // 如果是认证错误，尝试刷新令牌
-      if (response.status === 401 && authStore.token) {
-        if (retryCount < MAX_RETRIES) {
-          // 等待一段时间后重试
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
-          // 尝试刷新令牌
-          try {
-            await authStore.refreshToken()
-            // 重试请求
-            return await request(endpoint, options, retryCount + 1)
-          } catch (error) {
-            // 如果刷新令牌失败，清除认证状态并抛出错误
-            authStore.logout()
-            throw new ApiError('认证已过期，请重新登录', 401)
-          }
+      if (response.status === 401 && authStore.token && !authRetried) {
+        try {
+          await authStore.refreshAccessToken()
+          return await request(endpoint, options, retryCount, true)
+        } catch (error) {
+          authStore.logout()
+          throw new ApiError('认证已过期，请重新登录', 401)
         }
       }
 
@@ -102,7 +95,7 @@ async function request(endpoint, options = {}, retryCount = 0) {
     // 网络错误重试
     if (retryCount < MAX_RETRIES) {
       await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
-      return await request(endpoint, options, retryCount + 1)
+      return await request(endpoint, options, retryCount + 1, authRetried)
     }
 
     throw new ApiError(
@@ -168,4 +161,4 @@ export const api = {
 }
 
 // 导出错误类
-export { ApiError } 
+export { ApiError }

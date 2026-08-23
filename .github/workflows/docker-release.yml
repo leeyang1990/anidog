@@ -81,6 +81,18 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Resolve previous frontend image
+        run: |
+          if [ "${{ matrix.component }}" = "frontend" ]; then
+            PREVIOUS_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/anidog-frontend:latest-${{ matrix.arch }}"
+            if ! docker buildx imagetools inspect "$PREVIOUS_IMAGE" >/dev/null 2>&1; then
+              PREVIOUS_IMAGE="nginx:alpine"
+            fi
+            echo "PREVIOUS_FRONTEND_IMAGE=$PREVIOUS_IMAGE" >> "$GITHUB_ENV"
+          else
+            echo "PREVIOUS_FRONTEND_IMAGE=nginx:alpine" >> "$GITHUB_ENV"
+          fi
+
       - name: Build & push (single-arch)
         id: build
         uses: docker/build-push-action@v6
@@ -89,9 +101,10 @@ jobs:
           file: ./${{ matrix.component }}/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
-          # 只有 backend 需要 VERSION build-arg；frontend 忽略未知 arg 不报错
+          # backend 使用 VERSION；frontend 使用 PREVIOUS_FRONTEND_IMAGE。
           build-args: |
             VERSION=${{ env.TAG }}
+            PREVIOUS_FRONTEND_IMAGE=${{ env.PREVIOUS_FRONTEND_IMAGE }}
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/anidog-${{ matrix.component }}:${{ env.TAG }}-${{ matrix.arch }}
             ${{ secrets.DOCKERHUB_USERNAME }}/anidog-${{ matrix.component }}:latest-${{ matrix.arch }}

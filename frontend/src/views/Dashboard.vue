@@ -1,10 +1,10 @@
 <template>
   <div>
-    <AcPageHeader title="🏝️ 仪表盘" subtitle="番剧下载管理概览">
+    <AcPageHeader :title="t('pages.dashboard.title')" :subtitle="t('pages.dashboard.subtitle')">
       <template #actions>
         <AcButton variant="outline" size="md" :loading="loading" @click="fetchDashboardData">
           <template #icon><RefreshOutline class="size-4" /></template>
-          刷新
+          {{ t('pages.dashboard.refresh') }}
         </AcButton>
       </template>
     </AcPageHeader>
@@ -17,7 +17,7 @@
     <!-- Error -->
     <div v-else-if="error" class="flex flex-col items-center justify-center py-20 text-center">
       <p class="text-base text-muted-foreground mb-4">{{ error }}</p>
-      <AcButton variant="primary" @click="fetchDashboardData">重试</AcButton>
+      <AcButton variant="primary" @click="fetchDashboardData">{{ t('pages.dashboard.retry') }}</AcButton>
     </div>
 
     <template v-else>
@@ -38,16 +38,16 @@
       <!-- Charts -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <AcCard padding="lg" rounded="2xl" class="lg:col-span-2">
-          <h3 class="text-base font-bold tracking-tight mb-4 text-foreground">📈 最近 7 天下载</h3>
+          <h3 class="text-base font-bold tracking-tight mb-4 text-foreground">{{ t('pages.dashboard.recent7') }}</h3>
           <div class="h-64">
             <Line v-if="chartData" :data="chartData" :options="chartOptions" />
           </div>
         </AcCard>
         <AcCard padding="lg" rounded="2xl">
-          <h3 class="text-base font-bold tracking-tight mb-4 text-foreground">🍩 状态分布</h3>
+          <h3 class="text-base font-bold tracking-tight mb-4 text-foreground">{{ t('pages.dashboard.statusDistribution') }}</h3>
           <div class="h-64 flex items-center justify-center">
             <Doughnut v-if="doughnutData && hasAnyDownload" :data="doughnutData" :options="doughnutOptions" />
-            <AcEmpty v-else title="暂无下载" description="还没有任何下载记录哦~" />
+            <AcEmpty v-else :title="t('pages.dashboard.noDownloads')" :description="t('pages.dashboard.noDownloadsDesc')" />
           </div>
         </AcCard>
       </div>
@@ -55,20 +55,20 @@
       <!-- Recent downloads -->
       <AcCard padding="none" rounded="2xl">
         <div class="px-6 pt-5 pb-3 flex items-center justify-between">
-          <h3 class="text-base font-bold tracking-tight text-foreground">🌱 最近下载</h3>
+          <h3 class="text-base font-bold tracking-tight text-foreground">{{ t('pages.dashboard.recent') }}</h3>
           <router-link to="/downloads" class="text-xs text-ac-grass-dark hover:underline font-bold">
-            查看全部 →
+            {{ t('pages.dashboard.viewAll') }}
           </router-link>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full">
             <thead>
               <tr class="border-y-2 border-dashed border-ac-sand text-left text-xs text-muted-foreground bg-ac-sand/30">
-                <th class="py-3 pl-6 font-bold">名称</th>
-                <th class="py-3 font-bold">来源</th>
-                <th class="py-3 font-bold">大小</th>
-                <th class="py-3 font-bold">状态</th>
-                <th class="py-3 pr-6 font-bold">更新时间</th>
+                <th class="py-3 pl-6 font-bold">{{ t('pages.dashboard.name') }}</th>
+                <th class="py-3 font-bold">{{ t('pages.dashboard.source') }}</th>
+                <th class="py-3 font-bold">{{ t('pages.dashboard.size') }}</th>
+                <th class="py-3 font-bold">{{ t('pages.dashboard.status') }}</th>
+                <th class="py-3 pr-6 font-bold">{{ t('pages.dashboard.updated') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -87,7 +87,7 @@
               </tr>
             </tbody>
           </table>
-          <AcEmpty v-if="!recentDownloads.length" title="还没有下载记录" description="快去番剧库挑一部追起来吧 🐾" class="py-8" />
+          <AcEmpty v-if="!recentDownloads.length" :title="t('pages.dashboard.emptyTitle')" :description="t('pages.dashboard.emptyDesc')" class="py-8" />
         </div>
       </AcCard>
     </template>
@@ -95,7 +95,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useToast } from '../composables/useToast'
 import {
   FilmOutline, LogoRss, DownloadOutline, CheckmarkCircleOutline, RefreshOutline,
@@ -108,16 +108,14 @@ import {
 import dayjs from 'dayjs'
 import { get } from '@/utils/api'
 import { AcPageHeader, AcCard, AcButton, AcSpinner, AcTag, AcEmpty } from '../components/ac'
+import { useI18n } from 'vue-i18n'
+import { useSkin } from '@/composables/useSkin'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, ArcElement)
 
-const CHART = {
-  grass: '#7CB342',
-  sun: '#FFB74D',
-  sky: '#81D4FA',
-  heart: '#E57373',
-  leaf: '#66BB6A',
-  wood: '#8D6E63',
+const CHART_PALETTES = {
+  'ac-grove': { primary: '#7CB342', pending: '#FFB74D', downloading: '#81D4FA', completed: '#66BB6A', paused: '#8D6E63', failed: '#E57373' },
+  classic: { primary: '#6366F1', pending: '#F59E0B', downloading: '#0EA5E9', completed: '#10B981', paused: '#64748B', failed: '#F43F5E' },
 }
 
 const loading = ref(false)
@@ -125,9 +123,13 @@ const error = ref(null)
 const stats = ref({ animeCount: 0, rssFeedCount: 0, downloading: 0, completed: 0, pending: 0, failed: 0, paused: 0, total: 0 })
 const recentDownloads = ref([])
 const toast = useToast()
+const { t, locale } = useI18n({ useScope: 'global' })
+const { skin } = useSkin()
 
 const chartData = ref(null)
 const doughnutData = ref(null)
+const chartPoints = ref([])
+const chartPalette = computed(() => CHART_PALETTES[skin.value] || CHART_PALETTES.classic)
 
 const hasAnyDownload = computed(() => stats.value.total > 0)
 
@@ -144,17 +146,17 @@ const doughnutOptions = {
 }
 
 const statCards = computed(() => [
-  { label: '番剧数量',     value: stats.value.animeCount,   icon: FilmOutline,             iconBg: 'bg-ac-grass-light/40', iconColor: 'text-ac-grass-dark', sub: '' },
-  { label: 'RSS 订阅',     value: stats.value.rssFeedCount, icon: LogoRss,                 iconBg: 'bg-ac-sun/30',         iconColor: 'text-ac-sun-dark',   sub: '' },
-  { label: '正在下载',     value: stats.value.downloading,  icon: DownloadOutline,         iconBg: 'bg-ac-sky/40',         iconColor: 'text-ac-sky-dark',   sub: stats.value.pending ? `等待 ${stats.value.pending}` : '' },
-  { label: '已完成',       value: stats.value.completed,    icon: CheckmarkCircleOutline,  iconBg: 'bg-ac-leaf/30',        iconColor: 'text-ac-leaf-dark',  sub: stats.value.failed ? `失败 ${stats.value.failed}` : '' },
+  { label: t('pages.dashboard.animeCount'), value: stats.value.animeCount, icon: FilmOutline, iconBg: 'bg-ac-grass-light/40', iconColor: 'text-ac-grass-dark', sub: '' },
+  { label: t('pages.dashboard.rssCount'), value: stats.value.rssFeedCount, icon: LogoRss, iconBg: 'bg-ac-sun/30', iconColor: 'text-ac-sun-dark', sub: '' },
+  { label: t('pages.dashboard.downloading'), value: stats.value.downloading, icon: DownloadOutline, iconBg: 'bg-ac-sky/40', iconColor: 'text-ac-sky-dark', sub: stats.value.pending ? t('pages.dashboard.waitingCount', { count: stats.value.pending }) : '' },
+  { label: t('pages.dashboard.completed'), value: stats.value.completed, icon: CheckmarkCircleOutline, iconBg: 'bg-ac-leaf/30', iconColor: 'text-ac-leaf-dark', sub: stats.value.failed ? t('pages.dashboard.failedCount', { count: stats.value.failed }) : '' },
 ])
 
 function statusVariant(status) {
   return { completed: 'leaf', downloading: 'sky', pending: 'sun', paused: 'wood', failed: 'heart' }[status] || 'default'
 }
 function statusText(status) {
-  return { completed: '已完成', downloading: '下载中', pending: '等待中', paused: '已暂停', failed: '已失败' }[status] || status
+  return t(`status.${status}`, status)
 }
 function sourceShort(dl) {
   if (dl.download_type === 'stream') return 'Stream'
@@ -167,6 +169,35 @@ function formatSize(b) {
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), u.length - 1)
   return (b / Math.pow(1024, i)).toFixed(1) + ' ' + u[i]
+}
+
+function rebuildCharts() {
+  const points = chartPoints.value
+  const palette = chartPalette.value
+  chartData.value = {
+    labels: points.map(p => dayjs(p.date).format('MM-DD')),
+    datasets: [{
+      label: t('pages.dashboard.downloadCount'),
+      data: points.map(p => p.count || 0),
+      fill: true,
+      borderColor: palette.primary,
+      backgroundColor: palette.primary + '33',
+      tension: 0.4,
+      pointRadius: 4,
+      pointBackgroundColor: palette.primary,
+      pointBorderColor: '#fff',
+      pointBorderWidth: 2,
+    }],
+  }
+  doughnutData.value = {
+    labels: ['pending', 'downloading', 'completed', 'paused', 'failed'].map(statusText),
+    datasets: [{
+      data: [stats.value.pending, stats.value.downloading, stats.value.completed, stats.value.paused, stats.value.failed],
+      backgroundColor: [palette.pending, palette.downloading, palette.completed, palette.paused, palette.failed],
+      borderWidth: skin.value === 'classic' ? 2 : 4,
+      borderColor: 'hsl(var(--card))',
+    }],
+  }
 }
 
 async function fetchDashboardData() {
@@ -186,34 +217,11 @@ async function fetchDashboardData() {
       failed: ds.failed || 0,
       paused: ds.paused || 0,
     }
-    const points = Array.isArray(data.downloadStats) ? data.downloadStats : []
-    chartData.value = {
-      labels: points.map(p => dayjs(p.date).format('MM-DD')),
-      datasets: [{
-        label: '下载数量',
-        data: points.map(p => p.count || 0),
-        fill: true,
-        borderColor: CHART.grass,
-        backgroundColor: CHART.grass + '33',
-        tension: 0.4,
-        pointRadius: 4,
-        pointBackgroundColor: CHART.grass,
-        pointBorderColor: '#fff',
-        pointBorderWidth: 2,
-      }],
-    }
-    doughnutData.value = {
-      labels: ['等待中', '下载中', '已完成', '已暂停', '已失败'],
-      datasets: [{
-        data: [stats.value.pending, stats.value.downloading, stats.value.completed, stats.value.paused, stats.value.failed],
-        backgroundColor: [CHART.sun, CHART.sky, CHART.leaf, CHART.wood, CHART.heart],
-        borderWidth: 4,
-        borderColor: 'hsl(var(--card))',
-      }],
-    }
+    chartPoints.value = Array.isArray(data.downloadStats) ? data.downloadStats : []
+    rebuildCharts()
     recentDownloads.value = Array.isArray(data.recentDownloads) ? data.recentDownloads : []
   } catch (err) {
-    const msg = err.message || '加载数据失败'
+    const msg = err.message || t('pages.dashboard.loadFailed')
     error.value = msg
     toast.error(msg)
   } finally {
@@ -222,4 +230,5 @@ async function fetchDashboardData() {
 }
 
 onMounted(fetchDashboardData)
+watch([skin, locale], rebuildCharts)
 </script>

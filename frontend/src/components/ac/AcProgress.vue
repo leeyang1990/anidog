@@ -1,7 +1,7 @@
 <template>
   <div class="ac-progress w-full">
     <div class="flex items-center justify-between mb-1.5" v-if="showLabel">
-      <span class="text-xs text-muted-foreground">{{ label }}</span>
+      <span class="text-xs text-muted-foreground">{{ resolvedLabel }}</span>
       <span class="text-xs font-bold font-num text-foreground">{{ percentText }}</span>
     </div>
     <div class="relative w-full bg-ac-sand rounded-full overflow-hidden ring-1 ring-inset ring-ac-sand-dark" :style="{ height: heightPx }">
@@ -16,6 +16,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps({
   value: { type: [Number, String], default: 0 },
@@ -23,8 +24,11 @@ const props = defineProps({
   height: { type: [Number, String], default: 8 },
   variant: { type: String, default: 'grass' }, // grass | sun | sky | heart
   showLabel: { type: Boolean, default: false },
-  label: { type: String, default: '进度' },
+  label: { type: String, default: '' },
 })
+
+const { t } = useI18n({ useScope: 'global' })
+const resolvedLabel = computed(() => props.label || t('common.progress'))
 
 const clamped = computed(() => {
   const v = Number(props.value) || 0

@@ -8,21 +8,21 @@
         </div>
         <div class="flex-1 space-y-4">
           <div>
-            <h3 class="text-lg font-bold tracking-tight text-foreground">主动下载源</h3>
-            <p class="text-sm text-muted-foreground">系统会按优先级主动为缺失集"填坑"，先找到就入队</p>
+            <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('downloadPrefs.activeSources') }}</h3>
+            <p class="text-sm text-muted-foreground">{{ t('downloadPrefs.activeSourcesDesc') }}</p>
           </div>
 
           <div class="space-y-3">
             <label class="flex items-center justify-between p-3 rounded-2xl border-2 border-ac-sand">
               <div>
                 <div class="flex items-center gap-2">
-                  <span class="text-sm font-bold">🎬 流媒体源</span>
-                  <span v-if="form.source_enabled_stream" class="text-xs text-ac-leaf-dark font-bold">已启用</span>
-                  <span v-else class="text-xs text-muted-foreground font-bold">已禁用</span>
+                  <span class="text-sm font-bold">{{ t('downloadPrefs.stream') }}</span>
+                  <span v-if="form.source_enabled_stream" class="text-xs text-ac-leaf-dark font-bold">{{ t('common.enabled') }}</span>
+                  <span v-else class="text-xs text-muted-foreground font-bold">{{ t('common.disabled') }}</span>
                 </div>
                 <p class="text-xs text-muted-foreground mt-0.5">
-                  从 aafun/AGE 等流媒体站点抓视频流（速度快，画质一般）·
-                  <router-link to="/stream-rules" class="text-ac-grass-dark hover:underline font-bold">管理规则</router-link>
+                  {{ t('downloadPrefs.streamDesc') }} ·
+                  <router-link to="/stream-rules" class="text-ac-grass-dark hover:underline font-bold">{{ t('downloadPrefs.manageRules') }}</router-link>
                 </p>
               </div>
               <AcSwitch v-model="form.source_enabled_stream" />
@@ -31,12 +31,12 @@
             <label class="flex items-center justify-between p-3 rounded-2xl border-2 border-ac-sand">
               <div>
                 <div class="flex items-center gap-2">
-                  <span class="text-sm font-bold">🧲 BT 种子搜索</span>
-                  <span v-if="form.source_enabled_bt" class="text-xs text-ac-leaf-dark font-bold">已启用</span>
-                  <span v-else class="text-xs text-muted-foreground font-bold">已禁用</span>
+                  <span class="text-sm font-bold">{{ t('downloadPrefs.bt') }}</span>
+                  <span v-if="form.source_enabled_bt" class="text-xs text-ac-leaf-dark font-bold">{{ t('common.enabled') }}</span>
+                  <span v-else class="text-xs text-muted-foreground font-bold">{{ t('common.disabled') }}</span>
                 </div>
                 <p class="text-xs text-muted-foreground mt-0.5">
-                  从公开 BT 站聚合搜索种子（画质高、速度取决于做种数）
+                  {{ t('downloadPrefs.btDesc') }}
                 </p>
               </div>
               <AcSwitch v-model="form.source_enabled_bt" />
@@ -44,7 +44,7 @@
           </div>
 
           <div v-if="form.source_enabled_bt" class="pt-2">
-            <label class="text-xs font-bold text-muted-foreground mb-2 block">启用的 BT Indexer</label>
+            <label class="text-xs font-bold text-muted-foreground mb-2 block">{{ t('downloadPrefs.enabledIndexers') }}</label>
             <div class="flex flex-wrap gap-2">
               <button v-for="ix in indexerOptions" :key="ix.value"
                 type="button"
@@ -60,14 +60,14 @@
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
               <div class="space-y-2">
-                <label class="text-sm font-bold text-foreground">BT 下载限速（KB/s）</label>
+                <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.downloadLimit') }}</label>
                 <AcInput v-model="form.bt_download_limit_kib" type="number" min="0" />
-                <p class="text-xs text-muted-foreground">0 表示不限速，保存后约 15 秒内生效</p>
+                <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.downloadLimitDesc') }}</p>
               </div>
               <div class="space-y-2">
-                <label class="text-sm font-bold text-foreground">BT 上传限速（KB/s）</label>
+                <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.uploadLimit') }}</label>
                 <AcInput v-model="form.bt_upload_limit_kib" type="number" min="0" />
-                <p class="text-xs text-muted-foreground">限制下载中和做种任务的总上传速度，0 表示不限速</p>
+                <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.uploadLimitDesc') }}</p>
               </div>
             </div>
           </div>
@@ -83,20 +83,20 @@
         </div>
         <div class="flex-1 space-y-4">
           <div>
-            <h3 class="text-lg font-bold tracking-tight text-foreground">RSS 订阅（被动）</h3>
-            <p class="text-sm text-muted-foreground">RSS 是按规则被动接收 feed 的独立通道，与上面的"主动下载"互不干扰</p>
+            <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('downloadPrefs.rss') }}</h3>
+            <p class="text-sm text-muted-foreground">{{ t('downloadPrefs.rssDesc') }}</p>
           </div>
 
           <label class="flex items-center justify-between p-3 rounded-2xl border-2 border-ac-sand">
             <div>
               <div class="flex items-center gap-2">
-                <span class="text-sm font-bold">启用 RSS 定时刷新与规则下载</span>
-                <span v-if="form.source_enabled_rss" class="text-xs text-ac-leaf-dark font-bold">已启用</span>
-                <span v-else class="text-xs text-muted-foreground font-bold">已禁用</span>
+                <span class="text-sm font-bold">{{ t('downloadPrefs.rssEnable') }}</span>
+                <span v-if="form.source_enabled_rss" class="text-xs text-ac-leaf-dark font-bold">{{ t('common.enabled') }}</span>
+                <span v-else class="text-xs text-muted-foreground font-bold">{{ t('common.disabled') }}</span>
               </div>
               <p class="text-xs text-muted-foreground mt-0.5">
-                定时刷新已订阅的 Mikan 等 feed，命中规则即下载 ·
-                <router-link to="/rss" class="text-ac-grass-dark hover:underline font-bold">管理 Feed</router-link>
+                {{ t('downloadPrefs.rssEnableDesc') }} ·
+                <router-link to="/rss" class="text-ac-grass-dark hover:underline font-bold">{{ t('downloadPrefs.manageFeeds') }}</router-link>
               </p>
             </div>
             <AcSwitch v-model="form.source_enabled_rss" />
@@ -113,18 +113,18 @@
         </div>
         <div class="flex-1 space-y-4">
           <div>
-            <h3 class="text-lg font-bold tracking-tight text-foreground">质量偏好</h3>
-            <p class="text-sm text-muted-foreground">系统按这些偏好对所有候选打分，选出"最佳匹配"</p>
+            <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('downloadPrefs.quality') }}</h3>
+            <p class="text-sm text-muted-foreground">{{ t('downloadPrefs.qualityDesc') }}</p>
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div class="space-y-2">
-              <label class="text-sm font-bold text-foreground">分辨率</label>
+              <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.resolution') }}</label>
               <AcSelect v-model="form.quality" :options="qualityOptions" />
             </div>
 
             <div class="space-y-2">
-              <label class="text-sm font-bold text-foreground">首选语言</label>
+              <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.preferredLanguages') }}</label>
               <div class="flex flex-wrap gap-3 h-9 items-center">
                 <label v-for="opt in langOptions" :key="opt.value" class="inline-flex items-center gap-1.5 text-sm cursor-pointer">
                   <AcCheckbox :model-value="form.languages.includes(opt.value)" @update:model-value="toggleLang(opt.value)" />
@@ -134,28 +134,28 @@
             </div>
 
             <div class="space-y-2">
-              <label class="text-sm font-bold text-foreground">最小体积 (MB)</label>
+              <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.minSize') }}</label>
               <AcInput v-model="form.min_size_mb" type="number" />
             </div>
             <div class="space-y-2">
-              <label class="text-sm font-bold text-foreground">最大体积 (MB，0=不限)</label>
+              <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.maxSize') }}</label>
               <AcInput v-model="form.max_size_mb" type="number" />
             </div>
           </div>
 
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">字幕组白名单</label>
+            <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.groupWhitelist') }}</label>
             <div class="flex flex-wrap gap-1.5 p-2 rounded-2xl border-2 border-ac-sand bg-card min-h-11">
               <span v-for="(g, idx) in form.groups" :key="g"
                 class="inline-flex items-center gap-1 rounded-full bg-ac-sand px-2.5 py-1 text-xs font-bold text-ac-wood-dark">
                 {{ g }}
                 <button type="button" @click="form.groups.splice(idx, 1)" class="hover:text-ac-heart-dark">×</button>
               </span>
-              <input v-model="newGroup" placeholder="输入后回车添加"
+              <input v-model="newGroup" :placeholder="t('downloadPrefs.groupPlaceholder')"
                 @keydown.enter.prevent="addGroup"
                 class="flex-1 min-w-[120px] outline-none bg-transparent text-xs px-2 py-1" />
             </div>
-            <p class="text-xs text-muted-foreground">命中白名单的字幕组评分 +100，其他 -20</p>
+            <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.groupScore') }}</p>
           </div>
         </div>
       </div>
@@ -169,12 +169,12 @@
         </div>
         <div class="flex-1 space-y-4">
           <div>
-            <h3 class="text-lg font-bold tracking-tight text-foreground">调度策略</h3>
-            <p class="text-sm text-muted-foreground">每隔一段时间自动检查所有追番的缺失集</p>
+            <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('downloadPrefs.scheduler') }}</h3>
+            <p class="text-sm text-muted-foreground">{{ t('downloadPrefs.schedulerDesc') }}</p>
           </div>
 
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">主动源优先级（从上到下）</label>
+            <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.sourcePriority') }}</label>
             <div class="space-y-1.5">
               <div v-for="(src, idx) in form.priority" :key="src"
                 class="flex items-center gap-2 p-2.5 rounded-2xl border-2 border-ac-sand bg-card">
@@ -188,13 +188,13 @@
                   :disabled="idx === form.priority.length - 1" @click="movePriority(idx, 1)">↓</button>
               </div>
             </div>
-            <p class="text-xs text-muted-foreground">主源找到就入队；未找到依次尝试后备源（RSS 是被动通道，不参与此优先级）</p>
+            <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.sourcePriorityDesc') }}</p>
           </div>
 
           <div class="space-y-2 max-w-xs">
-            <label class="text-sm font-bold text-foreground">定时检查间隔（分钟）</label>
+            <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.checkInterval') }}</label>
             <AcInput v-model="form.check_interval" type="number" />
-            <p class="text-xs text-muted-foreground">最小 5 分钟，建议 30 分钟</p>
+            <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.checkIntervalDesc') }}</p>
           </div>
         </div>
       </div>
@@ -208,55 +208,53 @@
         </div>
         <div class="flex-1 space-y-4">
           <div>
-            <h3 class="text-lg font-bold tracking-tight text-foreground">下载与归档</h3>
-            <p class="text-sm text-muted-foreground">下载落盘目录、并发数与标准归档规则</p>
+            <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('downloadPrefs.archive') }}</h3>
+            <p class="text-sm text-muted-foreground">{{ t('downloadPrefs.archiveDesc') }}</p>
           </div>
 
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">默认下载目录</label>
+            <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.downloadDir') }}</label>
             <DirectoryPicker v-model="form.download_dir" />
-            <p class="text-xs text-muted-foreground">所有源的文件按 <span class="font-num">&lt;番剧名 (年份)&gt;/Season NN</span> 归档到此目录下</p>
+            <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.downloadDirDesc') }}</p>
           </div>
 
           <div class="space-y-2 md:max-w-sm">
-            <label class="text-sm font-bold text-foreground">并发下载数</label>
+            <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.concurrency') }}</label>
             <AcInput v-model="form.max_concurrent" type="number" />
-            <p class="text-xs text-muted-foreground">同时进行的下载任务上限</p>
+            <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.concurrencyDesc') }}</p>
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div class="space-y-2">
-              <label class="text-sm font-bold text-foreground">最少保留空间（GB）</label>
+              <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.minFree') }}</label>
               <AcInput v-model="form.media_min_free_gb" type="number" />
-              <p class="text-xs text-muted-foreground">低于该空间时拒绝创建新下载</p>
+              <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.minFreeDesc') }}</p>
             </div>
             <div class="space-y-2">
-              <label class="text-sm font-bold text-foreground">最高使用率（%）</label>
+              <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.maxUsage') }}</label>
               <AcInput v-model="form.media_max_used_percent" type="number" />
-              <p class="text-xs text-muted-foreground">达到该比例时暂停新增下载</p>
+              <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.maxUsageDesc') }}</p>
             </div>
           </div>
 
           <div class="rounded-2xl border-2 border-ac-sand bg-ac-cream/40 p-4 text-sm">
-            <div class="font-bold text-foreground">完成即归档，无需定时扫描</div>
-            <p class="mt-1 text-xs text-muted-foreground">
-              BT、RSS 和流媒体完成后统一命名为
-              <span class="font-num">标题 S01E01.ext</span>，并原子移动到对应季度目录。
-            </p>
+            <div class="font-bold text-foreground">{{ t('downloadPrefs.archiveImmediate') }}</div>
+            <p class="mt-1 text-xs text-muted-foreground">{{ t('downloadPrefs.archiveImmediateDesc') }}</p>
           </div>
         </div>
       </div>
     </AcCard>
 
     <div class="flex items-center justify-end gap-3 pt-2">
-      <AcButton variant="ghost" @click="load">重置</AcButton>
-      <AcButton variant="primary" :loading="saving" @click="save">{{ saving ? '保存中...' : '保存设置' }}</AcButton>
+      <AcButton variant="ghost" @click="load">{{ t('common.reset') }}</AcButton>
+      <AcButton variant="primary" :loading="saving" @click="save">{{ saving ? t('downloadPrefs.saving') : t('common.saveSettings') }}</AcButton>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LayersOutline, DiamondOutline, TimerOutline, CheckmarkOutline, FolderOpenOutline } from '@vicons/ionicons5'
 import { get, put } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
@@ -264,6 +262,7 @@ import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
 import { AcCard, AcButton, AcInput, AcSelect, AcSwitch, AcCheckbox } from '@/components/ac'
 
 const toast = useToast()
+const { t } = useI18n({ useScope: 'global' })
 
 const defaults = {
   quality: '1080p',
@@ -290,11 +289,11 @@ const form = reactive({ ...JSON.parse(JSON.stringify(defaults)) })
 const newGroup = ref('')
 const saving = ref(false)
 
-const qualityOptions = [
+const qualityOptions = computed(() => [
   { label: '720p', value: '720p' },
-  { label: '1080p（推荐）', value: '1080p' },
+  { label: `1080p（${t('downloadPrefs.recommended')}）`, value: '1080p' },
   { label: '2160p / 4K', value: '2160p' },
-]
+])
 
 const indexerOptions = [
   { label: 'Mikan（蜜柑）', value: 'mikan' },
@@ -303,15 +302,15 @@ const indexerOptions = [
   { label: 'Nyaa（英语圈）', value: 'nyaa' },
 ]
 
-const langOptions = [
-  { label: '简中', value: 'simplified' },
-  { label: '繁中', value: 'traditional' },
-  { label: '日文', value: 'japanese' },
-  { label: '英文', value: 'english' },
-]
+const langOptions = computed(() => [
+  { label: t('downloadPrefs.languages.simplified'), value: 'simplified' },
+  { label: t('downloadPrefs.languages.traditional'), value: 'traditional' },
+  { label: t('downloadPrefs.languages.japanese'), value: 'japanese' },
+  { label: t('downloadPrefs.languages.english'), value: 'english' },
+])
 
 function sourceLabel(src) {
-  return { bt: '🧲 普通 BT 聚合', mikan: '🍊 Mikan', stream: '🎬 流媒体' }[src] || src
+  return t(`downloadPrefs.sources.${src}`, src)
 }
 
 function isIndexerEnabled(name) { return !!form.indexer_enabled[name] }
@@ -407,8 +406,8 @@ async function save() {
   }
   try {
     await put('/settings', payload)
-    toast.success('下载偏好已保存')
-  } catch (e) { toast.error(e.message || '保存失败') }
+    toast.success(t('downloadPrefs.saved'))
+  } catch (e) { toast.error(e.message || t('downloadPrefs.saveFailed')) }
   finally { saving.value = false }
 }
 

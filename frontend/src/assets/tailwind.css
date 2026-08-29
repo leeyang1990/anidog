@@ -424,6 +424,7 @@
 
   /* ──────── 草地纹理拆除 ──────── */
   .ac-grass-pattern { background-image: none; }
+  .ac-grove-decoration { display: none !important; }
 
   /* ──────── 滚动条：棕色 → 中性灰 ──────── */
   ::-webkit-scrollbar-thumb {

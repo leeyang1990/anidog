@@ -17,7 +17,7 @@
               type="button"
               class="shrink-0 size-9 rounded-full bg-ac-heart text-white flex items-center justify-center font-bold text-lg shadow-md hover:bg-ac-heart-dark transition-colors"
               @click="close"
-              aria-label="关闭"
+              :aria-label="t('common.close')"
             >×</button>
           </div>
           <div class="flex-1 overflow-y-auto px-6 py-5">
@@ -35,6 +35,7 @@
 <script setup>
 import { ref, watch, onBeforeUnmount } from 'vue'
 import { useFocusTrap } from '../../composables/useFocusTrap'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -45,6 +46,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:show', 'close'])
+const { t } = useI18n({ useScope: 'global' })
 
 const drawerEl = ref(null)
 let prevOverflow = ''

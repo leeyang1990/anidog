@@ -49,7 +49,7 @@
     </div>
 
     <div v-else class="text-sm text-muted-foreground py-6 text-center">
-      还没有集数信息 🌱
+      还没有集数信息
     </div>
 
     <!-- 详情抽屉 -->

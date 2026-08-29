@@ -49,8 +49,8 @@
                 {{ authStore.user?.username?.charAt(0)?.toUpperCase() || 'U' }}
               </div>
               <div v-if="!collapsed" class="ml-2.5 flex-1 min-w-0">
-                <p class="text-sm font-bold text-sidebar-foreground truncate leading-tight">{{ authStore.user?.username || '用户' }}</p>
-                <span class="text-xs text-sidebar-muted-foreground">{{ authStore.user?.is_admin ? '🌟 管理员' : '🌿 居民' }}</span>
+                <p class="text-sm font-bold text-sidebar-foreground truncate leading-tight">{{ authStore.user?.username || t('account.user') }}</p>
+                <span class="text-xs text-sidebar-muted-foreground">{{ authStore.user?.is_admin ? t('account.admin') : t('account.resident') }}</span>
               </div>
             </div>
           </template>
@@ -77,7 +77,7 @@
         <div class="hidden md:block w-72">
           <AcInput
             v-model="searchQuery"
-            placeholder="搜索番剧..."
+            :placeholder="t('nav.searchPlaceholder')"
             size="md"
             @keyup-enter="handleSearch"
           >
@@ -85,10 +85,12 @@
           </AcInput>
         </div>
 
+        <LocaleSwitcher class="hidden sm:inline-flex" />
+
         <button
           class="size-9 rounded-2xl hover:bg-ac-sand/60 text-muted-foreground transition-colors flex items-center justify-center"
           @click="toggleTheme"
-          :title="isDark ? '切换到白天' : '切换到夜晚'"
+          :title="isDark ? t('nav.switchLight') : t('nav.switchDark')"
         >
           <SunnyOutline v-if="isDark" class="size-5 text-ac-sun" />
           <MoonOutline v-else class="size-5" />
@@ -119,35 +121,38 @@ import {
   LibraryOutline, CodeSlashOutline,
 } from '@vicons/ionicons5'
 import { AcInput, AcDropdown } from '../../components/ac'
+import LocaleSwitcher from '../../components/Common/LocaleSwitcher.vue'
+import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const { isMobile } = useResponsive()
+const { t } = useI18n({ useScope: 'global' })
 
 const collapsed = ref(isMobile.value)
 const searchQuery = ref('')
 
 const isDark = ref(localStorage.getItem('theme') === 'dark')
 
-const menuItems = [
-  { label: '首页',     key: 'dashboard',      icon: HomeOutline,          route: '/' },
-  { label: '我的追番', key: 'anime-list',     icon: FilmOutline,          route: '/anime' },
-  { label: '下载管理', key: 'downloads',      icon: DownloadOutline,      route: '/downloads' },
-  { label: 'RSS订阅',  key: 'rss',            icon: LogoRss,              route: '/rss' },
-  { label: '放送日历', key: 'calendar',       icon: CalendarOutline,      route: '/calendar' },
-  { label: '番剧库',   key: 'anime-library',  icon: LibraryOutline,       route: '/anime-library' },
-  { label: '规则管理', key: 'stream-rules',   icon: CodeSlashOutline,     route: '/stream-rules' },
-  { label: '资源搜索', key: 'search',         icon: SearchOutline,        route: '/search' },
-  { label: '通知设置', key: 'notifications',  icon: NotificationsOutline, route: '/notifications' },
-  { label: '设置',     key: 'settings',       icon: SettingsOutline,      route: '/settings' },
-]
+const menuItems = computed(() => [
+  { label: t('nav.dashboard'),     key: 'dashboard',      icon: HomeOutline,          route: '/' },
+  { label: t('nav.anime'),         key: 'anime-list',     icon: FilmOutline,          route: '/anime' },
+  { label: t('nav.downloads'),     key: 'downloads',      icon: DownloadOutline,      route: '/downloads' },
+  { label: t('nav.rss'),           key: 'rss',            icon: LogoRss,              route: '/rss' },
+  { label: t('nav.calendar'),      key: 'calendar',       icon: CalendarOutline,      route: '/calendar' },
+  { label: t('nav.library'),       key: 'anime-library',  icon: LibraryOutline,       route: '/anime-library' },
+  { label: t('nav.rules'),         key: 'stream-rules',   icon: CodeSlashOutline,     route: '/stream-rules' },
+  { label: t('nav.search'),        key: 'search',         icon: SearchOutline,        route: '/search' },
+  { label: t('nav.notifications'), key: 'notifications',  icon: NotificationsOutline, route: '/notifications' },
+  { label: t('nav.settings'),      key: 'settings',       icon: SettingsOutline,      route: '/settings' },
+])
 
-const userOptions = [
-  { label: '设置', key: 'settings' },
+const userOptions = computed(() => [
+  { label: t('nav.settings'), key: 'settings' },
   { type: 'divider', key: 'd1' },
-  { label: '退出登录', key: 'logout', danger: true },
-]
+  { label: t('account.logout'), key: 'logout', danger: true },
+])
 
 const activeKey = computed(() => {
   const path = route.path
@@ -164,7 +169,7 @@ const activeKey = computed(() => {
 })
 
 const pageTitle = computed(() => {
-  const item = menuItems.find(m => m.key === activeKey.value)
+  const item = menuItems.value.find(m => m.key === activeKey.value)
   return item?.label || 'AniDog'
 })
 

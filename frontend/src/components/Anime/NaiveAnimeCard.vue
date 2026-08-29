@@ -56,7 +56,7 @@ const { confirm } = useConfirm()
 const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
 const statusText = computed(() => {
-  const map = { ongoing: '🌱 连载中', completed: '✅ 已完结', upcoming: '⏰ 即将开播', dropped: '❌ 已弃番' }
+  const map = { ongoing: '连载中', completed: '已完结', upcoming: '即将开播', dropped: '已弃番' }
   return map[props.anime.status] || ''
 })
 

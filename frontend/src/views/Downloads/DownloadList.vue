@@ -3,7 +3,7 @@
     <!-- 顶部状态栏 -->
     <div class="flex items-center justify-between gap-4 flex-wrap">
       <div class="flex items-center gap-2 text-sm">
-        <span class="text-muted-foreground">共 <span class="text-foreground font-bold font-num">{{ tasks.length }}</span> 个</span>
+        <span class="text-muted-foreground">{{ t('pages.downloads.total', { count: tasks.length }) }}</span>
         <span class="text-muted-foreground">·</span>
         <span class="text-ac-grass-dark inline-flex items-center gap-1 font-num font-bold">
           <ArrowDownOutline class="size-3.5" />{{ formatSpeed(globalDownloadSpeed) }}
@@ -16,11 +16,11 @@
       <div class="flex items-center gap-2">
         <AcButton variant="outline" size="sm" :loading="checkingAllUpdates" @click="handleCheckAllUpdates">
           <template #icon><RefreshOutline class="size-3.5" /></template>
-          {{ checkingAllUpdates ? '检查中...' : '检查追番更新' }}
+          {{ checkingAllUpdates ? t('pages.downloads.checking') : t('pages.downloads.checkUpdates') }}
         </AcButton>
         <AcButton variant="primary" size="sm" @click="showAddModal = true">
           <template #icon><AddOutline class="size-3.5" /></template>
-          添加
+          {{ t('pages.downloads.add') }}
         </AcButton>
       </div>
     </div>
@@ -38,50 +38,50 @@
       </div>
 
       <div class="flex-1 min-w-[200px] max-w-xs">
-        <AcInput v-model="searchKeyword" placeholder="搜索..." size="sm">
+        <AcInput v-model="searchKeyword" :placeholder="t('pages.downloads.search')" size="sm">
           <template #prefix><SearchOutline class="size-3.5" /></template>
         </AcInput>
       </div>
 
       <div v-if="selectedIds.size > 0" class="flex items-center gap-2 ml-auto">
-        <span class="text-xs text-muted-foreground">已选 <span class="font-num font-bold text-foreground">{{ selectedIds.size }}</span> 个</span>
+        <span class="text-xs text-muted-foreground">{{ t('pages.downloads.selected', { count: selectedIds.size }) }}</span>
         <AcButton variant="ghost" size="sm" :disabled="!canBatchPause" @click="batchAction('pause')">
-          <template #icon><PauseOutline class="size-3" /></template>暂停
+          <template #icon><PauseOutline class="size-3" /></template>{{ t('pages.downloads.pause') }}
         </AcButton>
         <AcButton variant="ghost" size="sm" :disabled="!canBatchResume" @click="batchAction('resume')">
-          <template #icon><PlayOutline class="size-3" /></template>继续
+          <template #icon><PlayOutline class="size-3" /></template>{{ t('pages.downloads.resume') }}
         </AcButton>
         <AcButton variant="ghost" size="sm" class="!text-ac-heart-dark hover:!bg-ac-heart/10" @click="batchDelete">
-          <template #icon><TrashOutline class="size-3" /></template>删除
+          <template #icon><TrashOutline class="size-3" /></template>{{ t('pages.downloads.delete') }}
         </AcButton>
       </div>
 
       <div v-else class="flex items-center gap-2 ml-auto">
         <AcButton variant="ghost" size="sm" :disabled="!hasActive" @click="pauseAll">
-          <template #icon><PauseOutline class="size-3" /></template>全部暂停
+          <template #icon><PauseOutline class="size-3" /></template>{{ t('pages.downloads.pauseAll') }}
         </AcButton>
         <AcButton variant="ghost" size="sm" :disabled="!hasPaused" @click="resumeAll">
-          <template #icon><PlayOutline class="size-3" /></template>全部继续
+          <template #icon><PlayOutline class="size-3" /></template>{{ t('pages.downloads.resumeAll') }}
         </AcButton>
       </div>
     </div>
 
     <!-- 任务列表 -->
     <AcCard padding="none" rounded="2xl">
-      <AcEmpty v-if="!filteredTasks.length" :title="searchKeyword ? '未找到匹配的任务' : '暂无下载任务'" class="py-12" />
+      <AcEmpty v-if="!filteredTasks.length" :title="searchKeyword ? t('pages.downloads.noMatch') : t('pages.downloads.empty')" class="py-12" />
       <div v-else class="divide-y-2 divide-dashed divide-ac-sand">
         <div class="flex items-center gap-3 px-4 py-2 bg-ac-sand/40 text-xs text-muted-foreground font-bold rounded-t-3xl">
           <div class="w-4 shrink-0">
             <input type="checkbox" class="accent-ac-grass cursor-pointer size-4" :checked="allSelected" :indeterminate.prop="someSelected" @change="toggleSelectAll" />
           </div>
           <div class="w-5 shrink-0" />
-          <div class="flex-1">名称</div>
-          <div class="w-16 shrink-0 text-center">源</div>
-          <div class="w-28 shrink-0 text-right">大小</div>
-          <div class="w-24 shrink-0 text-right">速度</div>
-          <div class="w-32 shrink-0">进度</div>
-          <div class="w-32 shrink-0 text-right">时间</div>
-          <div class="w-20 shrink-0 text-right">操作</div>
+          <div class="flex-1">{{ t('pages.downloads.name') }}</div>
+          <div class="w-16 shrink-0 text-center">{{ t('pages.downloads.source') }}</div>
+          <div class="w-28 shrink-0 text-right">{{ t('pages.downloads.size') }}</div>
+          <div class="w-24 shrink-0 text-right">{{ t('pages.downloads.speed') }}</div>
+          <div class="w-32 shrink-0">{{ t('pages.downloads.progress') }}</div>
+          <div class="w-32 shrink-0 text-right">{{ t('pages.downloads.time') }}</div>
+          <div class="w-20 shrink-0 text-right">{{ t('pages.downloads.actions') }}</div>
         </div>
 
         <div v-for="task in filteredTasks" :key="task.id"
@@ -101,7 +101,7 @@
               {{ task.last_error || task.error_message }}
             </div>
             <div v-else-if="task.episode_number" class="text-xs text-muted-foreground mt-0.5">
-              第 <span class="font-num">{{ String(task.episode_number).padStart(2,'0') }}</span> 集
+              {{ t('pages.downloads.episode', { episode: String(task.episode_number).padStart(2, '0') }) }}
             </div>
           </div>
 
@@ -127,34 +127,34 @@
             <div v-else-if="task.status === 'completed'">
               <AcProgress :value="100" :height="4" variant="leaf" />
             </div>
-            <div v-else-if="task.status === 'queued'" class="text-xs text-muted-foreground">队列中</div>
+            <div v-else-if="task.status === 'queued'" class="text-xs text-muted-foreground">{{ t('status.queued') }}</div>
             <div v-else class="text-xs text-muted-foreground">—</div>
           </div>
 
           <div class="w-32 shrink-0 text-right text-xs text-muted-foreground font-num">
             <div v-if="task.status === 'completed' && task.completed_at">
-              <span :title="'完成于 ' + formatAbsoluteTime(task.completed_at)">✓ {{ formatRelativeTime(task.completed_at) }}</span>
+              <span :title="t('pages.downloads.completedAt', { time: formatAbsoluteTime(task.completed_at) })">✓ {{ formatRelativeTime(task.completed_at) }}</span>
             </div>
             <div v-else-if="task.created_at">
-              <span :title="'创建于 ' + formatAbsoluteTime(task.created_at)">{{ formatRelativeTime(task.created_at) }}</span>
+              <span :title="t('pages.downloads.createdAt', { time: formatAbsoluteTime(task.created_at) })">{{ formatRelativeTime(task.created_at) }}</span>
             </div>
             <span v-else>—</span>
           </div>
 
           <div class="w-20 shrink-0 flex items-center justify-end gap-1">
-            <button v-if="task.status === 'downloading'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="togglePause(task)" title="暂停">
+            <button v-if="task.status === 'downloading'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="togglePause(task)" :title="t('pages.downloads.pause')">
               <PauseOutline class="size-3.5" />
             </button>
-            <button v-else-if="task.status === 'paused'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="togglePause(task)" title="继续">
+            <button v-else-if="task.status === 'paused'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="togglePause(task)" :title="t('pages.downloads.resume')">
               <PlayOutline class="size-3.5" />
             </button>
-            <button v-else-if="task.status === 'failed'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="retryTask(task)" title="重试">
+            <button v-else-if="task.status === 'failed'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="retryTask(task)" :title="t('pages.downloads.retry')">
               <ReloadOutline class="size-3.5" />
             </button>
-            <button v-else-if="task.status === 'completed'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="openFolder(task)" title="打开位置">
+            <button v-else-if="task.status === 'completed'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="openFolder(task)" :title="t('pages.downloads.openLocation')">
               <FolderOpenOutline class="size-3.5" />
             </button>
-            <button class="p-1.5 rounded-lg hover:bg-ac-heart/10 text-ac-heart-dark transition-colors" @click="deleteTask(task)" title="删除">
+            <button class="p-1.5 rounded-lg hover:bg-ac-heart/10 text-ac-heart-dark transition-colors" @click="deleteTask(task)" :title="t('pages.downloads.delete')">
               <TrashOutline class="size-3.5" />
             </button>
           </div>
@@ -163,25 +163,25 @@
     </AcCard>
 
     <!-- 添加下载弹窗 -->
-    <AcModal v-model:show="showAddModal" title="添加下载">
+    <AcModal v-model:show="showAddModal" :title="t('pages.downloads.addTitle')">
       <div class="space-y-4">
         <div class="space-y-1.5">
-          <label class="text-sm font-bold">下载链接</label>
+          <label class="text-sm font-bold">{{ t('pages.downloads.url') }}</label>
           <AcTextarea v-model="addForm.url" rows="3" placeholder="magnet:?xt=... 或 https://..." />
           <p v-if="addForm.url && !/^(magnet:|https?:\/\/)/.test(addForm.url)" class="text-xs text-ac-heart-dark">
-            请输入有效的磁力链接或 URL
+            {{ t('pages.downloads.invalidUrl') }}
           </p>
         </div>
         <div class="space-y-1.5">
-          <label class="text-sm font-bold">保存路径</label>
+          <label class="text-sm font-bold">{{ t('pages.downloads.savePath') }}</label>
           <DirectoryPicker v-model="addForm.save_path" />
-          <p class="text-xs text-muted-foreground">留空使用默认下载目录</p>
+          <p class="text-xs text-muted-foreground">{{ t('pages.downloads.defaultPath') }}</p>
         </div>
       </div>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <AcButton variant="ghost" @click="showAddModal = false">取消</AcButton>
-          <AcButton variant="primary" :disabled="!canSubmitAdd" @click="submitAddDownload">确认</AcButton>
+          <AcButton variant="ghost" @click="showAddModal = false">{{ t('common.cancel') }}</AcButton>
+          <AcButton variant="primary" :disabled="!canSubmitAdd" @click="submitAddDownload">{{ t('common.confirm') }}</AcButton>
         </div>
       </template>
     </AcModal>
@@ -202,9 +202,11 @@ import {
 import { get, post, del } from '@/utils/api'
 import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
 import { AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea } from '../../components/ac'
+import { useI18n } from 'vue-i18n'
 
 const toast = useToast()
 const { confirm } = useConfirm()
+const { t, locale } = useI18n({ useScope: 'global' })
 
 const tasks = ref([])
 const globalDownloadSpeed = ref(0)
@@ -251,11 +253,11 @@ function connectWs() {
 }
 
 const filters = computed(() => [
-  { key: 'all', label: '全部', count: tasks.value.length },
-  { key: 'downloading', label: '下载中', count: statusCount(['downloading', 'queued']) },
-  { key: 'paused', label: '已暂停', count: statusCount(['paused']) },
-  { key: 'completed', label: '已完成', count: statusCount(['completed']) },
-  { key: 'failed', label: '失败', count: statusCount(['failed']) },
+  { key: 'all', label: t('pages.downloads.all'), count: tasks.value.length },
+  { key: 'downloading', label: t('pages.downloads.downloading'), count: statusCount(['downloading', 'queued']) },
+  { key: 'paused', label: t('pages.downloads.paused'), count: statusCount(['paused']) },
+  { key: 'completed', label: t('pages.downloads.completed'), count: statusCount(['completed']) },
+  { key: 'failed', label: t('pages.downloads.failed'), count: statusCount(['failed']) },
 ])
 function statusCount(statuses) { return tasks.value.filter(t => statuses.includes(t.status)).length }
 
@@ -330,25 +332,25 @@ async function togglePause(task) {
     const action = task.status === 'downloading' ? 'pause' : 'resume'
     await post(`/downloads/${task.id}/${action}`)
     await fetchTasks()
-  } catch (e) { toast.error(e.message || '操作失败') }
+  } catch (e) { toast.error(e.message || t('pages.downloads.operationFailed')) }
 }
 async function deleteTask(task) {
-  const ok = await confirm({ title: '删除任务', content: `确定删除 "${task.name}"？`, variant: 'danger', confirmText: '删除' })
+  const ok = await confirm({ title: t('pages.downloads.deleteTitle'), content: t('pages.downloads.deleteConfirm', { name: task.name }), variant: 'danger', confirmText: t('common.delete') })
   if (!ok) return
   try { await del(`/downloads/${task.id}`); await fetchTasks() }
-  catch (e) { toast.error(e.message || '删除失败') }
+  catch (e) { toast.error(e.message || t('pages.downloads.deleteFailed')) }
 }
 async function retryTask(task) {
-  try { await post(`/downloads/${task.id}/retry`); toast.success('已加入队列'); await fetchTasks() }
-  catch (e) { toast.error(e.message || '重试失败') }
+  try { await post(`/downloads/${task.id}/retry`); toast.success(t('pages.downloads.queued')); await fetchTasks() }
+  catch (e) { toast.error(e.message || t('pages.downloads.retryFailed')) }
 }
 async function pauseAll() {
   try { await post('/downloads/pause-all'); await fetchTasks() }
-  catch (e) { toast.error(e.message || '操作失败') }
+  catch (e) { toast.error(e.message || t('pages.downloads.operationFailed')) }
 }
 async function resumeAll() {
   try { await post('/downloads/resume-all'); await fetchTasks() }
-  catch (e) { toast.error(e.message || '操作失败') }
+  catch (e) { toast.error(e.message || t('pages.downloads.operationFailed')) }
 }
 async function batchAction(action) {
   const ids = [...selectedIds.value]
@@ -356,7 +358,7 @@ async function batchAction(action) {
   clearSelection(); await fetchTasks()
 }
 async function batchDelete() {
-  const ok = await confirm({ title: '批量删除', content: `确定删除 ${selectedIds.value.size} 个任务？`, variant: 'danger', confirmText: '删除' })
+  const ok = await confirm({ title: t('pages.downloads.batchDelete'), content: t('pages.downloads.batchDeleteConfirm', { count: selectedIds.value.size }), variant: 'danger', confirmText: t('common.delete') })
   if (!ok) return
   const ids = [...selectedIds.value]
   await Promise.all(ids.map(id => del(`/downloads/${id}`).catch(() => null)))
@@ -369,14 +371,14 @@ async function submitAddDownload() {
     showAddModal.value = false
     addForm.value = { url: '', save_path: '' }
     await fetchTasks()
-  } catch (e) { toast.error(e.message || '添加失败') }
+  } catch (e) { toast.error(e.message || t('pages.downloads.addFailed')) }
 }
-function openFolder() { toast.info('本地打开功能需要桌面端支持') }
+function openFolder() { toast.info(t('pages.downloads.desktopOnly')) }
 
 async function handleCheckAllUpdates() {
   checkingAllUpdates.value = true
-  try { await post('/anime/check-all-updates'); toast.success('已触发全部追番更新检查') }
-  catch (e) { toast.error(e.message || '检查更新失败') }
+  try { await post('/anime/check-all-updates'); toast.success(t('pages.downloads.updateTriggered')) }
+  catch (e) { toast.error(e.message || t('pages.downloads.updateFailed')) }
   finally { setTimeout(() => { checkingAllUpdates.value = false }, 2000) }
 }
 
@@ -404,18 +406,18 @@ function formatSpeed(bps) { return !bps || bps <= 0 ? '0 B/s' : formatSize(bps) 
 function formatRelativeTime(s) {
   if (!s) return ''
   const d = new Date(s); const diff = (Date.now() - d.getTime()) / 1000
-  if (diff < 60) return '刚刚'
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`
-  return d.toLocaleDateString('zh-CN')
+  if (diff < 60) return t('pages.downloads.justNow')
+  if (diff < 3600) return t('pages.downloads.minutesAgo', { count: Math.floor(diff / 60) })
+  if (diff < 86400) return t('pages.downloads.hoursAgo', { count: Math.floor(diff / 3600) })
+  if (diff < 86400 * 30) return t('pages.downloads.daysAgo', { count: Math.floor(diff / 86400) })
+  return d.toLocaleDateString(locale.value)
 }
 function formatAbsoluteTime(s) {
   if (!s) return ''
   const d = new Date(s)
-  return isNaN(d.getTime()) ? s : d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return isNaN(d.getTime()) ? s : d.toLocaleString(locale.value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
-function sourceLabel(src) { return { bt: 'BT', stream: '流媒体', bangumi: '流媒体', rss: 'RSS', manual: '手动' }[src] || src || '—' }
+function sourceLabel(src) { return { bt: 'BT', stream: t('pages.downloads.stream'), bangumi: t('pages.downloads.stream'), rss: 'RSS', manual: t('pages.downloads.manual') }[src] || src || '—' }
 function sourceTagVariant(src) {
   return { bt: 'sun', stream: 'grass', bangumi: 'grass', rss: 'sky', manual: 'wood' }[src] || 'default'
 }

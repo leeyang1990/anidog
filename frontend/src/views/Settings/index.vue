@@ -1,6 +1,6 @@
 <template>
   <div>
-    <AcPageHeader title="⚙️ 系统设置" subtitle="配置您的番剧管理系统偏好设置" />
+    <AcPageHeader :title="t('settings.title')" :subtitle="t('settings.subtitle')" />
 
     <AcTabs v-model="activeTab" :tabs="tabs" />
     <div class="mt-4">
@@ -11,6 +11,21 @@
 
       <!-- 外观主题 -->
       <div v-if="activeTab === 'appearance'">
+        <AcCard padding="lg" rounded="2xl" class="mb-4">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div class="flex gap-4">
+              <div class="size-11 shrink-0 rounded-2xl bg-ac-sky/40 flex items-center justify-center">
+                <GlobeOutline class="size-5 text-ac-sky-dark" />
+              </div>
+              <div>
+                <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('settings.languageTitle') }}</h3>
+                <p class="text-sm text-muted-foreground">{{ t('settings.languageDescription') }}</p>
+              </div>
+            </div>
+            <LocaleSwitcher />
+          </div>
+        </AcCard>
+
         <AcCard padding="lg" rounded="2xl">
           <div class="flex gap-5">
             <div class="size-11 shrink-0 rounded-2xl bg-ac-sun/40 flex items-center justify-center">
@@ -18,8 +33,8 @@
             </div>
             <div class="flex-1 space-y-4">
               <div>
-                <h3 class="text-lg font-bold tracking-tight text-foreground">主题皮肤</h3>
-                <p class="text-sm text-muted-foreground">切换整套视觉风格 —— 选择后立即生效，并记住你的偏好</p>
+                <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('settings.details.themeTitle') }}</h3>
+                <p class="text-sm text-muted-foreground">{{ t('settings.details.themeDesc') }}</p>
               </div>
 
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -31,13 +46,13 @@
                     : 'border-border bg-card hover:border-primary/40'"
                   @click="setSkin(opt.value)">
                   <div class="flex items-center justify-between mb-1">
-                    <span class="text-base font-bold text-foreground">{{ opt.label }}</span>
+                    <span class="text-base font-bold text-foreground">{{ t(opt.labelKey) }}</span>
                     <span v-if="skin === opt.value"
                       class="inline-flex items-center gap-1 text-xs font-bold text-primary">
-                      <CheckmarkOutline class="size-4" /> 当前
+                      <CheckmarkOutline class="size-4" /> {{ t('settings.details.current') }}
                     </span>
                   </div>
-                  <p class="text-xs text-muted-foreground">{{ opt.description }}</p>
+                  <p class="text-xs text-muted-foreground">{{ t(opt.descriptionKey) }}</p>
 
                   <!-- 颜色预览条 -->
                   <div class="mt-3 flex gap-1.5">
@@ -49,7 +64,7 @@
               </div>
 
               <p class="text-xs text-muted-foreground">
-                💡 切换皮肤只改样式不改业务逻辑，下载、订阅、规则等数据完全保留。
+                {{ t('settings.details.themeNote') }}
               </p>
             </div>
           </div>
@@ -65,12 +80,11 @@
             </div>
             <div class="flex-1 space-y-4">
               <div>
-                <h3 class="text-lg font-bold tracking-tight text-foreground">文件归档命名</h3>
-                <p class="text-sm text-muted-foreground">下载完成时立即执行，不再依赖定时扫描任务</p>
+                <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('settings.details.renameTitle') }}</h3>
+                <p class="text-sm text-muted-foreground">{{ t('settings.details.renameDesc') }}</p>
               </div>
               <div class="rounded-2xl border-2 border-ac-sand bg-ac-cream/40 p-4 text-sm text-muted-foreground">
-                标准格式：<span class="font-num text-foreground">&lt;番剧名 (年份)&gt;/Season NN/番剧名 SnnEnn.ext</span>。
-                BT、RSS 与流媒体共用同一规则。
+                {{ t('settings.details.renameFormat') }}
               </div>
             </div>
           </div>
@@ -86,20 +100,20 @@
             </div>
             <div class="flex-1 space-y-4">
               <div>
-                <h3 class="text-lg font-bold tracking-tight text-foreground">后台调度</h3>
-                <p class="text-sm text-muted-foreground">配置定时任务和自动刷新</p>
+                <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('settings.details.schedulerTitle') }}</h3>
+                <p class="text-sm text-muted-foreground">{{ t('settings.details.schedulerDesc') }}</p>
               </div>
               <div class="space-y-4">
                 <div class="flex items-center justify-between">
                   <div>
-                    <label class="text-sm font-bold text-foreground">启用调度器</label>
-                    <p class="text-xs text-muted-foreground">{{ schedulerForm.enabled ? '已启用' : '已禁用' }}</p>
+                    <label class="text-sm font-bold text-foreground">{{ t('settings.details.schedulerEnable') }}</label>
+                    <p class="text-xs text-muted-foreground">{{ schedulerForm.enabled ? t('common.enabled') : t('common.disabled') }}</p>
                   </div>
                   <AcSwitch v-model="schedulerForm.enabled" />
                 </div>
                 <AcButton variant="primary" :loading="saving.scheduler" @click="saveSchedulerSettings">
                   <template #icon><SaveOutline class="size-4" /></template>
-                  保存设置
+                  {{ t('common.saveSettings') }}
                 </AcButton>
               </div>
             </div>
@@ -116,46 +130,41 @@
             </div>
             <div class="flex-1 space-y-4">
               <div>
-                <h3 class="text-lg font-bold tracking-tight text-foreground">HTTP 代理</h3>
-                <p class="text-sm text-muted-foreground">
-                  仅用于 Bangumi API、BT Indexer、Mikan 与 RSS 等小型元数据请求。
-                  qBittorrent 的种子数据和 ffmpeg 的视频数据始终由各自进程直连，不消耗这里的代理流量。
-                </p>
+                <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('settings.details.proxyTitle') }}</h3>
+                <p class="text-sm text-muted-foreground">{{ t('settings.details.proxyDesc') }}</p>
               </div>
               <div class="space-y-2">
-                <label class="text-sm font-bold text-foreground">代理地址</label>
-                <AcInput v-model="proxyForm.http_proxy" placeholder="留空表示直连；Docker 部署建议 http://host.docker.internal:7890" />
-                <p class="text-xs text-muted-foreground">
-                  支持 <code class="font-num">http://</code>、<code class="font-num">https://</code>、<code class="font-num">socks5://</code>。容器内访问宿主机代理请用 <code class="font-num">host.docker.internal</code>。
-                </p>
+                <label class="text-sm font-bold text-foreground">{{ t('settings.details.proxyAddress') }}</label>
+                <AcInput v-model="proxyForm.http_proxy" :placeholder="t('settings.details.proxyPlaceholder')" />
+                <p class="text-xs text-muted-foreground">{{ t('settings.details.proxyHint') }}</p>
               </div>
               <div class="flex flex-wrap items-center gap-2">
                 <AcButton variant="outline" :loading="proxyForm.testing" @click="testProxy">
                   <template #icon><PulseOutline class="size-4" /></template>
-                  {{ proxyForm.testing ? '测试中...' : '测试连接' }}
+                  {{ proxyForm.testing ? t('settings.details.testing') : t('settings.details.testConnection') }}
                 </AcButton>
                 <AcButton variant="primary" :loading="saving.proxy" @click="saveProxy">
                   <template #icon><SaveOutline class="size-4" /></template>
-                  保存
+                  {{ t('common.save') }}
                 </AcButton>
               </div>
               <div v-if="proxyForm.testResult" class="rounded-2xl border-2 p-3 text-sm"
                 :class="proxyForm.testResult.ok ? 'border-ac-leaf bg-ac-leaf/10' : 'border-ac-heart bg-ac-heart/10'">
                 <div class="font-bold" :class="proxyForm.testResult.ok ? 'text-ac-leaf-dark' : 'text-ac-heart-dark'">
-                  {{ proxyForm.testResult.ok ? '✓ 连接成功' : '✗ 连接失败' }}
+                  {{ proxyForm.testResult.ok ? t('settings.details.connectionSuccess') : t('settings.details.connectionFailed') }}
                   <span v-if="proxyForm.testResult.latency_ms !== undefined" class="text-muted-foreground font-normal font-num">
                     · {{ proxyForm.testResult.latency_ms }}ms
                   </span>
                 </div>
                 <div v-if="proxyForm.testResult.target" class="text-xs text-muted-foreground mt-1 font-num">
-                  探测目标：{{ proxyForm.testResult.target }}
+                  {{ t('settings.details.probeTarget', { target: proxyForm.testResult.target }) }}
                 </div>
                 <div v-if="proxyForm.testResult.error" class="text-xs text-ac-heart-dark mt-1 break-all font-num">
                   {{ proxyForm.testResult.error }}
                 </div>
               </div>
               <div class="rounded-2xl border-2 border-ac-sun bg-ac-sun/10 p-3 text-xs text-ac-sun-dark">
-                保存后立即热更新，无需重启。系统会在同一轮缺集检查中复用索引结果，避免请求量随缺集数量成倍增长。
+                {{ t('settings.details.proxyHotUpdate') }}
               </div>
             </div>
           </div>
@@ -171,29 +180,29 @@
             </div>
             <div class="flex-1 space-y-4">
               <div>
-                <h3 class="text-lg font-bold tracking-tight text-foreground">账户信息</h3>
-                <p class="text-sm text-muted-foreground">修改密码和个人信息</p>
+                <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('settings.details.accountTitle') }}</h3>
+                <p class="text-sm text-muted-foreground">{{ t('settings.details.accountDesc') }}</p>
               </div>
               <div class="space-y-4">
                 <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">用户名</label>
+                  <label class="text-sm font-bold text-foreground">{{ t('settings.details.username') }}</label>
                   <AcInput :model-value="userForm.username" disabled />
                 </div>
                 <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">旧密码</label>
-                  <AcInput v-model="userForm.oldPassword" type="password" placeholder="请输入旧密码" />
+                  <label class="text-sm font-bold text-foreground">{{ t('settings.details.oldPassword') }}</label>
+                  <AcInput v-model="userForm.oldPassword" type="password" :placeholder="t('settings.details.oldPasswordPlaceholder')" />
                 </div>
                 <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">新密码</label>
-                  <AcInput v-model="userForm.newPassword" type="password" placeholder="请输入新密码" />
+                  <label class="text-sm font-bold text-foreground">{{ t('settings.details.newPassword') }}</label>
+                  <AcInput v-model="userForm.newPassword" type="password" :placeholder="t('settings.details.newPasswordPlaceholder')" />
                 </div>
                 <div class="space-y-2">
-                  <label class="text-sm font-bold text-foreground">确认新密码</label>
-                  <AcInput v-model="userForm.confirmPassword" type="password" placeholder="请再次输入新密码" />
+                  <label class="text-sm font-bold text-foreground">{{ t('settings.details.confirmPassword') }}</label>
+                  <AcInput v-model="userForm.confirmPassword" type="password" :placeholder="t('settings.details.confirmPasswordPlaceholder')" />
                 </div>
                 <AcButton variant="primary" :loading="saving.user" @click="saveUserSettings">
                   <template #icon><CheckmarkOutline class="size-4" /></template>
-                  修改密码
+                  {{ t('settings.details.changePassword') }}
                 </AcButton>
               </div>
             </div>
@@ -209,7 +218,7 @@
             <div class="size-11 rounded-2xl bg-ac-grass-light/40 flex items-center justify-center mb-3">
               <CodeSlashOutline class="size-5 text-ac-grass-dark" />
             </div>
-            <div class="text-sm text-muted-foreground font-bold">系统版本</div>
+            <div class="text-sm text-muted-foreground font-bold">{{ t('settings.details.systemVersion') }}</div>
             <div class="text-xl font-bold mt-1 font-num">{{ systemInfo.version || '1.0.0' }}</div>
             <div class="text-xs text-muted-foreground mt-1">{{ systemInfo.os }}/{{ systemInfo.arch }} · {{ systemInfo.goVersion }}</div>
           </AcCard>
@@ -217,9 +226,9 @@
             <div class="size-11 rounded-2xl bg-ac-leaf/30 flex items-center justify-center mb-3">
               <TimeOutline class="size-5 text-ac-leaf-dark" />
             </div>
-            <div class="text-sm text-muted-foreground font-bold">服务运行时间</div>
-            <div class="text-xl font-bold mt-1 font-num">{{ systemInfo.uptime || '未知' }}</div>
-            <div class="text-xs text-muted-foreground mt-1">主机已开机 {{ systemInfo.hostUptime || '—' }}</div>
+            <div class="text-sm text-muted-foreground font-bold">{{ t('settings.details.serviceUptime') }}</div>
+            <div class="text-xl font-bold mt-1 font-num">{{ systemInfo.uptime || t('settings.details.unknown') }}</div>
+            <div class="text-xs text-muted-foreground mt-1">{{ t('settings.details.hostUptime', { time: systemInfo.hostUptime || '—' }) }}</div>
           </AcCard>
           <AcCard hoverable padding="lg" rounded="2xl">
             <div class="size-11 rounded-2xl bg-ac-sky/40 flex items-center justify-center mb-3">
@@ -227,7 +236,7 @@
             </div>
             <div class="text-sm text-muted-foreground font-bold">Goroutines</div>
             <div class="text-xl font-bold mt-1 font-num">{{ systemInfo.goroutines ?? '—' }}</div>
-            <div class="text-xs text-muted-foreground mt-1">Go 堆 {{ fmtBytes(systemInfo.goMemory?.alloc) }} · GC {{ systemInfo.goMemory?.num_gc ?? 0 }} 次</div>
+            <div class="text-xs text-muted-foreground mt-1">{{ t('settings.details.goHeap', { size: fmtBytes(systemInfo.goMemory?.alloc), count: systemInfo.goMemory?.num_gc ?? 0 }) }}</div>
           </AcCard>
         </div>
 
@@ -238,18 +247,18 @@
               <div class="size-9 rounded-xl bg-ac-sun/40 flex items-center justify-center">
                 <HardwareChipOutline class="size-4 text-ac-sun-dark" />
               </div>
-              <div class="text-sm text-muted-foreground font-bold flex-1">CPU 使用率</div>
+              <div class="text-sm text-muted-foreground font-bold flex-1">{{ t('settings.details.cpuUsage') }}</div>
               <div class="text-lg font-bold font-num">{{ fmtPct(systemInfo.cpuUsage) }}%</div>
             </div>
             <AcProgress :percent="clampPct(systemInfo.cpuUsage)" variant="sun" :show-text="false" />
-            <div class="text-xs text-muted-foreground mt-1.5">{{ systemInfo.cpuCores || '?' }} 核</div>
+            <div class="text-xs text-muted-foreground mt-1.5">{{ t('settings.details.cores', { count: systemInfo.cpuCores || '?' }) }}</div>
           </AcCard>
           <AcCard hoverable padding="lg" rounded="2xl">
             <div class="flex items-center gap-2 mb-2">
               <div class="size-9 rounded-xl bg-ac-sky/40 flex items-center justify-center">
                 <ServerOutline class="size-4 text-ac-sky-dark" />
               </div>
-              <div class="text-sm text-muted-foreground font-bold flex-1">内存使用率</div>
+              <div class="text-sm text-muted-foreground font-bold flex-1">{{ t('settings.details.memoryUsage') }}</div>
               <div class="text-lg font-bold font-num">{{ fmtPct(systemInfo.memoryUsage) }}%</div>
             </div>
             <AcProgress :percent="clampPct(systemInfo.memoryUsage)" variant="sky" :show-text="false" />
@@ -262,7 +271,7 @@
               <div class="size-9 rounded-xl bg-ac-heart/30 flex items-center justify-center">
                 <ServerOutline class="size-4 text-ac-heart-dark" />
               </div>
-              <div class="text-sm text-muted-foreground font-bold flex-1">媒体存储使用率</div>
+              <div class="text-sm text-muted-foreground font-bold flex-1">{{ t('settings.details.storageUsage') }}</div>
               <div class="text-lg font-bold font-num">{{ fmtPct(systemInfo.diskUsage) }}%</div>
             </div>
             <AcProgress :percent="clampPct(systemInfo.diskUsage)" variant="heart" :show-text="false" />
@@ -270,14 +279,14 @@
               {{ fmtBytes(systemInfo.disk?.used) }} / {{ fmtBytes(systemInfo.disk?.total) }}
             </div>
             <div v-if="systemInfo.disk?.path" class="text-xs text-muted-foreground mt-1 font-num truncate" :title="systemInfo.disk.path">
-              {{ systemInfo.disk.path }} · 剩余 {{ fmtBytes(systemInfo.disk?.free) }}
+              {{ systemInfo.disk.path }} · {{ t('settings.details.remaining', { size: fmtBytes(systemInfo.disk?.free) }) }}
             </div>
           </AcCard>
         </div>
 
         <!-- 依赖服务状态 -->
         <AcCard padding="lg" rounded="2xl">
-          <h3 class="text-base font-bold tracking-tight text-foreground mb-3">依赖服务</h3>
+          <h3 class="text-base font-bold tracking-tight text-foreground mb-3">{{ t('settings.details.dependencies') }}</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <!-- 数据库 -->
             <div class="flex items-center justify-between p-3 rounded-2xl border-2 border-ac-sand">
@@ -286,9 +295,9 @@
                 <div>
                   <div class="text-sm font-bold">PostgreSQL</div>
                   <div class="text-xs text-muted-foreground">
-                    {{ systemInfo.database?.connected ? '已连接' : '未连接' }}
+                    {{ systemInfo.database?.connected ? t('settings.details.connected') : t('settings.details.disconnected') }}
                     <template v-if="systemInfo.database?.connected">
-                      · 连接 {{ systemInfo.database.in_use }}/{{ systemInfo.database.open }} 活跃
+                      · {{ t('settings.details.connectionUsage', { used: systemInfo.database.in_use, open: systemInfo.database.open }) }}
                     </template>
                   </div>
                 </div>
@@ -301,7 +310,7 @@
                 <div>
                   <div class="text-sm font-bold">qBittorrent</div>
                   <div class="text-xs text-muted-foreground">
-                    {{ systemInfo.qbittorrent?.online ? '在线' : '离线' }}
+                    {{ systemInfo.qbittorrent?.online ? t('settings.details.online') : t('settings.details.offline') }}
                     <template v-if="systemInfo.qbittorrent?.version"> · {{ systemInfo.qbittorrent.version }}</template>
                   </div>
                 </div>
@@ -309,7 +318,7 @@
             </div>
           </div>
           <div class="text-xs text-muted-foreground mt-3">
-            每 {{ Math.round(SYS_REFRESH_MS / 1000) }} 秒自动刷新 · 最后更新 {{ lastUpdated || '—' }}
+            {{ t('settings.details.autoRefresh', { seconds: Math.round(SYS_REFRESH_MS / 1000), time: lastUpdated || '—' }) }}
           </div>
         </AcCard>
       </div>
@@ -318,11 +327,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../../stores/auth'
 import { useToast } from '../../composables/useToast'
 import { get, put, post } from '../../utils/api'
 import DownloadPrefs from './DownloadPrefs.vue'
+import LocaleSwitcher from '../../components/Common/LocaleSwitcher.vue'
 import {
   SaveOutline, PersonCircleOutline,
   CheckmarkOutline, CodeSlashOutline, TimeOutline,
@@ -333,6 +344,7 @@ import { AcPageHeader, AcTabs, AcCard, AcButton, AcInput, AcSelect, AcSwitch, Ac
 import { useSkin } from '../../composables/useSkin'
 
 const { skin, setSkin, SKINS } = useSkin()
+const { t } = useI18n({ useScope: 'global' })
 
 // 各皮肤的色板预览（仅用于选择卡的"色带"展示）
 function previewColors(s) {
@@ -348,15 +360,15 @@ const authStore = useAuthStore()
 
 const activeTab = ref('download')
 
-const tabs = [
-  { key: 'download', label: '下载偏好' },
-  { key: 'appearance', label: '外观主题' },
-  { key: 'rename', label: '重命名设置' },
-  { key: 'scheduler', label: '调度器' },
-  { key: 'network', label: '网络代理' },
-  { key: 'user', label: '用户设置' },
-  { key: 'system', label: '系统信息' }
-]
+const tabs = computed(() => [
+  { key: 'download', label: t('settings.tabs.download') },
+  { key: 'appearance', label: t('settings.tabs.appearance') },
+  { key: 'rename', label: t('settings.tabs.rename') },
+  { key: 'scheduler', label: t('settings.tabs.scheduler') },
+  { key: 'network', label: t('settings.tabs.network') },
+  { key: 'user', label: t('settings.tabs.user') },
+  { key: 'system', label: t('settings.tabs.system') }
+])
 
 const saving = ref({ basic: false, user: false, scheduler: false, proxy: false })
 
@@ -414,9 +426,9 @@ async function saveSchedulerSettings() {
   saving.value.scheduler = true
   try {
     await put('/settings', { enable_scheduler: String(schedulerForm.enabled) })
-    toast.success(schedulerForm.enabled ? '后台调度已启用' : '后台调度已停用')
+    toast.success(schedulerForm.enabled ? t('settings.details.schedulerOn') : t('settings.details.schedulerOff'))
   } catch (e) {
-    toast.error(e.message || '保存调度设置失败')
+    toast.error(e.message || t('settings.details.schedulerSaveFailed'))
   } finally {
     saving.value.scheduler = false
   }
@@ -437,19 +449,19 @@ async function saveProxy() {
   saving.value.proxy = true
   try {
     await put('/settings', { http_proxy: proxyForm.http_proxy || '' })
-    toast.success('已保存并立即生效')
-  } catch (e) { toast.error(e?.message || '保存失败') }
+    toast.success(t('settings.details.proxySaved'))
+  } catch (e) { toast.error(e?.message || t('settings.details.saveFailed')) }
   finally { saving.value.proxy = false }
 }
 
 async function saveUserSettings() {
-  if (!userForm.value.oldPassword) { toast.error('请输入旧密码'); return }
-  if (!userForm.value.newPassword) { toast.error('请输入新密码'); return }
-  if (userForm.value.newPassword !== userForm.value.confirmPassword) { toast.error('两次输入的密码不一致'); return }
+  if (!userForm.value.oldPassword) { toast.error(t('settings.details.enterOldPassword')); return }
+  if (!userForm.value.newPassword) { toast.error(t('settings.details.enterNewPassword')); return }
+  if (userForm.value.newPassword !== userForm.value.confirmPassword) { toast.error(t('settings.details.passwordMismatch')); return }
   try {
     saving.value.user = true
     await put('/users/password', { old_password: userForm.value.oldPassword, new_password: userForm.value.newPassword })
-    toast.success('密码修改成功')
+    toast.success(t('settings.details.passwordChanged'))
     userForm.value.oldPassword = ''
     userForm.value.newPassword = ''
     userForm.value.confirmPassword = ''

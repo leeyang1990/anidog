@@ -1,6 +1,6 @@
 <template>
   <div>
-    <AcPageHeader :title="hasFilters ? '🔍 筛选结果' : '🔥 热门番剧'" :subtitle="hasFilters ? '多维发现番剧' : '来自 Bangumi 的实时热门趋势'" />
+    <AcPageHeader :title="hasFilters ? t('pages.library.filteredTitle') : t('pages.library.trendingTitle')" :subtitle="hasFilters ? t('pages.library.filteredSubtitle') : t('pages.library.trendingSubtitle')" />
 
     <!-- 筛选面板 -->
     <AcCard padding="md" rounded="2xl" class="mb-6">
@@ -8,23 +8,23 @@
         <!-- 搜索 -->
         <div class="flex gap-3">
           <div class="flex-1">
-            <AcInput v-model="filters.keyword" placeholder="搜索番剧名..." size="lg" @keyup-enter="discover">
+            <AcInput v-model="filters.keyword" :placeholder="t('pages.library.search')" size="lg" @keyup-enter="discover">
               <template #prefix><SearchOutline class="size-4" /></template>
             </AcInput>
           </div>
           <AcButton variant="primary" size="lg" :loading="loading" @click="discover">
-            {{ loading ? '加载中...' : '筛选' }}
+            {{ loading ? t('pages.library.loading') : t('pages.library.filter') }}
           </AcButton>
         </div>
 
         <!-- 筛选维度 -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div>
-            <label class="block text-xs text-muted-foreground mb-1 font-bold">年份</label>
+            <label class="block text-xs text-muted-foreground mb-1 font-bold">{{ t('pages.library.year') }}</label>
             <AcSelect v-model="filters.year" :options="yearOptions" />
           </div>
           <div>
-            <label class="block text-xs text-muted-foreground mb-1 font-bold">季度（可多选）</label>
+            <label class="block text-xs text-muted-foreground mb-1 font-bold">{{ t('pages.library.seasons') }}</label>
             <div class="flex flex-wrap gap-1.5">
               <button v-for="s in seasonOptions" :key="s.value" type="button"
                 class="px-2.5 py-1 rounded-full text-xs font-bold border-2 transition-colors"
@@ -39,18 +39,18 @@
             </div>
           </div>
           <div>
-            <label class="block text-xs text-muted-foreground mb-1 font-bold">排序</label>
+            <label class="block text-xs text-muted-foreground mb-1 font-bold">{{ t('pages.library.sort') }}</label>
             <AcSelect v-model="filters.sort" :options="sortOptions" />
           </div>
           <div>
-            <label class="block text-xs text-muted-foreground mb-1 font-bold">最低评分</label>
+            <label class="block text-xs text-muted-foreground mb-1 font-bold">{{ t('pages.library.minRating') }}</label>
             <AcSelect v-model="filters.min_rating" :options="ratingOptions" />
           </div>
         </div>
 
         <!-- 标签多选 -->
         <div>
-          <label class="block text-xs text-muted-foreground mb-2 font-bold">标签（点击切换）</label>
+          <label class="block text-xs text-muted-foreground mb-2 font-bold">{{ t('pages.library.tags') }}</label>
           <div class="flex flex-wrap gap-2">
             <button v-for="tag in tagOptions" :key="tag" type="button"
               class="px-3 py-1 rounded-full text-xs font-bold border-2 transition-colors"
@@ -64,8 +64,8 @@
         </div>
 
         <div class="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t-2 border-dashed border-ac-sand">
-          <button type="button" class="hover:text-foreground font-bold" @click="resetFilters">🔄 重置筛选</button>
-          <span v-if="total" class="font-num font-bold">共 {{ total }} 部</span>
+          <button type="button" class="hover:text-foreground font-bold" @click="resetFilters">{{ t('pages.library.reset') }}</button>
+          <span v-if="total" class="font-num font-bold">{{ t('pages.library.count', { count: total }) }}</span>
         </div>
       </div>
     </AcCard>
@@ -76,13 +76,13 @@
       <AnimeCard v-for="item in results" :key="item.id" :item="item"
         @click="goToDetail(item)" @subscribe="subscribeBangumi(item)" />
     </div>
-    <AcEmpty v-else title="暂无匹配结果" description="试试调整一下筛选条件 🌿" class="py-12" />
+    <AcEmpty v-else :title="t('pages.library.empty')" :description="t('pages.library.emptyDesc')" class="py-12" />
 
     <!-- 分页 -->
     <div v-if="total > pageSize" class="flex justify-center items-center gap-3 mt-6 text-sm">
-      <AcButton size="sm" variant="outline" :disabled="page <= 1" @click="changePage(page - 1)">上一页</AcButton>
-      <span class="text-muted-foreground font-num font-bold">第 {{ page }} 页 / 共 {{ totalPages }} 页</span>
-      <AcButton size="sm" variant="outline" :disabled="page >= totalPages" @click="changePage(page + 1)">下一页</AcButton>
+      <AcButton size="sm" variant="outline" :disabled="page <= 1" @click="changePage(page - 1)">{{ t('pages.library.previous') }}</AcButton>
+      <span class="text-muted-foreground font-num font-bold">{{ t('pages.library.page', { page, total: totalPages }) }}</span>
+      <AcButton size="sm" variant="outline" :disabled="page >= totalPages" @click="changePage(page + 1)">{{ t('pages.library.next') }}</AcButton>
     </div>
   </div>
 </template>
@@ -95,10 +95,12 @@ import { SearchOutline } from '@vicons/ionicons5'
 import { get, post } from '@/utils/api'
 import { AcPageHeader, AcCard, AcInput, AcButton, AcSelect, AcSpinner, AcEmpty } from '@/components/ac'
 import AnimeCard from './AnimeCard.vue'
+import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
+const { t } = useI18n({ useScope: 'global' })
 
 const pageSize = 24
 const page = ref(1)
@@ -110,25 +112,25 @@ const currentYear = new Date().getFullYear()
 const years = Array.from({ length: 30 }, (_, i) => currentYear - i)
 
 const yearOptions = computed(() => [
-  { label: '不限', value: 0 },
+  { label: t('pages.library.unlimited'), value: 0 },
   ...years.map(y => ({ label: String(y), value: y })),
 ])
 
-const sortOptions = [
-  { label: '热度', value: 'heat' },
-  { label: '排名', value: 'rank' },
-  { label: '评分', value: 'score' },
-  { label: '匹配度', value: 'match' },
-]
+const sortOptions = computed(() => [
+  { label: t('pages.library.heat'), value: 'heat' },
+  { label: t('pages.library.rank'), value: 'rank' },
+  { label: t('pages.library.score'), value: 'score' },
+  { label: t('pages.library.match'), value: 'match' },
+])
 
-const ratingOptions = [
-  { label: '不限', value: 0 },
+const ratingOptions = computed(() => [
+  { label: t('pages.library.unlimited'), value: 0 },
   { label: '6+ 及格', value: 6 },
   { label: '7+ 良好', value: 7 },
   { label: '7.5+ 推荐', value: 7.5 },
   { label: '8+ 高分', value: 8 },
   { label: '8.5+ 神作', value: 8.5 },
-]
+])
 
 const tagOptions = ['日常', '原创', '校园', '搞笑', '奇幻', '百合', '恋爱', '悬疑', '热血', '后宫', '机战', '轻改', '偶像', '治愈', '异世界']
 const seasonOptions = [
@@ -215,7 +217,7 @@ async function discover() {
       total.value = resp.total || 0
     }
   } catch (e) {
-    toast.error('加载失败')
+    toast.error(t('pages.library.loadFailed'))
     results.value = []
   } finally { loading.value = false }
 }
@@ -229,9 +231,9 @@ function changePage(p) {
 async function subscribeBangumi(item) {
   try {
     await post(`/bangumi/${item.id}/subscribe`)
-    toast.success('追番成功')
+    toast.success(t('pages.library.subscribed'))
     item.is_subscribed = true
-  } catch (e) { toast.error(e.message || '追番失败') }
+  } catch (e) { toast.error(e.message || t('pages.library.subscribeFailed')) }
 }
 
 function goToDetail(item) { router.push(`/anime-library/${item.id}`) }

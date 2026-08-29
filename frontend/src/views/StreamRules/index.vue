@@ -1,15 +1,15 @@
 <template>
   <div>
-    <AcPageHeader title="🌐 规则管理" subtitle="管理番剧源解析规则（兼容 Kazumi 格式）">
+    <AcPageHeader :title="t('pages.rules.title')" :subtitle="t('pages.rules.subtitle')">
       <template #actions>
         <div class="flex gap-2">
           <AcButton variant="outline" @click="showImportModal = true">
             <template #icon><CloudUploadOutline class="size-4" /></template>
-            导入
+            {{ t('pages.rules.import') }}
           </AcButton>
           <AcButton variant="primary" @click="openCreateModal">
             <template #icon><AddOutline class="size-4" /></template>
-            添加规则
+            {{ t('pages.rules.add') }}
           </AcButton>
         </div>
       </template>
@@ -30,105 +30,105 @@
             </div>
           </div>
           <AcTag :variant="rule.enabled ? 'leaf' : 'wood'">
-            {{ rule.enabled ? '启用' : '禁用' }}
+            {{ rule.enabled ? t('pages.rules.enabled') : t('pages.rules.disabled') }}
           </AcTag>
         </div>
         <p class="text-xs text-muted-foreground truncate mb-3 font-num">{{ rule.base_url }}</p>
         <div class="flex items-center gap-2">
-          <AcButton size="sm" variant="ghost" @click="openEditModal(rule)">编辑</AcButton>
-          <AcButton size="sm" variant="ghost" @click="testRule(rule)">测试</AcButton>
+          <AcButton size="sm" variant="ghost" @click="openEditModal(rule)">{{ t('pages.rules.edit') }}</AcButton>
+          <AcButton size="sm" variant="ghost" @click="testRule(rule)">{{ t('pages.rules.test') }}</AcButton>
           <AcButton size="sm" variant="ghost" @click="deleteRule(rule)">
-            <span class="text-ac-heart-dark">删除</span>
+            <span class="text-ac-heart-dark">{{ t('pages.rules.delete') }}</span>
           </AcButton>
         </div>
       </AcCard>
     </div>
 
-    <AcEmpty v-else title="暂无规则" description="请添加或导入规则 🌱" class="py-12" />
+    <AcEmpty v-else :title="t('pages.rules.empty')" :description="t('pages.rules.emptyDesc')" class="py-12" />
 
     <!-- 添加/编辑规则弹窗 -->
-    <AcModal v-model:show="showEditModal" :title="editingRule ? '编辑规则' : '添加规则'" max-width="640px">
+    <AcModal v-model:show="showEditModal" :title="editingRule ? t('pages.rules.editTitle') : t('pages.rules.addTitle')" max-width="640px">
       <form @submit.prevent="handleSaveRule" class="space-y-4">
         <div class="grid grid-cols-2 gap-4">
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">规则名称 *</label>
+            <label class="text-sm font-bold text-foreground">{{ t('pages.rules.name') }}</label>
             <AcInput v-model="ruleForm.name" placeholder="如 nyafun" />
           </div>
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">显示名称</label>
+            <label class="text-sm font-bold text-foreground">{{ t('pages.rules.displayName') }}</label>
             <AcInput v-model="ruleForm.display_name" placeholder="如 NYA FUN动漫" />
           </div>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">站点 URL *</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rules.siteUrl') }}</label>
           <AcInput v-model="ruleForm.base_url" placeholder="https://example.com" />
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">搜索 URL *</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rules.searchUrl') }}</label>
           <AcInput v-model="ruleForm.search_url" placeholder="https://example.com/search?q=@keyword" />
-          <p class="text-xs text-muted-foreground">@keyword 会被替换为搜索词</p>
+          <p class="text-xs text-muted-foreground">{{ t('pages.rules.keywordHint') }}</p>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">搜索列表 XPath *</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rules.searchListXpath') }}</label>
           <AcInput v-model="ruleForm.search_list_xpath" placeholder="//div[@class='search-list']" />
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">标题 XPath *</label>
+            <label class="text-sm font-bold text-foreground">{{ t('pages.rules.titleXpath') }}</label>
             <AcInput v-model="ruleForm.search_name_xpath" placeholder="//a/h3" />
           </div>
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">链接 XPath *</label>
+            <label class="text-sm font-bold text-foreground">{{ t('pages.rules.linkXpath') }}</label>
             <AcInput v-model="ruleForm.search_result_xpath" placeholder="//a" />
           </div>
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">线路 XPath</label>
+            <label class="text-sm font-bold text-foreground">{{ t('pages.rules.roadXpath') }}</label>
             <AcInput v-model="ruleForm.chapter_roads_xpath" placeholder="//ul[@class='road']" />
           </div>
           <div class="space-y-2">
-            <label class="text-sm font-bold text-foreground">集数 XPath *</label>
+            <label class="text-sm font-bold text-foreground">{{ t('pages.rules.episodeXpath') }}</label>
             <AcInput v-model="ruleForm.chapter_result_xpath" placeholder="//li/a" />
           </div>
         </div>
         <div class="flex items-center gap-6 flex-wrap">
           <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <AcCheckbox v-model="ruleForm.use_post" /> POST 搜索
+            <AcCheckbox v-model="ruleForm.use_post" /> {{ t('pages.rules.postSearch') }}
           </label>
           <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <AcCheckbox v-model="ruleForm.use_webview" /> 需要 JS 渲染
+            <AcCheckbox v-model="ruleForm.use_webview" /> {{ t('pages.rules.jsRender') }}
           </label>
           <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <AcCheckbox v-model="ruleForm.multi_sources" /> 多线路
+            <AcCheckbox v-model="ruleForm.multi_sources" /> {{ t('pages.rules.multiRoutes') }}
           </label>
         </div>
       </form>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <AcButton variant="ghost" @click="showEditModal = false">取消</AcButton>
-          <AcButton variant="primary" :loading="saving" @click="handleSaveRule">{{ saving ? '保存中...' : '保存' }}</AcButton>
+          <AcButton variant="ghost" @click="showEditModal = false">{{ t('common.cancel') }}</AcButton>
+          <AcButton variant="primary" :loading="saving" @click="handleSaveRule">{{ saving ? t('pages.rules.saving') : t('pages.rules.save') }}</AcButton>
         </div>
       </template>
     </AcModal>
 
     <!-- 导入弹窗 -->
-    <AcModal v-model:show="showImportModal" title="📥 导入规则" max-width="480px">
+    <AcModal v-model:show="showImportModal" :title="t('pages.rules.importTitle')" max-width="480px">
       <div class="space-y-4">
-        <p class="text-sm text-muted-foreground">上传 JSON 文件导入规则，兼容 Kazumi 规则格式</p>
+        <p class="text-sm text-muted-foreground">{{ t('pages.rules.importDesc') }}</p>
         <input type="file" accept=".json" ref="fileInput" @change="handleImport"
           class="block w-full text-sm font-num text-foreground file:mr-4 file:py-2 file:px-4 file:rounded-2xl file:border-0 file:bg-ac-grass file:text-white file:font-bold file:cursor-pointer hover:file:bg-ac-grass-dark" />
       </div>
     </AcModal>
 
     <!-- 测试弹窗 -->
-    <AcModal v-model:show="showTestModal" :title="`🧪 测试规则: ${testingRule?.name || ''}`" max-width="640px">
+    <AcModal v-model:show="showTestModal" :title="t('pages.rules.testTitle', { name: testingRule?.name || '' })" max-width="640px">
       <div class="space-y-4">
         <div class="flex gap-2">
           <div class="flex-1">
-            <AcInput v-model="testKeyword" placeholder="输入搜索关键词..." @keyup-enter="executeTest" />
+            <AcInput v-model="testKeyword" :placeholder="t('pages.rules.testPlaceholder')" @keyup-enter="executeTest" />
           </div>
-          <AcButton variant="primary" :loading="testLoading" @click="executeTest">测试</AcButton>
+          <AcButton variant="primary" :loading="testLoading" @click="executeTest">{{ t('pages.rules.test') }}</AcButton>
         </div>
         <div v-if="testLoading" class="flex justify-center py-6"><AcSpinner :size="32" /></div>
         <div v-else-if="testResults.length" class="space-y-2 max-h-[320px] overflow-y-auto">
@@ -137,7 +137,7 @@
             <p class="text-xs text-muted-foreground truncate font-num">{{ r.url }}</p>
           </div>
         </div>
-        <div v-else-if="testExecuted" class="text-center py-6 text-sm text-muted-foreground">无搜索结果</div>
+        <div v-else-if="testExecuted" class="text-center py-6 text-sm text-muted-foreground">{{ t('pages.rules.noResults') }}</div>
       </div>
     </AcModal>
   </div>
@@ -150,9 +150,11 @@ import { get, post, put, del } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { AcPageHeader, AcButton, AcCard, AcTag, AcEmpty, AcSpinner, AcModal, AcInput, AcCheckbox } from '@/components/ac'
+import { useI18n } from 'vue-i18n'
 
 const toast = useToast()
 const { confirm } = useConfirm()
+const { t } = useI18n({ useScope: 'global' })
 const loading = ref(false)
 const saving = ref(false)
 const rules = ref([])
@@ -185,7 +187,7 @@ async function fetchRules() {
   try {
     const data = await get('/stream-rules')
     rules.value = Array.isArray(data) ? data : (data.items || [])
-  } catch { toast.error('获取规则失败') }
+  } catch { toast.error(t('pages.rules.loadFailed')) }
   finally { loading.value = false }
 }
 
@@ -206,25 +208,25 @@ async function handleSaveRule() {
   try {
     if (editingRule.value) {
       await put(`/stream-rules/${editingRule.value.id}`, ruleForm.value)
-      toast.success('规则已更新')
+      toast.success(t('pages.rules.updated'))
     } else {
       await post('/stream-rules', ruleForm.value)
-      toast.success('规则已创建')
+      toast.success(t('pages.rules.created'))
     }
     showEditModal.value = false
     await fetchRules()
-  } catch (e) { toast.error(e.message || '保存失败') }
+  } catch (e) { toast.error(e.message || t('pages.rules.saveFailed')) }
   finally { saving.value = false }
 }
 
 async function deleteRule(rule) {
-  const ok = await confirm({ title: '删除规则', content: `确定删除规则 "${rule.name}"？`, variant: 'danger' })
+  const ok = await confirm({ title: t('pages.rules.deleteTitle'), content: t('pages.rules.deleteConfirm', { name: rule.name }), variant: 'danger' })
   if (!ok) return
   try {
     await del(`/stream-rules/${rule.id}`)
-    toast.success('已删除')
+    toast.success(t('pages.rules.deleted'))
     await fetchRules()
-  } catch { toast.error('删除失败') }
+  } catch { toast.error(t('pages.rules.deleteFailed')) }
 }
 
 async function handleImport(e) {
@@ -241,11 +243,11 @@ async function handleImport(e) {
     })
     const respText = await resp.text()
     let data
-    try { data = JSON.parse(respText) } catch { toast.error('响应解析失败'); return }
-    toast.success(`导入 ${data.imported} 条规则`)
+    try { data = JSON.parse(respText) } catch { toast.error(t('pages.rules.parseFailed')); return }
+    toast.success(t('pages.rules.imported', { count: data.imported }))
     showImportModal.value = false
     await fetchRules()
-  } catch { toast.error('导入失败') }
+  } catch { toast.error(t('pages.rules.importFailed')) }
 }
 
 function testRule(rule) {
@@ -264,7 +266,7 @@ async function executeTest() {
     const data = await post(`/stream-rules/${testingRule.value.id}/test`, { keyword: testKeyword.value })
     testResults.value = data.results || []
     testExecuted.value = true
-  } catch (e) { toast.error('测试失败: ' + (e.message || '')) }
+  } catch (e) { toast.error(t('pages.rules.testFailed', { message: e.message || '' })) }
   finally { testLoading.value = false }
 }
 

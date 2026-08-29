@@ -38,7 +38,7 @@
 
       <!-- 结果 -->
       <div v-if="!candidates.length && !loading" class="py-10 text-center text-sm text-muted-foreground">
-        {{ searched ? '未找到结果，换个关键词？' : '点"聚合搜索"开始 🌱' }}
+        {{ searched ? '未找到结果，换个关键词？' : '点"聚合搜索"开始' }}
       </div>
 
       <div v-else-if="loading" class="py-10 flex justify-center"><AcSpinner :size="36" /></div>

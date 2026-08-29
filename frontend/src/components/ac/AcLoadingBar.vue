@@ -14,6 +14,6 @@ const state = _useLoadingBarState()
 
 <style scoped>
 .ac-loading-bar {
-  box-shadow: 0 0 8px rgba(124, 179, 66, 0.5);
+  box-shadow: 0 0 8px hsl(var(--primary) / 0.45);
 }
 </style>

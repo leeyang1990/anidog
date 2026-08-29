@@ -15,8 +15,8 @@ const STORAGE_KEY = 'skin'
 const DEFAULT_SKIN = 'ac-grove'
 
 export const SKINS = [
-  { value: 'ac-grove', label: '🌿 动森（默认）', description: '米白沙地 + 草绿 + 暖橙，圆润饱满' },
-  { value: 'classic', label: '🌆 常规', description: '中性灰 + 蓝紫，商务克制' },
+  { value: 'ac-grove', labelKey: 'settings.skins.grove', descriptionKey: 'settings.skins.groveDescription' },
+  { value: 'classic', labelKey: 'settings.skins.classic', descriptionKey: 'settings.skins.classicDescription' },
 ]
 
 // 模块级单例 —— 全 app 共享同一个 ref，任何组件读到的都是同一个值

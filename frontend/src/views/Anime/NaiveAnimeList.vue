@@ -1,19 +1,19 @@
 <template>
   <div>
-    <AcPageHeader title="🌸 我的追番" subtitle="管理您的追番收藏">
+    <AcPageHeader :title="t('pages.animeList.title')" :subtitle="t('pages.animeList.subtitle')">
       <template #actions>
         <div v-if="!isMobile" class="flex gap-1 p-1 rounded-2xl bg-ac-sand">
           <button type="button"
             class="px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1"
             :class="viewMode === 'grid' ? 'bg-card text-ac-grass-dark shadow-sm' : 'text-muted-foreground hover:text-foreground'"
             @click="viewMode = 'grid'">
-            <GridOutline class="size-3.5" /> 网格
+            <GridOutline class="size-3.5" /> {{ t('pages.animeList.grid') }}
           </button>
           <button type="button"
             class="px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1"
             :class="viewMode === 'list' ? 'bg-card text-ac-grass-dark shadow-sm' : 'text-muted-foreground hover:text-foreground'"
             @click="viewMode = 'list'">
-            <ListOutline class="size-3.5" /> 列表
+            <ListOutline class="size-3.5" /> {{ t('pages.animeList.list') }}
           </button>
         </div>
       </template>
@@ -22,19 +22,19 @@
     <AcCard padding="md" rounded="2xl" class="mb-6">
       <div class="flex items-center gap-2 flex-wrap">
         <div class="flex-1 min-w-[200px]">
-          <AcInput v-model="searchQuery" :placeholder="isMobile ? '搜索...' : '搜索番剧...'" size="md" clearable @keyup-enter="fetchAnimeList">
+          <AcInput v-model="searchQuery" :placeholder="isMobile ? t('pages.animeList.searchShort') : t('pages.animeList.search')" size="md" clearable @keyup-enter="fetchAnimeList">
             <template #prefix><SearchOutline class="size-4" /></template>
           </AcInput>
         </div>
         <div class="w-32">
-          <AcSelect v-model="statusFilter" :options="statusOptions" placeholder="状态" />
+          <AcSelect v-model="statusFilter" :options="statusOptions" :placeholder="t('pages.animeList.status')" />
         </div>
         <div class="w-40">
-          <AcSelect v-model="sortBy" :options="sortOptions" placeholder="排序" />
+          <AcSelect v-model="sortBy" :options="sortOptions" :placeholder="t('pages.animeList.sort')" />
         </div>
         <AcButton variant="primary" :loading="loading" @click="fetchAnimeList">
           <template #icon><SearchOutline class="size-4" /></template>
-          <span v-if="!isMobile">搜索</span>
+          <span v-if="!isMobile">{{ t('common.search') }}</span>
         </AcButton>
       </div>
     </AcCard>
@@ -42,9 +42,9 @@
     <div v-if="loading" class="flex justify-center py-12"><AcSpinner :size="48" /></div>
 
     <template v-else>
-      <AcEmpty v-if="animeList.length === 0" title="暂无番剧" description="还没有追番哦~">
+      <AcEmpty v-if="animeList.length === 0" :title="t('pages.animeList.empty')" :description="t('pages.animeList.emptyDesc')">
         <template #actions>
-          <AcButton variant="primary" @click="$router.push('/search')">搜索添加</AcButton>
+          <AcButton variant="primary" @click="$router.push('/search')">{{ t('pages.animeList.add') }}</AcButton>
         </template>
       </AcEmpty>
 
@@ -59,9 +59,9 @@
     </template>
 
     <div v-if="totalAnime > pagination.pageSize" class="flex justify-center items-center gap-3 mt-6 text-sm">
-      <AcButton size="sm" variant="outline" :disabled="pagination.page <= 1" @click="handlePageChange(pagination.page - 1)">上一页</AcButton>
-      <span class="text-muted-foreground font-num font-bold">第 {{ pagination.page }} 页 / 共 {{ totalPages }} 页</span>
-      <AcButton size="sm" variant="outline" :disabled="pagination.page >= totalPages" @click="handlePageChange(pagination.page + 1)">下一页</AcButton>
+      <AcButton size="sm" variant="outline" :disabled="pagination.page <= 1" @click="handlePageChange(pagination.page - 1)">{{ t('pages.animeList.previous') }}</AcButton>
+      <span class="text-muted-foreground font-num font-bold">{{ t('pages.animeList.page', { page: pagination.page, total: totalPages }) }}</span>
+      <AcButton size="sm" variant="outline" :disabled="pagination.page >= totalPages" @click="handlePageChange(pagination.page + 1)">{{ t('pages.animeList.next') }}</AcButton>
     </div>
   </div>
 </template>
@@ -75,9 +75,11 @@ import { get, post, del } from '@/utils/api'
 import { useResponsive } from '@/composables/useResponsive'
 import { AcPageHeader, AcCard, AcInput, AcSelect, AcButton, AcSpinner, AcEmpty } from '@/components/ac'
 import NaiveAnimeCard from '@/components/Anime/NaiveAnimeCard.vue'
+import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
 const toast = useToast()
+const { t } = useI18n({ useScope: 'global' })
 const { isMobile, isTablet } = useResponsive()
 
 const loading = ref(false)
@@ -90,20 +92,20 @@ const totalAnime = ref(0)
 
 const pagination = ref({ page: 1, pageSize: 20 })
 
-const statusOptions = [
-  { label: '全部', value: '' },
-  { label: '连载中', value: 'ongoing' },
-  { label: '已完结', value: 'completed' },
-  { label: '即将开播', value: 'upcoming' },
-  { label: '已弃番', value: 'dropped' }
-]
+const statusOptions = computed(() => [
+  { label: t('pages.animeList.all'), value: '' },
+  { label: t('pages.animeList.ongoing'), value: 'ongoing' },
+  { label: t('pages.animeList.completed'), value: 'completed' },
+  { label: t('pages.animeList.upcoming'), value: 'upcoming' },
+  { label: t('pages.animeList.dropped'), value: 'dropped' }
+])
 
-const sortOptions = [
-  { label: '最近更新', value: 'updated_at_desc' },
-  { label: '首字母 A-Z', value: 'title_asc' },
-  { label: '首字母 Z-A', value: 'title_desc' },
-  { label: '评分最高', value: 'rating_desc' }
-]
+const sortOptions = computed(() => [
+  { label: t('pages.animeList.recent'), value: 'updated_at_desc' },
+  { label: t('pages.animeList.az'), value: 'title_asc' },
+  { label: t('pages.animeList.za'), value: 'title_desc' },
+  { label: t('pages.animeList.rating'), value: 'rating_desc' }
+])
 
 const gridClasses = computed(() => {
   if (isMobile.value) return 'grid grid-cols-2 gap-3'
@@ -126,7 +128,7 @@ async function fetchAnimeList() {
     animeList.value = data.items || []
     totalAnime.value = data.total || 0
   } catch {
-    toast.error('获取番剧列表失败')
+    toast.error(t('pages.animeList.fetchFailed'))
     animeList.value = []
     totalAnime.value = 0
   } finally { loading.value = false }
@@ -144,8 +146,8 @@ async function handleDelete(anime) {
     await del(`/anime/${anime.id}`)
     animeList.value = animeList.value.filter(a => a.id !== anime.id)
     totalAnime.value--
-    toast.success(`已删除《${anime.title}》`)
-  } catch { toast.error('删除失败') }
+    toast.success(t('pages.animeList.deleted', { title: anime.title }))
+  } catch { toast.error(t('pages.animeList.deleteFailed')) }
 }
 
 watch([statusFilter], () => {

@@ -110,7 +110,7 @@
 
       <!-- 空状态 -->
       <div v-if="!hasAnyDownload && !diagnosis" class="text-center py-8 text-sm text-muted-foreground space-y-3">
-        <div>等待下次检查... 🌱</div>
+        <div>等待下次检查...</div>
         <div class="flex gap-2 justify-center">
           <AcButton size="sm" variant="primary" @click="$emit('manual-search', episode)">🔍 立即手动搜索</AcButton>
           <AcButton size="sm" variant="outline" @click="$emit('refresh')">手动刷新</AcButton>

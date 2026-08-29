@@ -1,10 +1,10 @@
 <template>
   <div>
-    <AcPageHeader title="📡 RSS订阅管理" subtitle="管理您的番剧RSS订阅源，自动追踪更新">
+    <AcPageHeader :title="t('pages.rss.title')" :subtitle="t('pages.rss.subtitle')">
       <template #actions>
         <AcButton variant="primary" @click="showAddModal = true">
           <template #icon><AddOutline class="size-4" /></template>
-          添加订阅源
+          {{ t('pages.rss.add') }}
         </AcButton>
       </template>
     </AcPageHeader>
@@ -12,15 +12,15 @@
     <!-- Stat cards -->
     <div class="grid grid-cols-3 gap-4 mb-6">
       <AcCard hoverable padding="md" rounded="2xl">
-        <div class="text-sm text-muted-foreground font-bold">订阅源总数</div>
+        <div class="text-sm text-muted-foreground font-bold">{{ t('pages.rss.total') }}</div>
         <div class="mt-1 text-2xl font-bold font-num text-foreground">{{ rssFeeds.length }}</div>
       </AcCard>
       <AcCard hoverable padding="md" rounded="2xl">
-        <div class="text-sm text-muted-foreground font-bold">启用中</div>
+        <div class="text-sm text-muted-foreground font-bold">{{ t('pages.rss.active') }}</div>
         <div class="mt-1 text-2xl font-bold font-num text-ac-leaf-dark">{{ rssFeeds.filter(f => f.enabled).length }}</div>
       </AcCard>
       <AcCard hoverable padding="md" rounded="2xl">
-        <div class="text-sm text-muted-foreground font-bold">已禁用</div>
+        <div class="text-sm text-muted-foreground font-bold">{{ t('pages.rss.inactive') }}</div>
         <div class="mt-1 text-2xl font-bold font-num text-muted-foreground">{{ rssFeeds.filter(f => !f.enabled).length }}</div>
       </AcCard>
     </div>
@@ -32,18 +32,18 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="border-b-2 border-dashed border-ac-sand bg-ac-sand/30 text-left text-xs">
-              <th class="px-4 py-3 font-bold text-muted-foreground">名称</th>
-              <th class="px-4 py-3 font-bold text-muted-foreground">RSS地址</th>
-              <th class="px-4 py-3 font-bold text-muted-foreground w-24">状态</th>
-              <th class="px-4 py-3 font-bold text-muted-foreground w-24">解析器</th>
-              <th class="px-4 py-3 font-bold text-muted-foreground w-32">过滤规则</th>
-              <th class="px-4 py-3 font-bold text-muted-foreground w-40">最后更新</th>
-              <th class="px-4 py-3 font-bold text-muted-foreground w-44">操作</th>
+              <th class="px-4 py-3 font-bold text-muted-foreground">{{ t('pages.rss.name') }}</th>
+              <th class="px-4 py-3 font-bold text-muted-foreground">{{ t('pages.rss.address') }}</th>
+              <th class="px-4 py-3 font-bold text-muted-foreground w-24">{{ t('pages.rss.status') }}</th>
+              <th class="px-4 py-3 font-bold text-muted-foreground w-24">{{ t('pages.rss.parser') }}</th>
+              <th class="px-4 py-3 font-bold text-muted-foreground w-32">{{ t('pages.rss.filters') }}</th>
+              <th class="px-4 py-3 font-bold text-muted-foreground w-40">{{ t('pages.rss.lastUpdate') }}</th>
+              <th class="px-4 py-3 font-bold text-muted-foreground w-44">{{ t('pages.rss.actions') }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="rssFeeds.length === 0">
-              <td colspan="7" class="px-4 py-8 text-center text-muted-foreground">暂无RSS订阅源</td>
+              <td colspan="7" class="px-4 py-8 text-center text-muted-foreground">{{ t('pages.rss.empty') }}</td>
             </tr>
             <tr
               v-for="feed in rssFeeds" :key="feed.id"
@@ -52,22 +52,22 @@
               <td class="px-4 py-3 font-bold">{{ feed.name }}</td>
               <td class="px-4 py-3 text-muted-foreground max-w-[220px] truncate font-num text-xs" :title="feed.url">{{ feed.url }}</td>
               <td class="px-4 py-3">
-                <AcTag :variant="feed.enabled ? 'leaf' : 'wood'">{{ feed.enabled ? '启用' : '禁用' }}</AcTag>
+                <AcTag :variant="feed.enabled ? 'leaf' : 'wood'">{{ feed.enabled ? t('pages.rss.enabled') : t('pages.rss.disabled') }}</AcTag>
               </td>
               <td class="px-4 py-3">
                 <AcTag variant="sky">{{ parserLabels[feed.parser] || feed.parser || 'Mikan' }}</AcTag>
               </td>
               <td class="px-4 py-3 text-muted-foreground text-xs">
-                <span v-if="feed.filter_rules && feed.filter_rules.length">{{ feed.filter_rules.length }} 条规则</span>
-                <span v-else>无规则</span>
+                <span v-if="feed.filter_rules && feed.filter_rules.length">{{ t('pages.rss.ruleCount', { count: feed.filter_rules.length }) }}</span>
+                <span v-else>{{ t('pages.rss.noRules') }}</span>
               </td>
-              <td class="px-4 py-3 text-muted-foreground text-xs font-num">{{ feed.last_check ? formatDate(feed.last_check) : '从未更新' }}</td>
+              <td class="px-4 py-3 text-muted-foreground text-xs font-num">{{ feed.last_check ? formatDate(feed.last_check) : t('pages.rss.never') }}</td>
               <td class="px-4 py-3">
                 <div class="flex gap-2">
-                  <button class="text-xs text-ac-grass-dark hover:underline font-bold" @click="viewItems(feed)">查看</button>
-                  <button class="text-xs text-ac-sky-dark hover:underline font-bold" @click="refreshFeed(feed)">刷新</button>
-                  <button class="text-xs text-ac-sun-dark hover:underline font-bold" @click="editFeed(feed)">编辑</button>
-                  <button class="text-xs text-ac-heart-dark hover:underline font-bold" @click="deleteFeed(feed)">删除</button>
+                  <button class="text-xs text-ac-grass-dark hover:underline font-bold" @click="viewItems(feed)">{{ t('pages.rss.view') }}</button>
+                  <button class="text-xs text-ac-sky-dark hover:underline font-bold" @click="refreshFeed(feed)">{{ t('pages.rss.refresh') }}</button>
+                  <button class="text-xs text-ac-sun-dark hover:underline font-bold" @click="editFeed(feed)">{{ t('pages.rss.edit') }}</button>
+                  <button class="text-xs text-ac-heart-dark hover:underline font-bold" @click="deleteFeed(feed)">{{ t('pages.rss.delete') }}</button>
                 </div>
               </td>
             </tr>
@@ -81,31 +81,31 @@
       <template #header>
         <div class="flex items-center gap-2">
           <LogoRss class="size-5 text-ac-sun-dark" />
-          <span class="text-lg font-bold">添加RSS订阅源</span>
+          <span class="text-lg font-bold">{{ t('pages.rss.addTitle') }}</span>
         </div>
       </template>
       <div class="space-y-4">
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">订阅源名称</label>
-          <AcInput v-model="formValue.name" placeholder="例如：Mikanani" />
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rss.feedName') }}</label>
+          <AcInput v-model="formValue.name" :placeholder="t('pages.rss.feedNamePlaceholder')" />
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">RSS地址</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rss.address') }}</label>
           <AcInput v-model="formValue.url" placeholder="https://example.com/rss.xml" />
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">启用状态</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rss.enableStatus') }}</label>
           <div class="flex items-center gap-3">
             <AcSwitch v-model="formValue.enabled" />
-            <span class="text-sm text-muted-foreground">{{ formValue.enabled ? '启用' : '禁用' }}</span>
+            <span class="text-sm text-muted-foreground">{{ formValue.enabled ? t('pages.rss.enabled') : t('pages.rss.disabled') }}</span>
           </div>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">解析器类型</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rss.parserType') }}</label>
           <AcSelect v-model="formValue.parser" :options="parserOptions" />
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">过滤规则</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rss.filterRules') }}</label>
           <div class="flex flex-wrap gap-1.5 p-2 rounded-2xl border-2 border-ac-sand bg-card min-h-11">
             <span v-for="(rule, index) in formValue.filter_rules" :key="index"
               class="inline-flex items-center gap-1 rounded-full bg-ac-sand px-2.5 py-1 text-xs font-bold text-ac-wood-dark">
@@ -113,14 +113,14 @@
               <button class="hover:text-ac-heart-dark" @click="formValue.filter_rules.splice(index, 1)">×</button>
             </span>
             <input class="flex-1 min-w-[120px] outline-none bg-transparent text-xs px-2 py-1"
-              placeholder="输入后回车添加" @keydown.enter.prevent="addFilterRule($event)" />
+              :placeholder="t('pages.rss.filterPlaceholder')" @keydown.enter.prevent="addFilterRule($event)" />
           </div>
         </div>
         <div class="space-y-2">
-          <label class="text-sm font-bold text-foreground">测试连接</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rss.testConnection') }}</label>
           <div class="flex items-center gap-3">
             <AcButton size="sm" variant="outline" :loading="testing" @click="testRSSFeed">
-              {{ testing ? '测试中...' : '测试RSS源' }}
+              {{ testing ? t('pages.rss.testing') : t('pages.rss.testFeed') }}
             </AcButton>
             <span v-if="testResult" class="text-sm font-bold"
               :class="testResult.success ? 'text-ac-leaf-dark' : 'text-ac-heart-dark'">
@@ -131,8 +131,8 @@
       </div>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <AcButton variant="ghost" @click="showAddModal = false">取消</AcButton>
-          <AcButton variant="primary" @click="handleSubmit">确认添加</AcButton>
+          <AcButton variant="ghost" @click="showAddModal = false">{{ t('common.cancel') }}</AcButton>
+          <AcButton variant="primary" @click="handleSubmit">{{ t('pages.rss.confirmAdd') }}</AcButton>
         </div>
       </template>
     </AcModal>
@@ -142,7 +142,7 @@
       <template #header>
         <div class="flex items-center gap-2">
           <ListOutline class="size-5 text-ac-grass-dark" />
-          <span class="text-lg font-bold">RSS项目 - {{ currentFeed?.name }}</span>
+          <span class="text-lg font-bold">{{ t('pages.rss.itemsTitle', { name: currentFeed?.name || '' }) }}</span>
         </div>
       </template>
       <div v-if="loading" class="flex justify-center py-12"><AcSpinner :size="48" /></div>
@@ -150,28 +150,30 @@
         <div v-for="item in rssItems" :key="item.guid"
           class="flex items-center gap-3 p-3 rounded-2xl hover:bg-ac-sand/30 transition-colors">
           <AcTag :variant="item.downloaded ? 'leaf' : 'wood'">
-            {{ item.downloaded ? '已下载' : '未下载' }}
+            {{ item.downloaded ? t('pages.rss.downloaded') : t('pages.rss.notDownloaded') }}
           </AcTag>
           <div class="flex-1 min-w-0">
             <div class="text-sm font-bold truncate">{{ item.title }}</div>
-            <div class="text-xs text-muted-foreground mt-0.5 font-num">发布时间：{{ formatDate(item.publish_date) }}</div>
+            <div class="text-xs text-muted-foreground mt-0.5 font-num">{{ t('pages.rss.publishedAt', { time: formatDate(item.publish_date) }) }}</div>
           </div>
-          <AcButton v-if="!item.downloaded" size="sm" variant="primary" @click="downloadItem(item)">下载</AcButton>
+          <AcButton v-if="!item.downloaded" size="sm" variant="primary" @click="downloadItem(item)">{{ t('pages.rss.download') }}</AcButton>
         </div>
-        <div v-if="rssItems.length === 0" class="py-8 text-center text-sm text-muted-foreground">暂无RSS项目</div>
+        <div v-if="rssItems.length === 0" class="py-8 text-center text-sm text-muted-foreground">{{ t('pages.rss.noItems') }}</div>
       </div>
     </AcModal>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { AddOutline, LogoRss, ListOutline } from '@vicons/ionicons5'
 import { get, post, del } from '@/utils/api'
 import { AcPageHeader, AcButton, AcCard, AcTag, AcSpinner, AcModal, AcInput, AcSelect, AcSwitch } from '@/components/ac'
+import { useI18n } from 'vue-i18n'
 
 const toast = useToast()
+const { t, locale } = useI18n({ useScope: 'global' })
 
 const loading = ref(false)
 const testing = ref(false)
@@ -184,13 +186,13 @@ const currentFeed = ref(null)
 
 const formValue = reactive({ name: '', url: '', enabled: true, parser: 'mikan', filter_rules: [] })
 
-const parserOptions = [
+const parserOptions = computed(() => [
   { label: 'Mikan', value: 'mikan' },
   { label: 'TMDB', value: 'tmdb' },
-  { label: '原始', value: 'raw' }
-]
+  { label: t('pages.rss.raw'), value: 'raw' }
+])
 
-const parserLabels = { mikan: 'Mikan', tmdb: 'TMDB', raw: '原始' }
+const parserLabels = computed(() => ({ mikan: 'Mikan', tmdb: 'TMDB', raw: t('pages.rss.raw') }))
 
 function addFilterRule(event) {
   const value = event.target.value.trim()
@@ -205,31 +207,31 @@ async function fetchRSSFeeds() {
   try {
     const data = await get('/rss')
     rssFeeds.value = data
-  } catch (error) { toast.error(error.message || '获取RSS源失败') }
+  } catch (error) { toast.error(error.message || t('pages.rss.loadFailed')) }
   finally { loading.value = false }
 }
 
 async function handleSubmit() {
-  if (!formValue.name || formValue.name.length < 2) { toast.warning('请输入订阅源名称（至少2个字符）'); return }
-  if (!formValue.url || !/^https?:\/\//.test(formValue.url)) { toast.warning('请输入有效的RSS地址'); return }
+  if (!formValue.name || formValue.name.length < 2) { toast.warning(t('pages.rss.invalidName')); return }
+  if (!formValue.url || !/^https?:\/\//.test(formValue.url)) { toast.warning(t('pages.rss.invalidUrl')); return }
   try {
     await post('/rss', formValue)
-    toast.success('添加RSS源成功')
+    toast.success(t('pages.rss.added'))
     showAddModal.value = false
     resetForm()
     await fetchRSSFeeds()
-  } catch (error) { toast.error(error.message || '添加RSS源失败') }
+  } catch (error) { toast.error(error.message || t('pages.rss.addFailed')) }
 }
 
 async function testRSSFeed() {
-  if (!formValue.url) { toast.warning('请先输入RSS地址'); return }
+  if (!formValue.url) { toast.warning(t('pages.rss.enterUrl')); return }
   testing.value = true
   testResult.value = null
   try {
     const data = await post('/rss/test', { url: formValue.url })
-    testResult.value = { success: true, message: `测试成功，获取到 ${data.count} 个项目` }
+    testResult.value = { success: true, message: t('pages.rss.testSuccess', { count: data.count }) }
   } catch (error) {
-    testResult.value = { success: false, message: '测试失败：' + (error.message || '未知错误') }
+    testResult.value = { success: false, message: t('pages.rss.testFailed', { message: error.message || t('pages.rss.unknownError') }) }
   } finally { testing.value = false }
 }
 
@@ -240,34 +242,34 @@ async function viewItems(feed) {
     const data = await get(`/rss/${feed.id}/items`)
     rssItems.value = data
     showItemsModal.value = true
-  } catch (error) { toast.error(error.message || '获取RSS项目失败') }
+  } catch (error) { toast.error(error.message || t('pages.rss.itemsFailed')) }
   finally { loading.value = false }
 }
 
 async function refreshFeed(feed) {
   try {
     await post(`/rss/${feed.id}/refresh`)
-    toast.success(`已触发刷新，稍后将出现在条目列表`)
+    toast.success(t('pages.rss.refreshTriggered'))
     setTimeout(fetchRSSFeeds, 30000)
-  } catch (error) { toast.error(error.message || '刷新RSS源失败') }
+  } catch (error) { toast.error(error.message || t('pages.rss.refreshFailed')) }
 }
 
-function editFeed() { toast.info('编辑功能待实现') }
+function editFeed() { toast.info(t('pages.rss.editPending')) }
 
 async function deleteFeed(feed) {
   try {
     await del(`/rss/${feed.id}`)
-    toast.success('删除RSS源成功')
+    toast.success(t('pages.rss.deleted'))
     await fetchRSSFeeds()
-  } catch (error) { toast.error(error.message || '删除RSS源失败') }
+  } catch (error) { toast.error(error.message || t('pages.rss.deleteFailed')) }
 }
 
 async function downloadItem(item) {
   try {
     await post('/downloads', { magnet_link: item.link, title: item.title })
-    toast.success('已添加到下载队列')
+    toast.success(t('pages.rss.queued'))
     item.downloaded = true
-  } catch (error) { toast.error(error.message || '添加下载任务失败') }
+  } catch (error) { toast.error(error.message || t('pages.rss.queueFailed')) }
 }
 
 function resetForm() {
@@ -281,7 +283,7 @@ function resetForm() {
 
 function formatDate(dateString) {
   if (!dateString) return ''
-  return new Date(dateString).toLocaleString('zh-CN')
+  return new Date(dateString).toLocaleString(locale.value)
 }
 
 onMounted(fetchRSSFeeds)

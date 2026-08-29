@@ -17,7 +17,7 @@
             type="button"
             class="absolute top-3 right-3 z-10 size-9 rounded-full bg-ac-heart text-white flex items-center justify-center font-bold text-lg shadow-md hover:bg-ac-heart-dark transition-colors"
             @click="close"
-            aria-label="关闭"
+            :aria-label="t('common.close')"
           >×</button>
           <div v-if="title || $slots.header" class="px-6 pt-6 pb-3 border-b-2 border-dashed border-ac-sand">
             <slot name="header">
@@ -40,6 +40,7 @@
 <script setup>
 import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useFocusTrap } from '../../composables/useFocusTrap'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -51,6 +52,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:show', 'close'])
+const { t } = useI18n({ useScope: 'global' })
 
 const modalEl = ref(null)
 let prevOverflow = ''

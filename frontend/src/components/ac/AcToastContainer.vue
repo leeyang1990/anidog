@@ -13,7 +13,7 @@
             <svg v-else-if="t.type === 'error'" viewBox="0 0 24 24" class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6l-12 12" /></svg>
             <svg v-else-if="t.type === 'warning'" viewBox="0 0 24 24" class="w-4 h-4 text-white" fill="currentColor"><path d="M12 2 L22 20 H2 Z" /><circle cx="12" cy="16.5" r="1.2" fill="white" /><rect x="11" y="9" width="2" height="5" fill="white" /></svg>
             <svg v-else-if="t.type === 'info'" viewBox="0 0 24 24" class="w-4 h-4 text-white" fill="currentColor"><circle cx="12" cy="12" r="10" /><rect x="11" y="10" width="2" height="7" fill="white" /><circle cx="12" cy="7.5" r="1.2" fill="white" /></svg>
-            <AcSpinner v-else-if="t.type === 'loading'" :size="16" color="#7CB342" />
+            <AcSpinner v-else-if="t.type === 'loading'" :size="16" />
           </span>
           <span class="text-sm flex-1 leading-snug break-words">{{ t.message }}</span>
           <button

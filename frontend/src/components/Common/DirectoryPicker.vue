@@ -15,7 +15,7 @@
     <div v-if="open" class="mt-2 rounded-2xl border-2 border-ac-sand bg-card shadow-lg overflow-hidden">
       <!-- 顶栏：当前浏览路径 -->
       <div class="flex items-center gap-2 px-3 py-2 border-b-2 border-dashed border-ac-sand bg-ac-sand/30 text-xs">
-        <span class="text-muted-foreground font-bold">浏览:</span>
+        <span class="text-muted-foreground font-bold">{{ t('common.browse') }}</span>
         <span class="font-num flex-1 truncate text-foreground">/{{ currentPath || '' }}</span>
       </div>
 
@@ -36,12 +36,12 @@
             <FolderOutline class="size-4 text-ac-sun-dark" />
             <span class="truncate">{{ d.name }}</span>
           </button>
-          <div v-if="!directories.length" class="py-4 text-center text-xs text-muted-foreground">空目录</div>
+          <div v-if="!directories.length" class="py-4 text-center text-xs text-muted-foreground">{{ t('common.emptyDirectory') }}</div>
         </template>
       </div>
 
       <div v-if="pathFallback" class="px-3 py-2 border-t-2 border-dashed border-ac-sand bg-ac-sun/10 text-xs text-ac-wood-dark">
-        已保存的目录不存在，当前已回到下载根目录
+        {{ t('common.savedDirectoryMissing') }}
       </div>
     </div>
   </div>
@@ -53,12 +53,14 @@ import { FolderOutline, ChevronDownOutline, ArrowUpOutline } from '@vicons/ionic
 import { post } from '@/utils/api'
 import { useToast } from '../../composables/useToast'
 import { AcSpinner } from '../ac'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
 })
 const emit = defineEmits(['update:modelValue'])
 const toast = useToast()
+const { t } = useI18n({ useScope: 'global' })
 
 const containerRef = ref(null)
 const open = ref(false)
@@ -98,7 +100,7 @@ async function fetchDir(path, preserveFallback = false) {
       fetchDir('', true)
       return
     }
-    toast.error(e.message || '读取目录失败')
+    toast.error(e.message || t('common.readDirectoryFailed'))
     directories.value = []
   } finally {
     loading.value = false

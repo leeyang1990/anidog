@@ -9,7 +9,7 @@
       @click="toggle"
     >
       <span class="truncate text-left flex-1" :class="!selectedLabel ? 'text-muted-foreground' : ''">
-        {{ selectedLabel || placeholder }}
+        {{ selectedLabel || resolvedPlaceholder }}
       </span>
       <svg viewBox="0 0 24 24" class="w-4 h-4 transition-transform shrink-0" :class="{ 'rotate-180': open }" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
         <path d="M6 9l6 6 6-6" />
@@ -37,7 +37,7 @@
               <path d="M5 13l4 4L19 7" />
             </svg>
           </button>
-          <div v-if="!options.length" class="px-3 py-4 text-center text-xs text-muted-foreground">无选项</div>
+          <div v-if="!options.length" class="px-3 py-4 text-center text-xs text-muted-foreground">{{ t('common.noOptions') }}</div>
         </div>
       </transition>
     </Teleport>
@@ -47,23 +47,26 @@
 <script setup>
 import { ref, computed, nextTick } from 'vue'
 import { useClickOutside } from '../../composables/useClickOutside'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps({
   modelValue: { default: undefined },
   options: { type: Array, default: () => [] }, // [{label,value,disabled?}]
-  placeholder: { type: String, default: '请选择' },
+  placeholder: { type: String, default: '' },
   size: { type: String, default: 'md' },
   disabled: { type: Boolean, default: false },
   block: { type: Boolean, default: true },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
+const { t } = useI18n({ useScope: 'global' })
 
 const rootEl = ref(null)
 const triggerEl = ref(null)
 const menuEl = ref(null)
 const open = ref(false)
 const menuStyle = ref({})
+const resolvedPlaceholder = computed(() => props.placeholder || t('common.select'))
 
 useClickOutside(rootEl, () => { open.value = false })
 

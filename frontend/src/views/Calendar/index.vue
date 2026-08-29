@@ -1,10 +1,10 @@
 <template>
   <div>
-    <AcPageHeader title="📅 放送日历" subtitle="查看当季番剧放送时间表">
+    <AcPageHeader :title="t('pages.calendar.title')" :subtitle="t('pages.calendar.subtitle')">
       <template #actions>
         <AcButton variant="outline" :loading="refreshing" @click="refreshCalendar">
           <template #icon><RefreshOutline class="size-4" /></template>
-          {{ refreshing ? '刷新中...' : '刷新' }}
+          {{ refreshing ? t('pages.calendar.refreshing') : t('pages.calendar.refresh') }}
         </AcButton>
       </template>
     </AcPageHeader>
@@ -21,9 +21,9 @@
             ? 'bg-ac-grass text-white border-ac-grass-dark shadow-sm'
             : 'bg-card border-ac-sand text-muted-foreground hover:border-ac-grass'"
           @click="selectDay(day.weekday)">
-          <span>{{ day.weekdayName }}</span>
-          <span v-if="day.isToday" class="text-[10px] mt-0.5 px-1.5 rounded-full bg-ac-sun text-ac-night">今天</span>
-          <span class="text-xs mt-1 opacity-70 font-num">{{ day.items.length }}部</span>
+          <span>{{ weekdayName(day.weekday) }}</span>
+          <span v-if="day.isToday" class="text-[10px] mt-0.5 px-1.5 rounded-full bg-ac-sun text-ac-night">{{ t('pages.calendar.today') }}</span>
+          <span class="text-xs mt-1 opacity-70 font-num">{{ t('pages.calendar.itemCount', { count: day.items.length }) }}</span>
         </button>
       </nav>
 
@@ -37,7 +37,7 @@
           @subscribe="subscribeBangumi(item)"
         />
       </div>
-      <AcEmpty v-else title="今天没有番剧放送" description="试试其他星期吧 🌸" class="py-12" />
+      <AcEmpty v-else :title="t('pages.calendar.empty')" :description="t('pages.calendar.emptyDesc')" class="py-12" />
     </template>
   </div>
 </template>
@@ -50,21 +50,26 @@ import { useToast } from '@/composables/useToast'
 import { RefreshOutline } from '@vicons/ionicons5'
 import { AcPageHeader, AcButton, AcSpinner, AcEmpty } from '@/components/ac'
 import AnimeCard from '../Anime/AnimeCard.vue'
+import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
+const { t } = useI18n({ useScope: 'global' })
 
 const loading = ref(false)
 const refreshing = ref(false)
 const calendarData = ref([])
 
-const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 const today = new Date().getDay()
 const routeDay = Number(route.query.day)
 const activeDay = ref(Number.isInteger(routeDay) && routeDay >= 0 && routeDay <= 6 ? routeDay : today)
 
 const currentDay = computed(() => calendarData.value.find(d => d.weekday === activeDay.value))
+
+function weekdayName(day) {
+  return t(`pages.calendar.weekdays.${day}`)
+}
 
 function selectDay(day) {
   activeDay.value = day
@@ -78,7 +83,7 @@ async function fetchCalendar() {
     const days = Array.isArray(data) ? data : []
     const grouped = {}
     for (let i = 0; i < 7; i++) {
-      grouped[i] = { weekday: i, weekdayName: WEEKDAY_NAMES[i], isToday: i === today, items: [] }
+      grouped[i] = { weekday: i, isToday: i === today, items: [] }
     }
     for (const day of days) {
       const wd = day.weekday_id === 7 ? 0 : day.weekday_id
@@ -95,7 +100,7 @@ async function fetchCalendar() {
       const diffB = (b.weekday - today + 7) % 7
       return diffA - diffB
     })
-  } catch { toast.error('获取放送日历失败') }
+  } catch { toast.error(t('pages.calendar.fetchFailed')) }
   finally { loading.value = false }
 }
 
@@ -103,18 +108,18 @@ async function refreshCalendar() {
   refreshing.value = true
   try {
     await post('/calendar/refresh')
-    toast.success('日历已刷新')
+    toast.success(t('pages.calendar.refreshed'))
     await fetchCalendar()
-  } catch { toast.error('刷新失败') }
+  } catch { toast.error(t('pages.calendar.refreshFailed')) }
   finally { refreshing.value = false }
 }
 
 async function subscribeBangumi(item) {
   try {
     await post(`/bangumi/${item.id}/subscribe`)
-    toast.success('追番成功')
+    toast.success(t('pages.calendar.subscribed'))
     item.is_subscribed = true
-  } catch (e) { toast.error(e.message || '追番失败') }
+  } catch (e) { toast.error(e.message || t('pages.calendar.subscribeFailed')) }
 }
 
 function goToDetail(item) {

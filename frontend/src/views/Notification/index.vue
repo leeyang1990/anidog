@@ -1,10 +1,10 @@
 <template>
   <div>
-    <AcPageHeader title="🔔 通知设置" subtitle="配置番剧更新通知渠道">
+    <AcPageHeader :title="t('pages.notifications.title')" :subtitle="t('pages.notifications.subtitle')">
       <template #actions>
         <AcButton variant="primary" @click="openAddModal">
           <template #icon><AddOutline class="size-4" /></template>
-          添加渠道
+          {{ t('pages.notifications.addChannel') }}
         </AcButton>
       </template>
     </AcPageHeader>
@@ -20,7 +20,7 @@
           <div class="flex-1 min-w-0">
             <h3 class="text-sm font-bold truncate text-foreground">{{ ch.name }}</h3>
             <span class="text-xs font-bold" :class="ch.enabled ? 'text-ac-leaf-dark' : 'text-muted-foreground'">
-              {{ ch.enabled ? '🌿 已启用' : '⚪ 已禁用' }}
+              {{ ch.enabled ? t('common.enabled') : t('common.disabled') }}
             </span>
           </div>
           <AcDropdown :options="channelActions" placement="bottom-end" @select="key => handleAction(key, ch)">
@@ -37,27 +37,27 @@
         <div class="mt-4 flex gap-2">
           <AcButton size="sm" variant="outline" :loading="testingId === ch.id" @click="testChannel(ch)">
             <template #icon><FlaskOutline class="size-3.5" /></template>
-            {{ testingId === ch.id ? '测试中...' : '测试' }}
+            {{ testingId === ch.id ? t('pages.notifications.testing') : t('pages.notifications.test') }}
           </AcButton>
         </div>
       </AcCard>
     </div>
 
-    <AcEmpty v-else title="暂无通知渠道" description="点右上角添加一个通知渠道吧 🐾" class="py-12" />
+    <AcEmpty v-else :title="t('pages.notifications.empty')" :description="t('pages.notifications.emptyDesc')" class="py-12" />
 
     <!-- 添加/编辑弹窗 -->
-    <AcModal v-model:show="showModal" :title="editingChannel ? '编辑渠道' : '添加渠道'" max-width="560px">
+    <AcModal v-model:show="showModal" :title="editingChannel ? t('pages.notifications.editTitle') : t('pages.notifications.addTitle')" max-width="560px">
       <div class="space-y-4">
         <div>
-          <label class="block text-sm font-bold mb-1.5 text-foreground">渠道名称</label>
-          <AcInput v-model="formValue.name" placeholder="例如：我的Telegram" />
+          <label class="block text-sm font-bold mb-1.5 text-foreground">{{ t('pages.notifications.name') }}</label>
+          <AcInput v-model="formValue.name" :placeholder="t('pages.notifications.namePlaceholder')" />
         </div>
         <div>
-          <label class="block text-sm font-bold mb-1.5 text-foreground">渠道类型</label>
+          <label class="block text-sm font-bold mb-1.5 text-foreground">{{ t('pages.notifications.type') }}</label>
           <AcSelect v-model="formValue.type" :options="typeOptions" />
         </div>
         <div class="flex items-center justify-between">
-          <label class="text-sm font-bold text-foreground">启用</label>
+          <label class="text-sm font-bold text-foreground">{{ t('pages.notifications.enable') }}</label>
           <AcSwitch v-model="formValue.enabled" />
         </div>
 
@@ -79,7 +79,7 @@
           </div>
           <div>
             <label class="block text-sm font-bold mb-1.5 text-foreground">Device Key</label>
-            <AcInput v-model="formConfig.key" placeholder="你的设备Key" />
+            <AcInput v-model="formConfig.key" :placeholder="t('pages.notifications.deviceKeyPlaceholder')" />
           </div>
         </template>
 
@@ -100,29 +100,29 @@
         <template v-if="formValue.type === 'server_chan'">
           <div>
             <label class="block text-sm font-bold mb-1.5 text-foreground">SendKey</label>
-            <AcInput v-model="formConfig.sendkey" placeholder="你的SendKey" />
+            <AcInput v-model="formConfig.sendkey" :placeholder="t('pages.notifications.sendKeyPlaceholder')" />
           </div>
         </template>
 
         <template v-if="formValue.type === 'wecom'">
           <div>
-            <label class="block text-sm font-bold mb-1.5 text-foreground">企业ID (corpid)</label>
+            <label class="block text-sm font-bold mb-1.5 text-foreground">{{ t('pages.notifications.corpId') }}</label>
             <AcInput v-model="formConfig.corpid" placeholder="ww1234567890" />
           </div>
           <div>
-            <label class="block text-sm font-bold mb-1.5 text-foreground">应用Secret</label>
-            <AcInput v-model="formConfig.corpsecret" placeholder="应用的Secret" />
+            <label class="block text-sm font-bold mb-1.5 text-foreground">{{ t('pages.notifications.secret') }}</label>
+            <AcInput v-model="formConfig.corpsecret" :placeholder="t('pages.notifications.secretPlaceholder')" />
           </div>
           <div>
-            <label class="block text-sm font-bold mb-1.5 text-foreground">应用AgentId</label>
+            <label class="block text-sm font-bold mb-1.5 text-foreground">{{ t('pages.notifications.agentId') }}</label>
             <AcInput v-model="formConfig.agentid" placeholder="1000002" />
           </div>
         </template>
       </div>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <AcButton variant="ghost" @click="showModal = false">取消</AcButton>
-          <AcButton variant="primary" :loading="submitting" @click="handleSubmit">{{ editingChannel ? '保存' : '添加' }}</AcButton>
+          <AcButton variant="ghost" @click="showModal = false">{{ t('common.cancel') }}</AcButton>
+          <AcButton variant="primary" :loading="submitting" @click="handleSubmit">{{ editingChannel ? t('pages.notifications.save') : t('pages.notifications.add') }}</AcButton>
         </div>
       </template>
     </AcModal>
@@ -130,7 +130,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { get, post, put, del } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
 import {
@@ -138,8 +138,10 @@ import {
   FlaskOutline, CreateOutline, TrashOutline
 } from '@vicons/ionicons5'
 import { AcPageHeader, AcButton, AcCard, AcTag, AcEmpty, AcSpinner, AcModal, AcInput, AcSelect, AcSwitch, AcDropdown } from '@/components/ac'
+import { useI18n } from 'vue-i18n'
 
 const toast = useToast()
+const { t } = useI18n({ useScope: 'global' })
 
 const loading = ref(false)
 const testingId = ref(null)
@@ -151,21 +153,21 @@ const editingChannel = ref(null)
 const formValue = reactive({ name: '', type: 'telegram', enabled: true })
 const formConfig = reactive({})
 
-const typeOptions = [
+const typeOptions = computed(() => [
   { label: 'Telegram', value: 'telegram' },
   { label: 'Bark', value: 'bark' },
   { label: 'Webhook', value: 'webhook' },
   { label: 'Discord', value: 'discord' },
   { label: 'Server Chan', value: 'server_chan' },
-  { label: '企业微信', value: 'wecom' },
-]
+  { label: t('pages.notifications.wecom'), value: 'wecom' },
+])
 
-const channelActions = [
-  { label: '编辑', key: 'edit' },
-  { label: '删除', key: 'delete', danger: true }
-]
+const channelActions = computed(() => [
+  { label: t('pages.notifications.edit'), key: 'edit' },
+  { label: t('pages.notifications.delete'), key: 'delete', danger: true }
+])
 
-function getTypeLabel(type) { return typeOptions.find(t => t.value === type)?.label || type }
+function getTypeLabel(type) { return typeOptions.value.find(option => option.value === type)?.label || type }
 
 function openAddModal() {
   editingChannel.value = null
@@ -190,21 +192,21 @@ async function fetchChannels() {
   try {
     const data = await get('/notifications')
     channels.value = Array.isArray(data) ? data : (data?.items || [])
-  } catch { toast.error('获取通知渠道失败') }
+  } catch { toast.error(t('pages.notifications.loadFailed')) }
   finally { loading.value = false }
 }
 
 async function handleSubmit() {
-  if (!formValue.name) { toast.warning('请输入渠道名称'); return }
+  if (!formValue.name) { toast.warning(t('pages.notifications.enterName')); return }
   submitting.value = true
   try {
     const payload = { ...formValue, config: JSON.stringify({ ...formConfig }) }
     if (editingChannel.value) {
       await put(`/notifications/${editingChannel.value.id}`, payload)
-      toast.success('更新成功')
+      toast.success(t('pages.notifications.updated'))
     } else {
       await post('/notifications', payload)
-      toast.success('添加成功')
+      toast.success(t('pages.notifications.added'))
     }
     showModal.value = false
     await fetchChannels()
@@ -216,9 +218,9 @@ async function testChannel(ch) {
   testingId.value = ch.id
   try {
     const data = await post(`/notifications/${ch.id}/test`)
-    if (data.success) toast.success('测试通知发送成功')
-    else toast.error(data.message || '测试失败')
-  } catch { toast.error('测试失败') }
+    if (data.success) toast.success(t('pages.notifications.testSuccess'))
+    else toast.error(data.message || t('pages.notifications.testFailed'))
+  } catch { toast.error(t('pages.notifications.testFailed')) }
   finally { testingId.value = null }
 }
 
@@ -230,9 +232,9 @@ function handleAction(key, ch) {
 async function deleteChannel(ch) {
   try {
     await del(`/notifications/${ch.id}`)
-    toast.success('已删除')
+    toast.success(t('pages.notifications.deleted'))
     await fetchChannels()
-  } catch { toast.error('删除失败') }
+  } catch { toast.error(t('pages.notifications.deleteFailed')) }
 }
 
 onMounted(fetchChannels)

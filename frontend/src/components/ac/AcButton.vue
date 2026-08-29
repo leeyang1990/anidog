@@ -62,7 +62,7 @@ const variantCls = computed(() => {
 
 const loaderColor = computed(() => {
   if (['primary', 'danger', 'sun'].includes(props.variant)) return '#FFFDF7'
-  return '#7CB342'
+  return 'currentColor'
 })
 </script>
 

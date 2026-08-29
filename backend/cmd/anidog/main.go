@@ -116,6 +116,7 @@ func main() {
 	}
 	// 5d2. Orchestrator：多源剧集填坑调度器（替代旧的 bangumi.CheckAllSubscribed）
 	orch := orchestrator.New(db, dlSvc, streamManager, settingSvc, nil, mediaRoot, httpClient.Client())
+	dlSvc.SetRejectedStreamHandler(orch.RetryEpisodeAfterCandidateFailure)
 
 	// 5d3. Episode 同步：从 Bangumi 拉取每集的播出时间，让前端能区分
 	// "未下载" 和 "待发布"，让 Orchestrator 不去搜未播出的集
@@ -165,8 +166,8 @@ func main() {
 		// QBitSyncer 会广播到所有 enabled 渠道（telegram/bark/...）
 		qbitSync.SetNotificationService(notifSvc)
 		qbitSync.SetRaceService(dlSvc)
-		qbitSync.SetDeadTorrentHandler(orch.RetryEpisodeAfterDeadTorrent)
-		qbitSync.SetSlowTorrentHandler(orch.RetryEpisodeAfterDeadTorrent)
+		qbitSync.SetDeadTorrentHandler(orch.RetryEpisodeAfterCandidateFailure)
+		qbitSync.SetSlowTorrentHandler(orch.RetryEpisodeAfterCandidateFailure)
 		qbitSync.SetRateLimitLoader(func(ctx context.Context) (downloadKiB, uploadKiB int64) {
 			read := func(key string) int64 {
 				raw, ok, err := settingSvc.Get(ctx, key)

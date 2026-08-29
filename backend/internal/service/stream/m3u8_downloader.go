@@ -3,7 +3,9 @@ package stream
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -16,6 +18,27 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 )
+
+const (
+	defaultMinStreamDurationSeconds = 300
+	minCompletedDurationRatio       = 0.8
+)
+
+type videoProbeResult struct {
+	CodecName string
+	Duration  float64
+	Size      int64
+}
+
+type ffprobeVideoOutput struct {
+	Streams []struct {
+		CodecName string `json:"codec_name"`
+		CodecType string `json:"codec_type"`
+	} `json:"streams"`
+	Format struct {
+		Duration string `json:"duration"`
+	} `json:"format"`
+}
 
 var (
 	outTimeMsRe = regexp.MustCompile(`out_time_ms=(\d+)`)
@@ -95,44 +118,92 @@ func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputP
 		return "", fmt.Errorf("ffmpeg 退出: %w", err)
 	}
 
-	// 下载成功后检测文件是否真实视频（反盗链返回 PNG/JPG 假流的防护）
-	if !d.isValidVideo(outputPath) {
+	// 下载成功后校验编码和时长。只检查“存在视频流”会把广告、反盗链占位片
+	// 或提前结束的 HLS 当作完整剧集，因此必须在竞速仲裁前拦截。
+	probe, err := d.validateVideo(outputPath, totalDuration)
+	if err != nil {
 		_ = os.Remove(outputPath)
-		return "", fmt.Errorf("下载的文件不是有效视频（可能源返回了伪装流，尝试切换到其他源）")
+		return "", fmt.Errorf("流媒体候选无效：%w", err)
 	}
 
-	zap.L().Info("ffmpeg 下载完成", zap.String("output", outputPath))
+	zap.L().Info("ffmpeg 下载完成",
+		zap.String("output", outputPath),
+		zap.Float64("duration_seconds", probe.Duration),
+		zap.String("codec", probe.CodecName))
 	return outputPath, nil
 }
 
-// isValidVideo 用 ffprobe 检查输出文件是否包含真实视频流
-// 防止反盗链源返回 PNG/JPG 序列等伪装流
-func (d *M3U8Downloader) isValidVideo(path string) bool {
+// validateVideo 用 ffprobe 检查输出文件是否为可接受的完整视频。
+// sourceDuration 是下载前从源地址探测到的时长；可用时还会防止成片被截断。
+func (d *M3U8Downloader) validateVideo(path string, sourceDuration float64) (videoProbeResult, error) {
 	info, err := os.Stat(path)
-	if err != nil || info.Size() < 100*1024 {
-		return false // 文件太小或不存在
+	if err != nil {
+		return videoProbeResult{}, fmt.Errorf("读取成片失败: %w", err)
 	}
 
 	cmd := exec.Command("ffprobe", "-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "stream=codec_name",
-		"-of", "default=noprint_wrappers=1:nokey=1",
+		"-show_entries", "stream=codec_name,codec_type:format=duration",
+		"-of", "json",
 		path)
 	out, err := cmd.Output()
 	if err != nil {
-		return false
+		return videoProbeResult{}, fmt.Errorf("ffprobe 无法解析成片: %w", err)
 	}
 
-	codec := strings.TrimSpace(strings.ToLower(string(out)))
-	// 真实视频编码：h264, h265/hevc, av1, vp9 等
-	// 伪装流：png, mjpeg, jpeg
-	if codec == "" || codec == "png" || codec == "mjpeg" || codec == "jpeg" {
-		zap.L().Warn("检测到伪装视频流",
-			zap.String("path", path),
-			zap.String("codec", codec))
-		return false
+	var parsed ffprobeVideoOutput
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return videoProbeResult{}, fmt.Errorf("解析 ffprobe 结果失败: %w", err)
 	}
-	return true
+	codec := ""
+	for _, stream := range parsed.Streams {
+		if stream.CodecType == "video" {
+			codec = strings.TrimSpace(strings.ToLower(stream.CodecName))
+			break
+		}
+	}
+	duration, err := strconv.ParseFloat(strings.TrimSpace(parsed.Format.Duration), 64)
+	if err != nil || duration <= 0 || math.IsNaN(duration) || math.IsInf(duration, 0) {
+		return videoProbeResult{}, fmt.Errorf("无法获得有效视频时长: %q", parsed.Format.Duration)
+	}
+	probe := videoProbeResult{CodecName: codec, Duration: duration, Size: info.Size()}
+	if err := validateVideoProbe(probe, sourceDuration, d.minDurationSeconds()); err != nil {
+		return videoProbeResult{}, err
+	}
+	return probe, nil
+}
+
+func validateVideoProbe(probe videoProbeResult, sourceDuration float64, minimumSeconds int) error {
+	if probe.Size < 100*1024 {
+		return fmt.Errorf("视频文件过小: %d 字节", probe.Size)
+	}
+	// 真实视频编码：h264, h265/hevc, av1, vp9 等；png/mjpeg/jpeg 通常是
+	// 反盗链返回的占位图片序列。
+	codec := strings.TrimSpace(strings.ToLower(probe.CodecName))
+	if codec == "" || codec == "png" || codec == "mjpeg" || codec == "jpeg" {
+		return fmt.Errorf("未检测到有效视频编码: %q", codec)
+	}
+	if probe.Duration <= 0 || math.IsNaN(probe.Duration) || math.IsInf(probe.Duration, 0) {
+		return fmt.Errorf("无法获得有效视频时长")
+	}
+	if minimumSeconds > 0 && probe.Duration < float64(minimumSeconds) {
+		return fmt.Errorf("视频时长过短: %.2f 秒，最低要求 %d 秒", probe.Duration, minimumSeconds)
+	}
+	if sourceDuration > 0 && sourceDuration <= 6*60*60 && probe.Duration+5 < sourceDuration*minCompletedDurationRatio {
+		return fmt.Errorf(
+			"视频疑似下载截断: 成片 %.2f 秒，源声明 %.2f 秒，低于 %.0f%%",
+			probe.Duration, sourceDuration, minCompletedDurationRatio*100)
+	}
+	return nil
+}
+
+func (d *M3U8Downloader) minDurationSeconds() int {
+	if d.cfg == nil {
+		return defaultMinStreamDurationSeconds
+	}
+	if d.cfg.StreamMinDurationSeconds < 0 {
+		return 0
+	}
+	return d.cfg.StreamMinDurationSeconds
 }
 
 // Cancel 取消下载

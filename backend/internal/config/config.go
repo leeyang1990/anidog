@@ -18,16 +18,16 @@ import (
 var Version = "dev"
 
 type Config struct {
-	ProjectName              string
-	ProjectVersion           string
-	DatabaseURL              string
-	SecretKey                string
-	AccessTokenExpireMinutes int
+	ProjectName               string
+	ProjectVersion            string
+	DatabaseURL               string
+	SecretKey                 string
+	AccessTokenExpireMinutes  int
 	AccessTokenExpireDuration time.Duration
 
 	// 数据库连接池配置（仅 PostgreSQL 有效）
-	DBMaxOpenConns   int
-	DBMaxIdleConns   int
+	DBMaxOpenConns int
+	DBMaxIdleConns int
 
 	// 下载器配置
 	DownloaderType     string
@@ -69,11 +69,12 @@ type Config struct {
 	DefaultRuleName    string // 优先使用的默认规则名称
 
 	// 流媒体
-	FFMPEGPath             string
-	StreamDownloadDir      string
-	StreamMaxConcurrent    int
-	RodHeadless            bool
-	StreamInterceptTimeout int
+	FFMPEGPath               string
+	StreamDownloadDir        string
+	StreamMaxConcurrent      int
+	StreamMinDurationSeconds int
+	RodHeadless              bool
+	StreamInterceptTimeout   int
 }
 
 func Load() *Config {
@@ -109,6 +110,7 @@ func Load() *Config {
 	viper.SetDefault("bangumi_api_url", "https://api.bgm.tv")
 	viper.SetDefault("ffmpeg_path", "ffmpeg")
 	viper.SetDefault("stream_max_concurrent", 3)
+	viper.SetDefault("stream_min_duration_seconds", 300)
 	viper.SetDefault("rod_headless", true)
 	viper.SetDefault("stream_intercept_timeout", 30)
 
@@ -130,28 +132,29 @@ func Load() *Config {
 		DatabaseURL:              viper.GetString("database_url"),
 		SecretKey:                viper.GetString("secret_key"),
 		AccessTokenExpireMinutes: viper.GetInt("access_token_expire_minutes"),
-		DBMaxOpenConns:          viper.GetInt("db_max_open_conns"),
-		DBMaxIdleConns:          viper.GetInt("db_max_idle_conns"),
+		DBMaxOpenConns:           viper.GetInt("db_max_open_conns"),
+		DBMaxIdleConns:           viper.GetInt("db_max_idle_conns"),
 		DownloaderType:           viper.GetString("downloader_type"),
 		DownloaderHost:           viper.GetString("downloader_host"),
-		DownloaderUsername:        viper.GetString("downloader_username"),
-		DownloaderPassword:        viper.GetString("downloader_password"),
+		DownloaderUsername:       viper.GetString("downloader_username"),
+		DownloaderPassword:       viper.GetString("downloader_password"),
 		RSSCheckInterval:         viper.GetInt("rss_check_interval"),
 		LogLevel:                 viper.GetString("log_level"),
 		RenameMethod:             viper.GetString("rename_method"),
-		RenameInterval:            viper.GetInt("rename_interval"),
+		RenameInterval:           viper.GetInt("rename_interval"),
 		Language:                 viper.GetString("language"),
 		EnableScheduler:          viper.GetBool("enable_scheduler"),
 		BangumiAPIURL:            viper.GetString("bangumi_api_url"),
 		FFMPEGPath:               viper.GetString("ffmpeg_path"),
-		StreamMaxConcurrent:       viper.GetInt("stream_max_concurrent"),
+		StreamMaxConcurrent:      viper.GetInt("stream_max_concurrent"),
+		StreamMinDurationSeconds: viper.GetInt("stream_min_duration_seconds"),
 		RodHeadless:              viper.GetBool("rod_headless"),
-		StreamInterceptTimeout:    viper.GetInt("stream_intercept_timeout"),
-		EnableNotifications:       viper.GetBool("enable_notifications"),
-		EnableDefaultRules:        viper.GetBool("enable_default_rules"),
-		DefaultRuleName:           viper.GetString("default_rule_name"),
-		MediaRoot:                 viper.GetString("media_root"),
-		StreamDownloadDir:         viper.GetString("stream_download_dir"),
+		StreamInterceptTimeout:   viper.GetInt("stream_intercept_timeout"),
+		EnableNotifications:      viper.GetBool("enable_notifications"),
+		EnableDefaultRules:       viper.GetBool("enable_default_rules"),
+		DefaultRuleName:          viper.GetString("default_rule_name"),
+		MediaRoot:                viper.GetString("media_root"),
+		StreamDownloadDir:        viper.GetString("stream_download_dir"),
 	}
 
 	cfg.AccessTokenExpireDuration = time.Duration(cfg.AccessTokenExpireMinutes) * time.Minute

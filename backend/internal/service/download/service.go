@@ -24,11 +24,12 @@ import (
 // Service is the unified download service. All download creation and
 // execution goes through this, regardless of trigger source.
 type Service struct {
-	db        *gorm.DB
-	cfg       *config.Config
-	hub       *ws.Hub
-	executors map[string]Executor
-	notifSvc  *notification.Service // 可空：未注入时不发通知
+	db                    *gorm.DB
+	cfg                   *config.Config
+	hub                   *ws.Hub
+	executors             map[string]Executor
+	notifSvc              *notification.Service // 可空：未注入时不发通知
+	rejectedStreamHandler func(context.Context, uint, int)
 }
 
 // NewService creates a new unified download service.
@@ -57,6 +58,13 @@ func (s *Service) HasExecutor(downloadType string) bool {
 // 都从 updateStatus → notifyCompletion 走，避免在多处事件源各自接钩子导致漏发或重发。
 func (s *Service) SetNotificationService(n *notification.Service) {
 	s.notifSvc = n
+}
+
+// SetRejectedStreamHandler 注入流媒体候选质量失败后的同集恢复回调。
+// 候选被拒绝后不应重复下载同一条短片或伪装流，而应立即让编排器换线路、
+// 换规则，并同时尝试 BT/Mikan 等其他已启用来源。
+func (s *Service) SetRejectedStreamHandler(handler func(context.Context, uint, int)) {
+	s.rejectedStreamHandler = handler
 }
 
 // Create creates a Download record and starts async execution.
@@ -272,6 +280,9 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 			extra["next_retry_at"] = nil
 		}
 		s.updateStatus(dlID, model.DownloadStatusFailed, extra)
+		if kind == model.FailureKindRejected {
+			s.triggerRejectedStreamRecovery(task)
+		}
 		if kind == model.FailureKindExhausted && task.StreamRuleID != nil {
 			now := time.Now()
 			note := "半开探测失败: " + truncateError(err)
@@ -313,6 +324,20 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	if s.CompleteEpisodeRace(context.Background(), dlID, stagingPath, finalPath) && s.hub != nil {
 		s.hub.BroadcastDownloadComplete(torrentID, task.Name)
 	}
+}
+
+func (s *Service) triggerRejectedStreamRecovery(task *Task) {
+	if task == nil || task.DownloadType != model.DownloadTypeStream ||
+		task.AnimeID == nil || task.EpisodeNumber == nil ||
+		*task.AnimeID == 0 || *task.EpisodeNumber <= 0 || s.rejectedStreamHandler == nil {
+		return
+	}
+	animeID, episode := *task.AnimeID, *task.EpisodeNumber
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		s.rejectedStreamHandler(ctx, animeID, episode)
+	}()
 }
 
 // CompleteEpisodeRace atomically elects the first completed candidate for an

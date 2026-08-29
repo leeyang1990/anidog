@@ -154,10 +154,10 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 	return MediaAuditResult{Success: true, Confirmed: true, Missing: missing, Snapshot: snapshot}
 }
 
-// RetryEpisodeAfterDeadTorrent repairs the episode state left by a partial
-// torrent and immediately runs the normal multi-source selection. This closes
-// the old 30-minute gap between dead-swarm detection and Mikan fallback.
-func (o *Orchestrator) RetryEpisodeAfterDeadTorrent(ctx context.Context, animeID uint, episode int) {
+// RetryEpisodeAfterCandidateFailure repairs the episode state left by a dead
+// torrent or rejected stream candidate and immediately runs normal multi-source
+// selection. This closes the old 30-minute gap before another source is tried.
+func (o *Orchestrator) RetryEpisodeAfterCandidateFailure(ctx context.Context, animeID uint, episode int) {
 	if animeID == 0 || episode <= 0 {
 		return
 	}
@@ -166,12 +166,12 @@ func (o *Orchestrator) RetryEpisodeAfterDeadTorrent(ctx context.Context, animeID
 		return
 	}
 	if anime.MediaManagementState == MediaStateArchived {
-		zap.L().Info("死种巡检：番剧已归档，不再自动补种",
+		zap.L().Info("候选恢复：番剧已归档，不再自动补齐",
 			zap.Uint("anime_id", animeID), zap.Int("episode", episode))
 		return
 	}
 	if err := o.checkMediaRootHealth(ctx, o.currentMediaRoot(ctx)); err != nil {
-		zap.L().Error("死种巡检：媒体存储不健康，停止自动补种",
+		zap.L().Error("候选恢复：媒体存储不健康，停止自动补齐",
 			zap.Uint("anime_id", animeID), zap.Int("episode", episode), zap.Error(err))
 		return
 	}

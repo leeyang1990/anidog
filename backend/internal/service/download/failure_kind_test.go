@@ -37,7 +37,7 @@ func TestClassifyErrorRejectsWrongSeasonWithoutConsumingRetry(t *testing.T) {
 }
 
 func TestClassifyErrorRejectsShortStreamCandidate(t *testing.T) {
-	err := errors.New("ffmpeg 下载失败: 流媒体候选无效：视频时长过短: 3.12 秒，最低要求 300 秒")
+	err := errors.New("ffmpeg 下载失败: 流媒体候选无效：视频时长过短: 3.12 秒，最低要求 100 秒")
 	kind, delay := classifyError(err, 3)
 	if kind != model.FailureKindRejected || delay != 0 {
 		t.Fatalf("got %s/%s, want rejected/0", kind, delay)

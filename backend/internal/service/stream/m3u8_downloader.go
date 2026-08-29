@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	defaultMinStreamDurationSeconds = 300
+	defaultMinStreamDurationSeconds = 100
 	minCompletedDurationRatio       = 0.8
 )
 

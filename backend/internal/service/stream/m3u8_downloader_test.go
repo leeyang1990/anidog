@@ -37,7 +37,7 @@ func TestParseFFmpegProgressTime(t *testing.T) {
 
 func TestValidateVideoProbeRejectsShortEpisode(t *testing.T) {
 	probe := videoProbeResult{CodecName: "h264", Duration: 3.12, Size: 784108}
-	err := validateVideoProbe(probe, 0, 300)
+	err := validateVideoProbe(probe, 0, 100)
 	if err == nil || !strings.Contains(err.Error(), "视频时长过短") {
 		t.Fatalf("got %v, want short-duration rejection", err)
 	}
@@ -45,7 +45,7 @@ func TestValidateVideoProbeRejectsShortEpisode(t *testing.T) {
 
 func TestValidateVideoProbeRejectsTruncatedDownload(t *testing.T) {
 	probe := videoProbeResult{CodecName: "hevc", Duration: 600, Size: 200 * 1024 * 1024}
-	err := validateVideoProbe(probe, 1480, 300)
+	err := validateVideoProbe(probe, 1480, 100)
 	if err == nil || !strings.Contains(err.Error(), "视频疑似下载截断") {
 		t.Fatalf("got %v, want truncation rejection", err)
 	}
@@ -53,8 +53,15 @@ func TestValidateVideoProbeRejectsTruncatedDownload(t *testing.T) {
 
 func TestValidateVideoProbeAcceptsNormalEpisode(t *testing.T) {
 	probe := videoProbeResult{CodecName: "h264", Duration: 1480, Size: 790128053}
-	if err := validateVideoProbe(probe, 1480, 300); err != nil {
+	if err := validateVideoProbe(probe, 1480, 100); err != nil {
 		t.Fatalf("normal episode rejected: %v", err)
+	}
+}
+
+func TestValidateVideoProbeAcceptsHundredSecondEpisode(t *testing.T) {
+	probe := videoProbeResult{CodecName: "h264", Duration: 100, Size: 60 * 1024 * 1024}
+	if err := validateVideoProbe(probe, 0, 100); err != nil {
+		t.Fatalf("100-second episode rejected: %v", err)
 	}
 }
 

@@ -321,6 +321,21 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	if result != nil {
 		stagingPath, finalPath = result.FilePath, result.FinalPath
 	}
+	if task.DownloadType == model.DownloadTypeStream && stagingPath != "" {
+		if err := s.validateStreamDurationConsistency(ctx, task, stagingPath); err != nil {
+			_ = removeStagingFile(stagingPath)
+			candidateErr := fmt.Errorf("流媒体候选无效：%w", err)
+			s.updateStatus(dlID, model.DownloadStatusFailed, map[string]interface{}{
+				"failure_kind":  model.FailureKindRejected,
+				"last_error":    truncateError(candidateErr),
+				"next_retry_at": nil,
+			})
+			s.triggerRejectedStreamRecovery(task)
+			zap.L().Warn("流媒体候选未通过同番时长校验",
+				zap.Uint("id", dlID), zap.String("name", task.Name), zap.Error(candidateErr))
+			return
+		}
+	}
 	if s.CompleteEpisodeRace(context.Background(), dlID, stagingPath, finalPath) && s.hub != nil {
 		s.hub.BroadcastDownloadComplete(torrentID, task.Name)
 	}

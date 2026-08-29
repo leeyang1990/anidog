@@ -26,7 +26,7 @@ rss_check_interval: 30
 
 # 流媒体
 stream_max_concurrent: 3
-stream_min_duration_seconds: 300
+stream_min_duration_seconds: 100
 rod_headless: true
 stream_intercept_timeout: 30
 

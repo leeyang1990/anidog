@@ -110,7 +110,7 @@ func Load() *Config {
 	viper.SetDefault("bangumi_api_url", "https://api.bgm.tv")
 	viper.SetDefault("ffmpeg_path", "ffmpeg")
 	viper.SetDefault("stream_max_concurrent", 3)
-	viper.SetDefault("stream_min_duration_seconds", 300)
+	viper.SetDefault("stream_min_duration_seconds", 100)
 	viper.SetDefault("rod_headless", true)
 	viper.SetDefault("stream_intercept_timeout", 30)
 

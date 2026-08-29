@@ -1,4 +1,22 @@
-# AniDog
+<div align="center">
+
+<img src="docs/assets/banner.svg" alt="AniDog" width="600" />
+
+# AniDog · 番剧自动下载管理
+
+**一只替你蹲守新番的边牧** —— 订阅一次，后续更新自动下载、归档并通知。
+
+多源检索 · 智能选种 · 自动归档 · 下载诊断
+
+[![Release](https://img.shields.io/github/v/release/leeyang1990/anidog?style=flat-square&label=release&color=7CB342)](https://github.com/leeyang1990/anidog/releases/latest) [![Docker Build](https://github.com/leeyang1990/anidog/actions/workflows/docker-release.yml/badge.svg)](https://github.com/leeyang1990/anidog/actions/workflows/docker-release.yml) [![Docker](https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ED?style=flat-square&logo=docker&logoColor=white)](https://hub.docker.com/u/leeyang1990) [![License](https://img.shields.io/badge/license-MIT-5D4037?style=flat-square)](LICENSE)
+
+[![Go](https://img.shields.io/badge/Go-1.26.2-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev) [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?style=flat-square&logo=vuedotjs&logoColor=white)](https://vuejs.org) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org)
+
+[界面预览](#界面) · [主要功能](#主要功能) · [快速部署](#快速部署) · [使用方法](#使用方法) · [升级](#升级)
+
+</div>
+
+## 这是什么
 
 AniDog 是一个运行在家庭服务器或 NAS 上的番剧自动下载管理工具。
 
@@ -123,7 +141,7 @@ docker compose pull
 docker compose up -d --remove-orphans
 ```
 
-需要固定版本时，在 `.env` 中设置 `TAG=v0.1.42`。不要使用 `docker compose down -v`，除非明确要删除数据库和 qBittorrent 配置。
+需要固定版本时，在 `.env` 中设置 `TAG=v0.1.43`。不要使用 `docker compose down -v`，除非明确要删除数据库和 qBittorrent 配置。
 
 ## 遇到问题
 

@@ -154,6 +154,19 @@ docker compose up -d --remove-orphans
 docker compose logs --tail=200 backend frontend
 ```
 
+## 致谢与参考
+
+AniDog 是独立开发的项目，部分产品思路与兼容能力受以下开源项目启发：
+
+| 项目 | 许可证 | AniDog 中的参考或使用范围 |
+| --- | --- | --- |
+| [AutoBangumi](https://github.com/EstrellaXD/Auto_Bangumi) | MIT | 自动追番、RSS 驱动和媒体库整理流程的早期产品思路 |
+| [Kazumi](https://github.com/Predidit/Kazumi) | GPL-3.0 | 流媒体规则模型、多线路剧集解析思路，以及兼容规则导入的设计参考 |
+| [KazumiRules](https://github.com/Predidit/KazumiRules) | MIT | AniDog 内置流媒体规则的来源；规则经过服务端格式适配后导入 |
+| [Bangumi API](https://github.com/bangumi/api) | 开放 API | 番剧元数据、放送日历和剧集信息接口 |
+
+感谢这些项目及其贡献者。AniDog 不提供或托管任何番剧资源，也不隶属于上述项目。
+
 ## 许可证
 
 [MIT](LICENSE) © leeyang1990

@@ -187,8 +187,12 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		updates := map[string]interface{}{}
 		now := time.Now()
 		completeViaRace := false
+		completeSeasonPack := false
+		completionBlocked := false
 		completionStagingPath := ""
 		completionFinalPath := ""
+		var completionPackFiles map[int]string
+		completionPackMediaRoot := ""
 		progressAdvanced := downloadProgressAdvanced(&dl, qt)
 		if v, ok := qt["size"].(float64); ok && v > 0 {
 			size := int64(v)
@@ -292,19 +296,34 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			if newStatus != "" && newStatus != dl.Status && !fakeCompleted {
 				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil &&
 					s.raceService != nil && dl.AnimeID != nil && dl.EpisodeNumber != nil {
-					stagingPath, finalPath, err := s.resolveTorrentRaceCompletion(ctx, &dl, qt)
-					if err != nil {
-						zap.L().Warn("BT 竞速候选已完成但暂时无法归档",
-							zap.Uint("id", dl.ID), zap.Error(err))
+					if dl.Scope == model.DownloadScopeSeason {
+						packFiles, mediaRoot, err := s.resolveTorrentSeasonCompletion(&dl, qt)
+						if err != nil {
+							completionBlocked = true
+							zap.L().Warn("BT 合集已完成但无法安全映射剧集",
+								zap.Uint("id", dl.ID), zap.Error(err))
+						} else {
+							completeSeasonPack = true
+							completionPackFiles = packFiles
+							completionPackMediaRoot = mediaRoot
+						}
 					} else {
-						completeViaRace = true
-						completionStagingPath = stagingPath
-						completionFinalPath = finalPath
+						stagingPath, finalPath, err := s.resolveTorrentRaceCompletion(ctx, &dl, qt)
+						if err != nil {
+							completionBlocked = true
+							zap.L().Warn("BT 竞速候选已完成但暂时无法归档",
+								zap.Uint("id", dl.ID), zap.Error(err))
+						} else {
+							completeViaRace = true
+							completionStagingPath = stagingPath
+							completionFinalPath = finalPath
+						}
 					}
 				} else {
 					updates["status"] = newStatus
 				}
-				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil && !completeViaRace {
+				if newStatus == model.DownloadStatusCompleted && dl.CompletedAt == nil &&
+					!completeViaRace && !completeSeasonPack && !completionBlocked {
 					now := time.Now()
 					updates["completed_at"] = &now
 					// 状态从非 completed 翻成 completed，且本次同步前还没标完成 →
@@ -370,13 +389,24 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 					if s.abandonDeadTorrent(ctx, &dl, "质量巡检："+longTermReason) {
 						abandoned++
 					}
+				} else if dl.Scope == model.DownloadScopeSeason {
+					// 合集一次占用几十 GB，不能像单集慢种一样保留并再开第二个
+					// Hash。确认长期不可用后先删除当前合集，再由 Orchestrator
+					// 选择下一个合集。
+					if s.abandonDeadTorrent(ctx, &dl, "合集慢种切换："+longTermReason) {
+						abandoned++
+					}
 				} else if alternativeSearchAllowed && s.keepSlowTorrentAndSearch(ctx, &dl, longTermReason) {
 					alternativeSearchAllowed = false
 				}
 				continue
 			}
 			if probeReason != "" {
-				if alternativeSearchAllowed && s.keepSlowTorrentAndSearch(ctx, &dl, probeReason) {
+				if dl.Scope == model.DownloadScopeSeason {
+					if s.abandonDeadTorrent(ctx, &dl, "合集初始质量不合格："+probeReason) {
+						abandoned++
+					}
+				} else if alternativeSearchAllowed && s.keepSlowTorrentAndSearch(ctx, &dl, probeReason) {
 					alternativeSearchAllowed = false
 				}
 				continue
@@ -415,6 +445,9 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		if completeViaRace {
 			s.raceService.CompleteEpisodeRace(
 				ctx, dl.ID, completionStagingPath, completionFinalPath)
+		}
+		if completeSeasonPack {
+			s.raceService.CompleteSeasonPack(ctx, dl.ID, completionPackFiles, completionPackMediaRoot)
 		}
 	}
 
@@ -464,6 +497,32 @@ func (s *QBitSyncer) resolveTorrentRaceCompletion(
 	ext := strings.ToLower(filepath.Ext(stagingPath))
 	finalPath := stream.BuildMediaPath(mediaRoot, &anime, *dl.EpisodeNumber, ext)
 	return stagingPath, finalPath, nil
+}
+
+func (s *QBitSyncer) resolveTorrentSeasonCompletion(
+	dl *model.Download,
+	torrent map[string]interface{},
+) (map[int]string, string, error) {
+	if dl == nil || dl.SavePath == nil || dl.EpisodeStart == nil || dl.EpisodeEnd == nil {
+		return nil, "", fmt.Errorf("合集候选缺少保存目录或覆盖范围")
+	}
+	mediaRoot, isolated := TorrentRaceMediaRoot(*dl.SavePath)
+	if !isolated {
+		return nil, "", fmt.Errorf("合集候选不在隔离目录")
+	}
+	contentPath, _ := torrent["content_path"].(string)
+	contentPath = filepath.Clean(strings.TrimSpace(contentPath))
+	if contentPath == "" || contentPath == "." {
+		return nil, "", fmt.Errorf("qBittorrent 未返回 content_path")
+	}
+	if !pathWithin(contentPath, *dl.SavePath) {
+		return nil, "", fmt.Errorf("合集文件越过隔离目录: %s", contentPath)
+	}
+	files, err := mapSeasonPackMediaFiles(contentPath, *dl.EpisodeStart, *dl.EpisodeEnd)
+	if err != nil {
+		return nil, "", err
+	}
+	return files, mediaRoot, nil
 }
 
 func pathWithin(path, parent string) bool {

@@ -207,6 +207,11 @@ const downloadMessages = {
   'en-US': { total: '{count} total', checking: 'Checking...', checkUpdates: 'Check anime updates', add: 'Add', search: 'Search...', selected: '{count} selected', pause: 'Pause', resume: 'Resume', delete: 'Delete', pauseAll: 'Pause all', resumeAll: 'Resume all', all: 'All', downloading: 'Downloading', paused: 'Paused', completed: 'Completed', failed: 'Failed', noMatch: 'No matching tasks', empty: 'No download tasks', name: 'Name', source: 'Source', size: 'Size', speed: 'Speed', progress: 'Progress', time: 'Time', actions: 'Actions', episode: 'Episode {episode}', completedAt: 'Completed {time}', createdAt: 'Created {time}', retry: 'Retry', openLocation: 'Open location', addTitle: 'Add download', url: 'Download URL', invalidUrl: 'Enter a valid magnet link or URL', savePath: 'Save path', defaultPath: 'Leave blank to use the default download directory', operationFailed: 'Operation failed', deleteTitle: 'Delete task', deleteConfirm: 'Delete "{name}"?', deleteFailed: 'Delete failed', queued: 'Added to queue', retryFailed: 'Retry failed', batchDelete: 'Delete selected', batchDeleteConfirm: 'Delete {count} tasks?', addFailed: 'Failed to add', desktopOnly: 'Opening local folders requires the desktop app', updateTriggered: 'Started checking updates for all followed anime', updateFailed: 'Update check failed', justNow: 'Just now', minutesAgo: '{count} minutes ago', hoursAgo: '{count} hours ago', daysAgo: '{count} days ago', stream: 'Streaming', manual: 'Manual' },
 }
 
+downloadMessages['zh-CN'].seasonPack = '整季合集 · 第 {start}–{end} 集'
+downloadMessages['zh-TW'].seasonPack = '整季合集 · 第 {start}–{end} 集'
+downloadMessages['ja-JP'].seasonPack = 'シーズンパック · 第 {start}–{end} 話'
+downloadMessages['en-US'].seasonPack = 'Season pack · Episodes {start}–{end}'
+
 for (const [locale, downloads] of Object.entries(downloadMessages)) {
   messages[locale].pages.downloads = downloads
 }

@@ -36,7 +36,7 @@ func (*raceQueueExecutor) Pause(string) error        { return nil }
 func (*raceQueueExecutor) Resume(string) error       { return nil }
 func (*raceQueueExecutor) Remove(string, bool) error { return nil }
 
-func TestSingleAvailableTierFillsEpisodeRaceQueueWithDistinctHashes(t *testing.T) {
+func TestSingleAvailableTierQueuesOnlyHighestPriorityCandidate(t *testing.T) {
 	db := testutil.InitTestDB()
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -88,16 +88,16 @@ func TestSingleAvailableTierFillsEpisodeRaceQueueWithDistinctHashes(t *testing.T
 	for time.Now().Before(deadline) {
 		rows = nil
 		db.Where("anime_id = ? AND episode_number = ?", anime.ID, 2).Find(&rows)
-		if len(rows) == maxConcurrentEpisodeTorrents {
+		if len(rows) == 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(rows) != maxConcurrentEpisodeTorrents {
+	if len(rows) != 1 {
 		var diag []model.OrchestratorDiagnosis
 		db.Where("anime_id = ? AND episode_number = ?", anime.ID, 2).Find(&diag)
-		t.Fatalf("queued %d candidates, want %d; rows=%+v diag=%+v",
-			len(rows), maxConcurrentEpisodeTorrents, rows, diag)
+		t.Fatalf("queued %d candidates, want 1; rows=%+v diag=%+v",
+			len(rows), rows, diag)
 	}
 	seen := make(map[string]bool, len(rows))
 	for _, row := range rows {
@@ -112,8 +112,65 @@ func TestSingleAvailableTierFillsEpisodeRaceQueueWithDistinctHashes(t *testing.T
 			t.Fatalf("candidate is not isolated from media library: %v", row.SavePath)
 		}
 	}
-	if len(seen) != maxConcurrentEpisodeTorrents {
+	if len(seen) != 1 {
 		t.Fatalf("queued hashes are not distinct: %v", seen)
+	}
+}
+
+func TestShouldPreferSeasonPack(t *testing.T) {
+	for _, tc := range []struct {
+		missing, expected int
+		want              bool
+	}{
+		{25, 25, true},
+		{4, 12, true},
+		{3, 12, false},
+		{4, 24, false},
+	} {
+		if got := shouldPreferSeasonPack(tc.missing, tc.expected); got != tc.want {
+			t.Fatalf("shouldPreferSeasonPack(%d, %d)=%v, want %v", tc.missing, tc.expected, got, tc.want)
+		}
+	}
+}
+
+func TestTrySeasonPackQueuesOnlyOneHighestCoveragePack(t *testing.T) {
+	db := testutil.InitTestDB()
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	episodeCount := 12
+	anime := model.Anime{Title: "Pack Test", EpisodeCount: &episodeCount, IsSubscribed: true}
+	if err := db.Create(&anime).Error; err != nil {
+		t.Fatal(err)
+	}
+	items := []indexer.Candidate{
+		{Title: "[Test] Pack Test [01-06 Fin][1080p][简体]", MagnetURL: "magnet:?xt=urn:btih:" + strings.Repeat("J", 40), InfoHash: strings.Repeat("J", 40), SourceName: SourceMikan},
+		{Title: "[Test] Pack Test [01-12 Fin][1080p][简体]", MagnetURL: "magnet:?xt=urn:btih:" + strings.Repeat("K", 40), InfoHash: strings.Repeat("K", 40), SourceName: SourceMikan},
+	}
+	dlSvc := downloadservice.NewService(db, &config.Config{}, nil)
+	release := make(chan struct{})
+	dlSvc.RegisterExecutor(model.DownloadTypeTorrent, &raceQueueExecutor{release: release})
+	orch := New(db, dlSvc, nil, nil,
+		map[string]indexer.Indexer{SourceMikan: &raceQueueIndexer{items: items}}, t.TempDir())
+	pref := Preference{BTEnabled: true, EnabledIndexers: []string{SourceMikan}, Priority: []string{SourceMikan}}
+	missing := make([]int, 12)
+	for i := range missing {
+		missing[i] = i + 1
+	}
+	if !orch.trySeasonPack(context.Background(), &anime, missing, 12, pref) {
+		t.Fatal("expected a season pack")
+	}
+	close(release)
+	var rows []model.Download
+	db.Where("anime_id = ?", anime.ID).Find(&rows)
+	if len(rows) != 1 {
+		t.Fatalf("queued %d packs, want 1", len(rows))
+	}
+	if rows[0].Scope != model.DownloadScopeSeason || rows[0].EpisodeStart == nil || rows[0].EpisodeEnd == nil ||
+		*rows[0].EpisodeStart != 1 || *rows[0].EpisodeEnd != 12 {
+		t.Fatalf("unexpected pack row: %+v", rows[0])
 	}
 }
 

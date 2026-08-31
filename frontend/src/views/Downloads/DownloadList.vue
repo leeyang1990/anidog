@@ -100,6 +100,9 @@
             <div v-if="task.status === 'failed' && (task.last_error || task.error_message)" class="text-xs text-ac-heart-dark truncate mt-0.5">
               {{ task.last_error || task.error_message }}
             </div>
+            <div v-else-if="task.scope === 'season' && task.episode_start && task.episode_end" class="text-xs text-muted-foreground mt-0.5">
+              {{ t('pages.downloads.seasonPack', { start: String(task.episode_start).padStart(2, '0'), end: String(task.episode_end).padStart(2, '0') }) }}
+            </div>
             <div v-else-if="task.episode_number" class="text-xs text-muted-foreground mt-0.5">
               {{ t('pages.downloads.episode', { episode: String(task.episode_number).padStart(2, '0') }) }}
             </div>
@@ -417,9 +420,9 @@ function formatAbsoluteTime(s) {
   const d = new Date(s)
   return isNaN(d.getTime()) ? s : d.toLocaleString(locale.value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
-function sourceLabel(src) { return { bt: 'BT', stream: t('pages.downloads.stream'), bangumi: t('pages.downloads.stream'), rss: 'RSS', manual: t('pages.downloads.manual') }[src] || src || '—' }
+function sourceLabel(src) { return { bt: 'BT', mikan: 'Mikan', stream: t('pages.downloads.stream'), bangumi: t('pages.downloads.stream'), rss: 'RSS', manual: t('pages.downloads.manual') }[src] || src || '—' }
 function sourceTagVariant(src) {
-  return { bt: 'sun', stream: 'grass', bangumi: 'grass', rss: 'sky', manual: 'wood' }[src] || 'default'
+  return { bt: 'sun', mikan: 'heart', stream: 'grass', bangumi: 'grass', rss: 'sky', manual: 'wood' }[src] || 'default'
 }
 
 onMounted(() => {

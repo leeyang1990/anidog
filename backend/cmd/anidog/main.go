@@ -85,9 +85,6 @@ func main() {
 		dlSvc.RegisterExecutor(model.DownloadTypeTorrent, dlservice.NewTorrentExecutor(qbitClient))
 	}
 
-	// 5b. Bangumi 自动下载（保留，用于订阅即时触发 + 手动检查）
-	bangumiAutoDL := bangumisvc.NewAutoDownloader(db, dlSvc, streamManager)
-
 	// 5c. RSS Engine + CRUD
 	rssCrudSvc := rssservice.NewCRUDService(db)
 	rssEngine := rssservice.NewEngine(db, dlSvc)
@@ -245,7 +242,7 @@ func main() {
 
 	handler.NewAuthHandler(authSvc).RegisterRoutes(v1)
 	handler.NewUserHandler(userSvc, authSvc).RegisterRoutes(v1)
-	handler.NewAnimeHandler(animeSvc, bangumiAutoDL).RegisterRoutes(v1)
+	handler.NewAnimeHandler(animeSvc, orch).RegisterRoutes(v1)
 	handler.NewRSSHandler(rssCrudSvc, rssEngine).RegisterRoutes(v1)
 	handler.NewDownloadHandler(dlSvc).RegisterRoutes(v1)
 	handler.NewSettingsHandler(settingSvc).
@@ -269,7 +266,7 @@ func main() {
 	handler.NewSearchHandler(bangumiSvc).RegisterRoutes(v1)
 	handler.NewNotificationHandler(notifSvc).RegisterRoutes(v1)
 	handler.NewCalendarHandler(animeSvc, bangumiSvc).RegisterRoutes(v1)
-	handler.NewBangumiHandler(animeSvc, bangumiSvc, bangumiAutoDL).RegisterRoutes(v1)
+	handler.NewBangumiHandler(animeSvc, bangumiSvc, orch).RegisterRoutes(v1)
 	handler.NewStreamRuleHandler(streamRuleSvc).RegisterRoutes(v1)
 	handler.NewStreamHandler(streamRuleSvc, streamManager, dlSvc).RegisterRoutes(v1)
 	handler.NewFileSystemHandler("/downloads").RegisterRoutes(v1)

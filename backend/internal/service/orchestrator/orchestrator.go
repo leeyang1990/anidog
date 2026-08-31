@@ -33,17 +33,18 @@ const (
 
 // Orchestrator 剧集驱动的多源下载调度器。
 type Orchestrator struct {
-	db          *gorm.DB
-	dlSvc       *dlservice.Service
-	streamMgr   *stream.StreamManager
-	settingSvc  *setting.Service
-	indexers    map[string]indexer.Indexer // Name() -> instance
-	mikanRSS    *indexer.MikanRSSFetcher   // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
-	mediaRoot   string                     // BT 下载根目录（容器内路径）
-	indexerHTTP *http.Client               // 复用动态代理的 BT/Mikan 客户端
-	animeLocks  sync.Map                   // anime id -> *sync.Mutex（单实例内防并发审计/入队）
-	candidateMu sync.Mutex
-	candidates  map[string]candidateCacheEntry // 同一轮缺多集时复用 BT 元数据，避免请求量按集数放大
+	db             *gorm.DB
+	dlSvc          *dlservice.Service
+	streamMgr      *stream.StreamManager
+	settingSvc     *setting.Service
+	indexers       map[string]indexer.Indexer // Name() -> instance
+	mikanRSS       *indexer.MikanRSSFetcher   // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
+	mediaRoot      string                     // BT 下载根目录（容器内路径）
+	indexerHTTP    *http.Client               // 复用动态代理的 BT/Mikan 客户端
+	animeLocks     sync.Map                   // anime id -> *sync.Mutex（单实例内防并发审计/入队）
+	qualityAudited sync.Map                   // anime id -> bool（每次进程启动做一次历史流媒体时长复核）
+	candidateMu    sync.Mutex
+	candidates     map[string]candidateCacheEntry // 同一轮缺多集时复用 BT 元数据，避免请求量按集数放大
 }
 
 type candidateCacheEntry struct {
@@ -277,6 +278,29 @@ func (o *Orchestrator) CheckAllSubscribed(ctx context.Context) {
 	zap.L().Info("orchestrator: 扫描完成")
 }
 
+// TriggerAutoDownload/TriggerManualCheck 让订阅即时触发和手动检查复用同一套
+// Orchestrator 策略。旧 AutoDownloader 会绕过优先级并一次性创建整季流媒体
+// 任务，不能再作为这两个入口的执行器。
+func (o *Orchestrator) TriggerAutoDownload(ctx context.Context, animeID uint, _ string) {
+	o.triggerAnimeCheck(ctx, animeID)
+}
+
+func (o *Orchestrator) TriggerManualCheck(ctx context.Context, animeID uint, _ string) {
+	o.triggerAnimeCheck(ctx, animeID)
+}
+
+func (o *Orchestrator) triggerAnimeCheck(ctx context.Context, animeID uint) {
+	if animeID == 0 {
+		return
+	}
+	var anime model.Anime
+	if err := o.db.WithContext(ctx).First(&anime, animeID).Error; err != nil {
+		zap.L().Warn("orchestrator: 即时检查读取番剧失败", zap.Uint("anime_id", animeID), zap.Error(err))
+		return
+	}
+	o.CheckAnime(ctx, &anime, LoadGlobal(ctx, o.settingSvc))
+}
+
 // CheckAnime 检查单个番剧，对缺失集按优先级尝试各源下载。
 // global 传入全局偏好；函数内部合并 per-anime override。
 func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, global Preference) {
@@ -317,6 +341,7 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 		zap.L().Error("媒体存储不健康，禁止本轮审计和下载", zap.Uint("anime_id", anime.ID), zap.Error(err))
 		return
 	}
+	o.auditHistoricalStreamMediaOnce(ctx, anime)
 
 	// 已下载的集（跨所有 source_type）
 	downloaded := o.downloadedEpisodes(ctx, anime.ID)
@@ -378,27 +403,6 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 		}
 	}
 
-	// 已有候选正在下载的剧集也要维护竞速队列。过去 downloadedEpisodes
-	// 会直接跳过这些集，导致首条 Mikan/BT 入队后永远没有机会补入其他
-	// 来源或次优 Hash。缺失集由下面的正常流程处理，这里只补“已覆盖但
-	// 竞速槽未满”的已播剧集。
-	missingSet := make(map[int]bool, len(missing))
-	for _, ep := range missing {
-		missingSet[ep] = true
-	}
-	for _, ep := range o.activeEpisodeRaces(ctx, anime.ID) {
-		if missingSet[ep] {
-			continue
-		}
-		if ad, has := airDates[ep]; has && !episode.IsAired(ad, now) {
-			continue
-		}
-		if !o.episodeRaceNeedsFill(ctx, anime.ID, ep, pref) {
-			continue
-		}
-		o.tryDownloadEpisode(ctx, anime, ep, pref)
-	}
-
 	if len(missing) == 0 {
 		if len(skippedUnaired) > 0 {
 			zap.L().Debug("orchestrator: 番剧无可下载集（剩余均为待发布）",
@@ -406,6 +410,14 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 				zap.Ints("upcoming", skippedUnaired))
 		}
 		return
+	}
+
+	// 已完结/一次性回填大量历史剧集时，先做一次整季级决策。命中合集后
+	// 本轮立即结束，绝不再为每一集创建 stream 或第二个几十 GB 的合集。
+	if shouldPreferSeasonPack(len(missing), expected) {
+		if o.trySeasonPack(ctx, anime, missing, expected, pref) {
+			return
+		}
 	}
 
 	zap.L().Info("orchestrator: 检查番剧",
@@ -445,13 +457,12 @@ func latestAiredEpisode(expected int, airDates map[int]string, now time.Time) in
 	return latest
 }
 
-// tryDownloadEpisode 按优先级为指定集补齐所有可用来源槽位。优先级只决定
-// 入队顺序，不再意味着“命中一个就舍弃其余来源”；最终由 download.Service
-// 对同集候选做先完成者胜出的仲裁。
+// tryDownloadEpisode 严格按优先级逐级降级。一个来源成功入队后本轮立即停止；
+// 只有候选失败、判死种或进入 seeking_alternative 后，下一轮才尝试同层下一
+// 候选或更低优先级来源。这样“优先级”才是用户理解的选择顺序，而不是把
+// Mikan、普通 BT、流媒体全部同时下载。
 func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anime, ep int, pref Preference) bool {
 	retryCount := o.retryCountForEpisode(ctx, anime.ID, ep)
-	started := false
-	activeTorrentTiers := make(map[string]bool, 2)
 	for _, srcType := range pref.Priority {
 		if pref.IsSourceDisabled(srcType) {
 			o.recordDiag(anime.ID, ep, srcType, 0, 0, "源已禁用", "", 0)
@@ -481,47 +492,155 @@ func (o *Orchestrator) tryDownloadEpisode(ctx context.Context, anime *model.Anim
 
 		o.recordDiag(anime.ID, ep, srcType, diagResultCount, diagRankedOut, diagReason, diagBestTitle, diagBestScore)
 		if ok {
-			started = true
-			if srcType == SourceBT || srcType == SourceMikan {
-				activeTorrentTiers[srcType] = true
-			}
+			return true
 		}
+	}
+	return false
+}
+
+func shouldPreferSeasonPack(missingCount, expected int) bool {
+	if missingCount < 4 || expected <= 0 {
+		return false
+	}
+	return missingCount*100 >= expected*30
+}
+
+type seasonPackCandidate struct {
+	Candidate indexer.ScoredCandidate
+	Start     int
+	End       int
+	Coverage  int
+}
+
+// trySeasonPack 从最高优先级的 BT 层开始找一个覆盖大部分缺集的合集。
+// 每轮最多入队一个合集；没有合格合集时才回到逐集调度。
+func (o *Orchestrator) trySeasonPack(ctx context.Context, anime *model.Anime, missing []int, expected int, pref Preference) bool {
+	if o.dlSvc == nil || !o.dlSvc.HasExecutor(model.DownloadTypeTorrent) || len(missing) == 0 {
+		return false
+	}
+	firstMissing := missing[0]
+	minimumCoverage := (len(missing)*70 + 99) / 100
+	if minimumCoverage < 4 {
+		minimumCoverage = 4
+	}
+	season := 1
+	if anime.Season != nil && *anime.Season > 0 {
+		season = *anime.Season
 	}
 
-	// 第一轮先给每个维度一次机会，避免高优先级 BT 独占全部并发槽。
-	// 随后按同一优先级循环，用不同 Hash 的次优候选补满队列。这样仅
-	// Mikan 有结果时也能立即让多个字幕组竞速，不必先等慢种巡检。
-	for o.activeEpisodeTorrentCount(ctx, anime.ID, ep) < maxConcurrentEpisodeTorrents {
-		added := false
-		for _, tier := range pref.Priority {
-			if tier != SourceBT && tier != SourceMikan {
-				continue
-			}
-			if pref.IsSourceDisabled(tier) {
-				continue
-			}
-			if !activeTorrentTiers[tier] && !o.hasActiveSourceCandidate(ctx, anime.ID, ep, tier) {
-				continue
-			}
-			ok, resultCount, rankedOut, reason, bestTitle, bestScore :=
-				o.tryBT(ctx, anime, ep, pref, retryCount, tier, true)
-			if !ok {
-				continue
-			}
-			started = true
-			added = true
-			activeTorrentTiers[tier] = true
-			o.recordDiag(anime.ID, ep, tier, resultCount, rankedOut,
-				"竞速队列补位："+reason, bestTitle, bestScore)
-			if o.activeEpisodeTorrentCount(ctx, anime.ID, ep) >= maxConcurrentEpisodeTorrents {
-				break
-			}
+	for _, tier := range pref.Priority {
+		if tier != SourceMikan && tier != SourceBT {
+			continue
 		}
-		if !added {
-			break
+		if pref.IsSourceDisabled(tier) {
+			continue
+		}
+		enabled := o.enabledIndexersForTier(pref, tier)
+		if len(enabled) == 0 {
+			continue
+		}
+		cands := o.collectBTCandidates(ctx, anime, enabled, tier == SourceMikan)
+		ranked := indexer.RankByPreferenceAndSeason(cands, pref.ToIndexerPref(), 0, season)
+		ranked = retainPreferredLanguage(ranked, pref.Languages)
+		packs := make([]seasonPackCandidate, 0)
+		for _, candidate := range ranked {
+			if candidate.Parsed == nil || !candidate.Parsed.IsBatch || candidate.Parsed.BatchStart == nil || candidate.Parsed.BatchEnd == nil {
+				continue
+			}
+			start, end := *candidate.Parsed.BatchStart, *candidate.Parsed.BatchEnd
+			if end == expected-1 && containsExtraEpisode(candidate.Title) {
+				end = expected
+			}
+			coverage := countEpisodesInRange(missing, start, end)
+			if coverage < minimumCoverage {
+				continue
+			}
+			url := candidate.MagnetURL
+			if url == "" {
+				url = candidate.TorrentURL
+			}
+			if url == "" || o.isDuplicateURL(ctx, anime.ID, url) ||
+				(candidate.InfoHash != "" && (o.hasActiveInfoHash(ctx, anime.ID, candidate.InfoHash) ||
+					o.hasHistoricalFailure(ctx, candidate.InfoHash) || o.hasAnimeInfoHashFailure(ctx, anime.ID, candidate.InfoHash))) ||
+				o.hasAnimeURLFailure(ctx, anime.ID, url) {
+				continue
+			}
+			packs = append(packs, seasonPackCandidate{Candidate: candidate, Start: start, End: end, Coverage: coverage})
+		}
+		if len(packs) == 0 {
+			o.recordDiag(anime.ID, firstMissing, tier, len(cands), len(cands),
+				"未找到覆盖至少 70% 缺集的健康合集，降级继续检索", "", 0)
+			continue
+		}
+		sort.SliceStable(packs, func(i, j int) bool {
+			if packs[i].Coverage != packs[j].Coverage {
+				return packs[i].Coverage > packs[j].Coverage
+			}
+			return packs[i].Candidate.Score > packs[j].Candidate.Score
+		})
+		top := packs[0]
+		url := top.Candidate.MagnetURL
+		if url == "" {
+			url = top.Candidate.TorrentURL
+		}
+		start, end := top.Start, top.End
+		ep := firstMissing
+		task := &dlservice.Task{
+			Name:          fmt.Sprintf("%s - 合集 %02d-%02d", anime.Title, start, end),
+			URL:           url,
+			DownloadType:  model.DownloadTypeTorrent,
+			Source:        tier,
+			AnimeName:     anime.Title,
+			AnimeID:       &anime.ID,
+			EpisodeNumber: &ep,
+			Scope:         model.DownloadScopeSeason,
+			EpisodeStart:  &start,
+			EpisodeEnd:    &end,
+			RetryCount:    o.retryCountForEpisode(ctx, anime.ID, firstMissing),
+		}
+		if _, err := o.dlSvc.Create(ctx, task); err != nil {
+			o.recordDiag(anime.ID, firstMissing, tier, len(cands), len(cands)-len(packs),
+				"创建合集任务失败: "+err.Error(), top.Candidate.Title, top.Candidate.Score)
+			continue
+		}
+		reason := fmt.Sprintf("整季优先：已入队覆盖 %d/%d 个缺集的合集 %02d-%02d", top.Coverage, len(missing), start, end)
+		o.recordDiag(anime.ID, firstMissing, tier, len(cands), len(cands)-len(packs), reason, top.Candidate.Title, top.Candidate.Score)
+		zap.L().Info("orchestrator: 整季合集优先入队",
+			zap.String("anime", anime.Title), zap.String("source", tier),
+			zap.Int("start", start), zap.Int("end", end), zap.Int("coverage", top.Coverage),
+			zap.String("title", top.Candidate.Title))
+		return true
+	}
+	return false
+}
+
+func (o *Orchestrator) enabledIndexersForTier(pref Preference, tier string) []indexer.Indexer {
+	enabled := make([]indexer.Indexer, 0, len(pref.EnabledIndexers))
+	for _, name := range pref.EnabledIndexers {
+		isMikan := name == SourceMikan
+		if (tier == SourceMikan) != isMikan {
+			continue
+		}
+		if ix, has := o.indexers[name]; has {
+			enabled = append(enabled, ix)
 		}
 	}
-	return started
+	return enabled
+}
+
+func countEpisodesInRange(episodes []int, start, end int) int {
+	count := 0
+	for _, ep := range episodes {
+		if ep >= start && ep <= end {
+			count++
+		}
+	}
+	return count
+}
+
+func containsExtraEpisode(title string) bool {
+	lower := strings.ToLower(title)
+	return strings.Contains(lower, "ova") || strings.Contains(lower, "oad") || strings.Contains(lower, "oav")
 }
 
 // ---- Stream 源适配 ----
@@ -689,16 +808,7 @@ func (o *Orchestrator) tryBT(
 		return false, 0, 0, "该来源已有下载记录（同集），跳过", "", 0
 	}
 	// 选启用的 indexer
-	enabled := make([]indexer.Indexer, 0, len(pref.EnabledIndexers))
-	for _, name := range pref.EnabledIndexers {
-		isMikan := name == SourceMikan
-		if (tier == SourceMikan) != isMikan {
-			continue
-		}
-		if ix, has := o.indexers[name]; has {
-			enabled = append(enabled, ix)
-		}
-	}
+	enabled := o.enabledIndexersForTier(pref, tier)
 	if len(enabled) == 0 {
 		if tier == SourceMikan {
 			return false, 0, 0, "Mikan 未启用", "", 0
@@ -1154,6 +1264,9 @@ func (o *Orchestrator) episodeRaceNeedsFill(ctx context.Context, animeID uint, e
 func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map[int]bool {
 	var rows []struct {
 		EpisodeNumber      *int
+		Scope              string
+		EpisodeStart       *int
+		EpisodeEnd         *int
 		Status             string
 		MediaMissing       bool
 		SeekingAlternative bool
@@ -1166,12 +1279,25 @@ func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map
 			model.DownloadStatusDownloading,
 			model.DownloadStatusPending,
 		}).
-		Select("episode_number, status, media_missing, seeking_alternative").
+		Select("episode_number, scope, episode_start, episode_end, status, media_missing, seeking_alternative").
 		Scan(&rows)
 
 	out := make(map[int]bool, len(rows))
 	for _, r := range rows {
-		if r.EpisodeNumber != nil && !r.MediaMissing && !r.SeekingAlternative {
+		if r.MediaMissing || r.SeekingAlternative {
+			continue
+		}
+		// 下载中的合集暂时覆盖整个范围，防止它下载时又启动逐集任务。
+		// 完成后的真实覆盖范围由 AnimeEpisode 文件映射决定，不能仅凭标题
+		// 声明把无法识别或缺失的文件误标为完成。
+		if r.Scope == model.DownloadScopeSeason && r.Status != model.DownloadStatusCompleted &&
+			r.EpisodeStart != nil && r.EpisodeEnd != nil {
+			for ep := *r.EpisodeStart; ep <= *r.EpisodeEnd; ep++ {
+				out[ep] = true
+			}
+			continue
+		}
+		if r.EpisodeNumber != nil {
 			out[*r.EpisodeNumber] = true
 		}
 	}

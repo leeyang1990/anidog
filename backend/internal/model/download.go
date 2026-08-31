@@ -34,6 +34,12 @@ const (
 	DownloadTypeStream  = "stream"
 )
 
+// 下载范围。episode 表示单集候选；season 表示一个覆盖多集的合集种子。
+const (
+	DownloadScopeEpisode = "episode"
+	DownloadScopeSeason  = "season"
+)
+
 // Download 下载数据库模型
 type Download struct {
 	ID        uint    `gorm:"primaryKey" json:"id"`
@@ -86,8 +92,11 @@ type Download struct {
 	MediaMissing   bool       `gorm:"index;default:false" json:"media_missing"`
 	MediaMissingAt *time.Time `json:"media_missing_at"`
 
-	AnimeID       *uint `gorm:"index" json:"anime_id"`
-	EpisodeNumber *int  `json:"episode_number"`
+	AnimeID       *uint  `gorm:"index" json:"anime_id"`
+	EpisodeNumber *int   `json:"episode_number"`
+	Scope         string `gorm:"index;default:'episode'" json:"scope"`
+	EpisodeStart  *int   `json:"episode_start"`
+	EpisodeEnd    *int   `json:"episode_end"`
 
 	DownloadType    string  `gorm:"index;default:'torrent'" json:"download_type"`
 	StreamURL       *string `json:"stream_url"`

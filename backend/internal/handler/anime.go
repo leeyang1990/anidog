@@ -7,16 +7,23 @@ import (
 
 	"github.com/anidog/anidog-go/internal/model"
 	animesvc "github.com/anidog/anidog-go/internal/service/anime"
-	bangumisvc "github.com/anidog/anidog-go/internal/service/bangumi"
 	"github.com/gin-gonic/gin"
 )
 
 type AnimeHandler struct {
 	animeSvc *animesvc.Service
-	autoDL   *bangumisvc.AutoDownloader
+	autoDL   AnimeDownloadChecker
 }
 
-func NewAnimeHandler(animeSvc *animesvc.Service, autoDL *bangumisvc.AutoDownloader) *AnimeHandler {
+// AnimeDownloadChecker 把 HTTP 入口与具体下载实现解耦。生产环境注入
+// Orchestrator，确保订阅、手动检查和定时任务使用同一套优先级策略。
+type AnimeDownloadChecker interface {
+	TriggerAutoDownload(context.Context, uint, string)
+	TriggerManualCheck(context.Context, uint, string)
+	CheckAllSubscribed(context.Context)
+}
+
+func NewAnimeHandler(animeSvc *animesvc.Service, autoDL AnimeDownloadChecker) *AnimeHandler {
 	return &AnimeHandler{animeSvc: animeSvc, autoDL: autoDL}
 }
 

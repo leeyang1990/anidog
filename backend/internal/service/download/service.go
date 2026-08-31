@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/notification"
+	"github.com/anidog/anidog-go/internal/service/stream"
 	"github.com/anidog/anidog-go/internal/ws"
 )
 
@@ -89,8 +91,14 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 		StreamRuleID:  task.StreamRuleID,
 		AnimeID:       task.AnimeID,
 		EpisodeNumber: task.EpisodeNumber,
+		Scope:         task.Scope,
+		EpisodeStart:  task.EpisodeStart,
+		EpisodeEnd:    task.EpisodeEnd,
 		Source:        task.Source,
 		RetryCount:    task.RetryCount,
+	}
+	if dl.Scope == "" {
+		dl.Scope = model.DownloadScopeEpisode
 	}
 	if task.StreamRoadName != "" {
 		rn := task.StreamRoadName
@@ -460,6 +468,178 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 	zap.L().Info("剧集竞速产生赢家",
 		zap.Uint("id", dlID), zap.String("name", candidate.Name), zap.String("source", candidate.Source))
 	return true
+}
+
+type seasonPackMovePlan struct {
+	ep   int
+	from string
+	to   string
+	size int64
+}
+
+// CompleteSeasonPack 把一个合集候选中的多集视频分别提升到标准媒体目录，
+// 并一次性写入 AnimeEpisode。任何目标冲突或移动失败都会回滚已经移动的文件，
+// 避免只归档半季却把合集标成完成。
+func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFiles map[int]string, mediaRoot string) bool {
+	if len(stagingFiles) == 0 {
+		return false
+	}
+	var candidate model.Download
+	if err := s.db.WithContext(ctx).First(&candidate, dlID).Error; err != nil ||
+		candidate.AnimeID == nil || candidate.Scope != model.DownloadScopeSeason {
+		return false
+	}
+	var anime model.Anime
+	if err := s.db.WithContext(ctx).First(&anime, *candidate.AnimeID).Error; err != nil {
+		return false
+	}
+
+	episodes := make([]int, 0, len(stagingFiles))
+	for ep := range stagingFiles {
+		episodes = append(episodes, ep)
+	}
+	sort.Ints(episodes)
+	plans := make([]seasonPackMovePlan, 0, len(episodes))
+	for _, ep := range episodes {
+		from := stagingFiles[ep]
+		if _, err := os.Stat(from); err != nil {
+			zap.L().Warn("合集归档源文件不存在", zap.Uint("id", dlID), zap.Int("episode", ep), zap.Error(err))
+			return false
+		}
+		to := stream.BuildMediaPath(mediaRoot, &anime, ep, strings.ToLower(filepath.Ext(from)))
+		if _, err := os.Stat(to); err == nil {
+			zap.L().Warn("合集归档目标已存在，拒绝覆盖", zap.Uint("id", dlID), zap.Int("episode", ep), zap.String("path", to))
+			return false
+		} else if !os.IsNotExist(err) {
+			return false
+		}
+		plans = append(plans, seasonPackMovePlan{ep: ep, from: from, to: to, size: fileSize(from)})
+	}
+
+	moved := make([]seasonPackMovePlan, 0, len(plans))
+	for _, plan := range plans {
+		if err := os.MkdirAll(filepath.Dir(plan.to), 0755); err != nil {
+			rollbackSeasonPackMoves(moved)
+			return false
+		}
+		if err := os.Rename(plan.from, plan.to); err != nil {
+			rollbackSeasonPackMoves(moved)
+			zap.L().Error("合集文件归档失败", zap.Uint("id", dlID), zap.Int("episode", plan.ep), zap.Error(err))
+			return false
+		}
+		moved = append(moved, plan)
+	}
+
+	now := time.Now()
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.Download{}).Where("id = ?", candidate.ID).Updates(map[string]interface{}{
+			"status":              model.DownloadStatusCompleted,
+			"progress":            100.0,
+			"completed_at":        &now,
+			"file_path":           filepath.Dir(plans[0].to),
+			"failure_kind":        "",
+			"last_error":          "",
+			"next_retry_at":       nil,
+			"seeking_alternative": false,
+			"quality_note":        fmt.Sprintf("合集已归档 %d 集", len(plans)),
+		}).Error; err != nil {
+			return err
+		}
+		for _, plan := range plans {
+			downloadID := candidate.TorrentID
+			path, size := plan.to, plan.size
+			row := model.AnimeEpisode{
+				AnimeID: candidateAnimeID(candidate), EpisodeNumber: plan.ep,
+				Downloaded: true, DownloadID: &downloadID, FilePath: &path, FileSize: &size,
+				UpdatedAt: now,
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "anime_id"}, {Name: "episode_number"}},
+				DoUpdates: clause.Assignments(map[string]interface{}{
+					"downloaded": true, "download_id": downloadID,
+					"file_path": path, "file_size": size, "updated_at": now,
+				}),
+			}).Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		rollbackSeasonPackMoves(moved)
+		zap.L().Error("合集数据库归档失败", zap.Uint("id", dlID), zap.Error(err))
+		return false
+	}
+
+	s.settleSeasonPack(ctx, &candidate, episodes)
+	if exec := s.executors[candidate.DownloadType]; exec != nil {
+		if err := exec.Remove(executorTaskID(&candidate), false); err != nil {
+			zap.L().Warn("移除已归档合集的 qBit 任务失败", zap.Uint("id", candidate.ID), zap.Error(err))
+		}
+	}
+	removeTorrentRaceDirectory(candidate.SavePath)
+	s.updateAnimeProgressFromEpisodeTable(ctx, *candidate.AnimeID)
+	s.notifyCompletion(candidate.ID)
+	zap.L().Info("整季合集归档完成", zap.Uint("id", candidate.ID), zap.String("name", candidate.Name), zap.Int("episodes", len(plans)))
+	return true
+}
+
+func candidateAnimeID(candidate model.Download) uint {
+	if candidate.AnimeID == nil {
+		return 0
+	}
+	return *candidate.AnimeID
+}
+
+func rollbackSeasonPackMoves(moved []seasonPackMovePlan) {
+	for i := len(moved) - 1; i >= 0; i-- {
+		_ = os.Rename(moved[i].to, moved[i].from)
+	}
+}
+
+func (s *Service) settleSeasonPack(ctx context.Context, winner *model.Download, episodes []int) {
+	if winner == nil || winner.AnimeID == nil || len(episodes) == 0 {
+		return
+	}
+	minEp, maxEp := episodes[0], episodes[len(episodes)-1]
+	var siblings []model.Download
+	if err := s.db.WithContext(ctx).
+		Where("id <> ? AND anime_id = ? AND episode_number BETWEEN ? AND ? AND status IN ?",
+			winner.ID, *winner.AnimeID, minEp, maxEp,
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
+		Find(&siblings).Error; err != nil {
+		return
+	}
+	covered := make(map[int]bool, len(episodes))
+	for _, ep := range episodes {
+		covered[ep] = true
+	}
+	for i := range siblings {
+		sibling := &siblings[i]
+		if sibling.EpisodeNumber == nil || !covered[*sibling.EpisodeNumber] {
+			continue
+		}
+		_ = s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", sibling.ID).Updates(map[string]interface{}{
+			"status": model.DownloadStatusSuperseded, "download_speed": 0,
+			"seeking_alternative": false, "quality_note": fmt.Sprintf("合集候选 #%d 已覆盖本集", winner.ID),
+		}).Error
+		if exec := s.executors[sibling.DownloadType]; exec != nil {
+			removeFiles := sibling.DownloadType == model.DownloadTypeTorrent && sibling.SavePath != nil && IsTorrentRaceSavePath(*sibling.SavePath)
+			_ = exec.Remove(executorTaskID(sibling), removeFiles)
+			if removeFiles {
+				removeTorrentRaceDirectory(sibling.SavePath)
+			}
+		}
+	}
+}
+
+func (s *Service) updateAnimeProgressFromEpisodeTable(ctx context.Context, animeID uint) {
+	var maxEpisode int
+	if err := s.db.WithContext(ctx).Model(&model.AnimeEpisode{}).
+		Where("anime_id = ? AND downloaded = ?", animeID, true).
+		Select("COALESCE(MAX(episode_number), 0)").Scan(&maxEpisode).Error; err == nil {
+		_ = s.db.WithContext(ctx).Model(&model.Anime{}).Where("id = ?", animeID).Update("current_episode", maxEpisode).Error
+	}
 }
 
 func removeStagingFile(path string) error {
@@ -1109,6 +1289,18 @@ func resolveSavePath(cfg *config.Config, task *Task) *string {
 func (s *Service) resolveTaskSavePath(ctx context.Context, task *Task) *string {
 	if task.SavePath != "" {
 		return &task.SavePath
+	}
+	if task.DownloadType == model.DownloadTypeTorrent && task.AnimeID != nil && task.Scope == model.DownloadScopeSeason &&
+		task.EpisodeStart != nil && task.EpisodeEnd != nil {
+		path := BuildTorrentPackSavePath(
+			s.currentMediaRoot(ctx),
+			*task.AnimeID,
+			*task.EpisodeStart,
+			*task.EpisodeEnd,
+			ExtractInfoHash(task.URL),
+			task.URL,
+		)
+		return &path
 	}
 	if task.DownloadType == model.DownloadTypeTorrent && task.AnimeID != nil && task.EpisodeNumber != nil {
 		path := BuildTorrentRaceSavePath(

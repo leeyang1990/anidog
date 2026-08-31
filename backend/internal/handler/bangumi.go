@@ -9,18 +9,17 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/anidog/anidog-go/internal/model"
-	animesvc "github.com/anidog/anidog-go/internal/service/anime"
-	bangumisvc "github.com/anidog/anidog-go/internal/service/bangumi"
 	"github.com/anidog/anidog-go/internal/service"
+	animesvc "github.com/anidog/anidog-go/internal/service/anime"
 )
 
 type BangumiHandler struct {
 	animeSvc   *animesvc.Service
 	bangumiSvc *service.BangumiService
-	autoDL     *bangumisvc.AutoDownloader
+	autoDL     AnimeDownloadChecker
 }
 
-func NewBangumiHandler(animeSvc *animesvc.Service, bangumiSvc *service.BangumiService, autoDL *bangumisvc.AutoDownloader) *BangumiHandler {
+func NewBangumiHandler(animeSvc *animesvc.Service, bangumiSvc *service.BangumiService, autoDL AnimeDownloadChecker) *BangumiHandler {
 	return &BangumiHandler{animeSvc: animeSvc, bangumiSvc: bangumiSvc, autoDL: autoDL}
 }
 
@@ -69,8 +68,8 @@ func (h *BangumiHandler) Discover(c *gin.Context) {
 		Keyword   string   `json:"keyword"`
 		Sort      string   `json:"sort"`
 		Year      int      `json:"year"`
-		Season    string   `json:"season"`   // 兼容旧字段
-		Seasons   []string `json:"seasons"`  // 新字段：多选
+		Season    string   `json:"season"`  // 兼容旧字段
+		Seasons   []string `json:"seasons"` // 新字段：多选
 		Tags      []string `json:"tags"`
 		MinRating float64  `json:"min_rating"`
 		Limit     int      `json:"limit"`

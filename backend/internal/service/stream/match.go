@@ -74,19 +74,43 @@ func runeOverlapLen(a, b string) int {
 
 // PickBestMatch 在结果中选出与目标标题最匹配的一个。空列表返回 nil。
 func PickBestMatch(target string, results []SearchResult) *SearchResult {
-	if len(results) == 0 {
-		return nil
-	}
-	best := &results[0]
-	bestScore := MatchScore(target, best.Name)
-	for i := 1; i < len(results); i++ {
+	var best *SearchResult
+	bestScore := 0
+	for i := range results {
+		if !IsConfidentMatch(target, results[i].Name) {
+			continue
+		}
 		s := MatchScore(target, results[i].Name)
-		if s > bestScore {
+		if best == nil || s > bestScore {
 			bestScore = s
 			best = &results[i]
 		}
 	}
 	return best
+}
+
+// IsConfidentMatch 给自动下载设置最低标题边界。仅共享几个常见汉字的结果
+// 不能因为“它是搜索结果里最高分”就被选中，例如「碧蓝之海」与「碧蓝航线」。
+// 明确包含关系直接通过；否则至少要求基础标题 60% 的唯一字符重叠。
+func IsConfidentMatch(target, candidate string) bool {
+	tBase := strings.TrimSpace(stripSeasonSuffix(target))
+	cBase := strings.TrimSpace(stripSeasonSuffix(candidate))
+	if tBase == "" || cBase == "" {
+		return false
+	}
+	if strings.Contains(cBase, tBase) || strings.Contains(tBase, cBase) {
+		return true
+	}
+	targetRunes := make(map[rune]bool)
+	for _, r := range tBase {
+		if !strings.ContainsRune(" \t-_·☆～~!?！？：:（）()[]【】", r) {
+			targetRunes[r] = true
+		}
+	}
+	if len(targetRunes) == 0 {
+		return false
+	}
+	return runeOverlapLen(tBase, cBase)*100 >= len(targetRunes)*60
 }
 
 // SortResultsByMatch 按匹配度降序排序（就地修改）

@@ -154,9 +154,88 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 	return MediaAuditResult{Success: true, Confirmed: true, Missing: missing, Snapshot: snapshot}
 }
 
-// RetryEpisodeAfterCandidateFailure repairs the episode state left by a dead
-// torrent or rejected stream candidate and immediately runs normal multi-source
-// selection. This closes the old 30-minute gap before another source is tried.
+func (o *Orchestrator) auditHistoricalStreamMediaOnce(ctx context.Context, anime *model.Anime) {
+	if anime == nil {
+		return
+	}
+	if _, loaded := o.qualityAudited.LoadOrStore(anime.ID, true); loaded {
+		return
+	}
+	var completed []model.Download
+	if err := o.db.WithContext(ctx).
+		Where("anime_id = ? AND episode_number IS NOT NULL AND status = ?", anime.ID, model.DownloadStatusCompleted).
+		Find(&completed).Error; err != nil {
+		o.qualityAudited.Delete(anime.ID)
+		return
+	}
+	o.quarantineSuspiciousStreamMedia(ctx, anime, completed)
+}
+
+func (o *Orchestrator) quarantineSuspiciousStreamMedia(ctx context.Context, anime *model.Anime, completed []model.Download) []int {
+	type mediaDuration struct {
+		dl       model.Download
+		duration float64
+	}
+	items := make([]mediaDuration, 0, len(completed))
+	baseline := make([]float64, 0, len(completed))
+	for _, dl := range completed {
+		if dl.FilePath == nil || strings.TrimSpace(*dl.FilePath) == "" {
+			continue
+		}
+		duration, err := dlservice.ProbeMediaDuration(strings.TrimSpace(*dl.FilePath))
+		if err != nil {
+			continue
+		}
+		items = append(items, mediaDuration{dl: dl, duration: duration})
+		baseline = append(baseline, duration)
+	}
+	if len(baseline) < 3 {
+		return nil
+	}
+	sort.Float64s(baseline)
+	median := baseline[len(baseline)/2]
+	if len(baseline)%2 == 0 {
+		median = (baseline[len(baseline)/2-1] + median) / 2
+	}
+	minimum := median * 0.5
+	quarantined := make([]int, 0)
+	for _, item := range items {
+		dl := item.dl
+		if dl.EpisodeNumber == nil || dl.DownloadType != model.DownloadTypeStream || item.duration+5 >= minimum {
+			continue
+		}
+		from := strings.TrimSpace(*dl.FilePath)
+		stamp := time.Now().UTC().Format("20060102T150405Z")
+		to := filepath.Join(o.currentMediaRoot(ctx), ".anidog-rejected",
+			fmt.Sprintf("anime-%d", anime.ID), stamp, filepath.Base(from))
+		if err := os.MkdirAll(filepath.Dir(to), 0755); err != nil {
+			continue
+		}
+		if err := os.Rename(from, to); err != nil {
+			zap.L().Warn("媒体质量巡检：隔离异常视频失败", zap.Uint("download_id", dl.ID), zap.Error(err))
+			continue
+		}
+		now := time.Now()
+		reason := fmt.Sprintf("历史流媒体时长异常：%.2f 秒，同番中位数 %.2f 秒，已隔离并重新选源", item.duration, median)
+		_ = o.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dl.ID).Updates(map[string]interface{}{
+			"status": model.DownloadStatusFailed, "failure_kind": model.FailureKindRejected,
+			"last_error": reason, "media_missing": true, "media_missing_at": &now,
+			"file_path": to,
+		}).Error
+		_ = o.db.WithContext(ctx).Model(&model.AnimeEpisode{}).
+			Where("anime_id = ? AND episode_number = ?", anime.ID, *dl.EpisodeNumber).
+			Updates(map[string]interface{}{"downloaded": false, "file_path": nil, "file_size": nil}).Error
+		quarantined = append(quarantined, *dl.EpisodeNumber)
+		zap.L().Warn("媒体质量巡检：已隔离明显短于同番的历史流媒体",
+			zap.Uint("anime_id", anime.ID), zap.Int("episode", *dl.EpisodeNumber),
+			zap.Float64("duration", item.duration), zap.Float64("median", median), zap.String("quarantine", to))
+	}
+	return quarantined
+}
+
+// RetryEpisodeAfterCandidateFailure 在候选失败后立即重跑整部番剧的正常规划。
+// 不能只重试触发失败的单集：如果失败的是整季合集，需要重新选择下一个合集，
+// 而不是立刻退化成 20 多条逐集流媒体任务。
 func (o *Orchestrator) RetryEpisodeAfterCandidateFailure(ctx context.Context, animeID uint, episode int) {
 	if animeID == 0 || episode <= 0 {
 		return
@@ -176,25 +255,9 @@ func (o *Orchestrator) RetryEpisodeAfterCandidateFailure(ctx context.Context, an
 		return
 	}
 
-	// 不再因为“同集仍有其他候选”而提前退出。这里直接运行该集的多源入队：
-	// 每个来源由 isDuplicate 独立占槽；被标记 seeking_alternative 的慢种
-	// 继续下载但会释放自己的槽位，因此可以补入不同 Hash。这样某个尚未判慢
-	// 的候选不会意外阻止整个竞速队列补位。
-	lock := o.animeLock(animeID)
-	lock.Lock()
-	defer lock.Unlock()
-
-	now := time.Now()
-	_ = o.db.WithContext(ctx).Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND status = ?", animeID, episode, model.DownloadStatusCompleted).
-		Updates(map[string]interface{}{"media_missing": true, "media_missing_at": &now}).Error
-	_ = o.db.WithContext(ctx).Model(&model.AnimeEpisode{}).
-		Where("anime_id = ? AND episode_number = ?", animeID, episode).
-		Update("downloaded", false).Error
-
-	zap.L().Warn("下载质量巡检：立即补齐多源竞速队列",
+	zap.L().Warn("下载质量巡检：立即重新规划来源",
 		zap.Uint("anime_id", animeID), zap.String("anime", anime.Title), zap.Int("episode", episode))
-	o.tryDownloadEpisode(ctx, &anime, episode, MergeWithAnime(LoadGlobal(ctx, o.settingSvc), &anime))
+	o.CheckAnime(ctx, &anime, LoadGlobal(ctx, o.settingSvc))
 }
 
 func scanEpisodeFiles(seasonDir string, expectedSeason int) (map[int]bool, int, error) {

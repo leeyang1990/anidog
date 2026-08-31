@@ -41,7 +41,7 @@ func (s *Service) validateStreamDurationConsistency(ctx context.Context, task *T
 		return nil
 	}
 
-	candidateDuration, err := probeMediaDuration(stagingPath)
+	candidateDuration, err := ProbeMediaDuration(stagingPath)
 	if err != nil {
 		return fmt.Errorf("无法复核流媒体成片时长: %w", err)
 	}
@@ -60,7 +60,7 @@ func (s *Service) validateStreamDurationConsistency(ctx context.Context, task *T
 
 	peerDurations := make([]float64, 0, len(peers))
 	for _, peer := range peers {
-		duration, probeErr := probeMediaDuration(peer.FilePath)
+		duration, probeErr := ProbeMediaDuration(peer.FilePath)
 		if probeErr == nil {
 			peerDurations = append(peerDurations, duration)
 		}
@@ -93,7 +93,8 @@ func validateDurationAgainstPeers(candidateDuration float64, peerDurations []flo
 	return nil
 }
 
-func probeMediaDuration(path string) (float64, error) {
+// ProbeMediaDuration 读取本地媒体时长，供下载候选校验和历史媒体巡检复用。
+func ProbeMediaDuration(path string) (float64, error) {
 	out, err := exec.Command("ffprobe", "-v", "error",
 		"-show_entries", "format=duration", "-of", "json", path).Output()
 	if err != nil {

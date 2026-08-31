@@ -68,6 +68,23 @@ func BuildTorrentRaceSavePath(mediaRoot string, animeID uint, episode int, infoH
 		SanitizeTitle(key))
 }
 
+// BuildTorrentPackSavePath 给整季/合集候选独立目录。它仍放在 .anidog-race
+// 下，下载完成前不会被 Emby 当成正式媒体扫描到。
+func BuildTorrentPackSavePath(mediaRoot string, animeID uint, episodeStart, episodeEnd int, infoHash, rawURL string) string {
+	if mediaRoot == "" {
+		return ""
+	}
+	key := strings.ToUpper(strings.TrimSpace(infoHash))
+	if key == "" {
+		sum := sha256.Sum256([]byte(rawURL))
+		key = fmt.Sprintf("%x", sum[:8])
+	}
+	return filepath.Join(mediaRoot, torrentRaceDir,
+		fmt.Sprintf("anime-%d", animeID),
+		fmt.Sprintf("season-pack-%03d-%03d", episodeStart, episodeEnd),
+		SanitizeTitle(key))
+}
+
 func IsTorrentRaceSavePath(path string) bool {
 	_, ok := TorrentRaceMediaRoot(path)
 	return ok

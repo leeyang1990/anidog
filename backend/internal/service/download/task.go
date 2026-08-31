@@ -42,6 +42,9 @@ type Task struct {
 	// Optional relations
 	AnimeID         *uint
 	EpisodeNumber   *int
+	Scope           string
+	EpisodeStart    *int
+	EpisodeEnd      *int
 	StreamRuleID    *uint
 	StreamDetailURL string // 详情页 URL（同一 anime 不同候选区分用）
 	StreamRoadName  string // 清单名（Plex/Emby 不需要但我们用来区分完成状态）
@@ -78,6 +81,14 @@ func (t *Task) Validate() error {
 	}
 	if t.DownloadType == model.DownloadTypeStream && t.StreamRule == nil {
 		return fmt.Errorf("stream task requires StreamRule")
+	}
+	if t.Scope == model.DownloadScopeSeason {
+		if t.DownloadType != model.DownloadTypeTorrent {
+			return fmt.Errorf("season scope requires torrent download type")
+		}
+		if t.EpisodeStart == nil || t.EpisodeEnd == nil || *t.EpisodeStart <= 0 || *t.EpisodeEnd < *t.EpisodeStart {
+			return fmt.Errorf("season scope requires a valid episode range")
+		}
 	}
 	return nil
 }

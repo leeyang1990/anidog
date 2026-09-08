@@ -49,6 +49,20 @@ func TestEngineDownloadsFromLocalPeerAndRestoresManifest(t *testing.T) {
 	if leecherHash != seedHash {
 		t.Fatalf("hash mismatch: seed=%s leecher=%s", seedHash, leecherHash)
 	}
+	duplicateDir := filepath.Join(root, "duplicate-must-not-relocate")
+	duplicateHash, err := leecher.AddTorrent(ctx, torrentFile, duplicateDir)
+	if err != nil {
+		t.Fatalf("duplicate add: %v", err)
+	}
+	if duplicateHash != leecherHash {
+		t.Fatalf("duplicate hash mismatch: first=%s duplicate=%s", leecherHash, duplicateHash)
+	}
+	leecher.mu.RLock()
+	trackedSavePath := leecher.entries[leecherHash].SavePath
+	leecher.mu.RUnlock()
+	if trackedSavePath != downloadDir {
+		t.Fatalf("duplicate add relocated existing task: %s", trackedSavePath)
+	}
 
 	leecher.mu.RLock()
 	added := leecher.entries[leecherHash].torrent.AddClientPeer(seed.client)
@@ -75,6 +89,9 @@ func TestEngineDownloadsFromLocalPeerAndRestoresManifest(t *testing.T) {
 	if err := leecher.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(torrentFile); err != nil {
+		t.Fatal(err)
+	}
 
 	restored := newTestEngine(t, leecherState, downloadDir)
 	defer restored.Close()
@@ -82,11 +99,19 @@ func TestEngineDownloadsFromLocalPeerAndRestoresManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].ID != leecherHash || items[0].State != "pausedDL" {
+	if len(items) != 1 || items[0].ID != leecherHash || items[0].State != "pausedDL" ||
+		!items[0].HasMetadata || items[0].Size != int64(len(want)) {
 		t.Fatalf("manifest restore mismatch: %#v", items)
+	}
+	cachedMetainfo := restored.metainfoPath(leecherHash)
+	if _, err := os.Stat(cachedMetainfo); err != nil {
+		t.Fatalf("cached metainfo missing: %v", err)
 	}
 	if err := restored.RemoveTorrent(ctx, leecherHash, true); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(cachedMetainfo); !os.IsNotExist(err) {
+		t.Fatalf("cached metainfo was not removed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(downloadDir, fileName)); !os.IsNotExist(err) {
 		t.Fatalf("torrent data was not removed: %v", err)
@@ -110,6 +135,75 @@ func TestEngineHTTPProxyCanBeUpdatedAtRuntime(t *testing.T) {
 	}
 	if err := engine.SetHTTPProxy(context.Background(), "://bad"); err == nil {
 		t.Fatal("invalid proxy was accepted")
+	}
+}
+
+func TestEngineCachesMagnetMetadataAfterDiscovery(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	root := t.TempDir()
+	seedDir := filepath.Join(root, "seed")
+	downloadDir := filepath.Join(root, "download")
+	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Repeat([]byte("AniDog magnet metadata cache\n"), 16*1024)
+	sourcePath := filepath.Join(seedDir, "magnet-fixture.bin")
+	if err := os.WriteFile(sourcePath, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	torrentFile := buildTorrentFile(t, sourcePath, root)
+	mi, err := metainfo.LoadFromFile(torrentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seed := newTestEngine(t, filepath.Join(root, "seed-state"), seedDir)
+	defer seed.Close()
+	seedHash, err := seed.AddTorrent(ctx, torrentFile, seedDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leecherState := filepath.Join(root, "leecher-state")
+	leecher := newTestEngine(t, leecherState, downloadDir)
+	magnetURL := mi.Magnet(nil, nil).String()
+	leecherHash, err := leecher.AddTorrent(ctx, magnetURL, downloadDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leecherHash != seedHash {
+		t.Fatalf("hash mismatch: seed=%s leecher=%s", seedHash, leecherHash)
+	}
+	leecher.mu.RLock()
+	added := leecher.entries[leecherHash].torrent.AddClientPeer(seed.client)
+	leecher.mu.RUnlock()
+	if added == 0 {
+		t.Fatal("local peer was not added")
+	}
+
+	waitFor(t, ctx, func() bool {
+		_, err := os.Stat(leecher.metainfoPath(leecherHash))
+		return err == nil
+	})
+	if err := leecher.PauseTorrent(ctx, leecherHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := leecher.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := newTestEngine(t, leecherState, downloadDir)
+	defer restored.Close()
+	items, err := restored.ListTorrents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !items[0].HasMetadata || items[0].ID != leecherHash ||
+		items[0].State != "pausedDL" || items[0].Size != int64(len(want)) {
+		t.Fatalf("cached magnet restore mismatch: %#v", items)
 	}
 }
 

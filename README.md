@@ -127,7 +127,7 @@ docker compose pull
 docker compose up -d --remove-orphans
 ```
 
-需要固定版本时，在 `.env` 中设置 `TAG=v0.2.0`。不要使用 `docker compose down -v`，除非明确要删除数据库和 BT 任务状态。
+需要固定版本时，在 `.env` 中设置 `TAG=v0.2.2`。不要使用 `docker compose down -v`，除非明确要删除数据库和 BT 任务状态。
 
 ## 遇到问题
 

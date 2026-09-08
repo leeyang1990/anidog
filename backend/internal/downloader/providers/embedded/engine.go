@@ -20,6 +20,7 @@ import (
 	atorrent "github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 
 	"github.com/anidog/anidog-go/internal/config"
@@ -47,9 +48,10 @@ type manifestEntry struct {
 
 type torrentEntry struct {
 	manifestEntry
-	torrent     *atorrent.Torrent
-	forceStart  bool
-	queuePaused bool
+	torrent        *atorrent.Torrent
+	forceStart     bool
+	queuePaused    bool
+	metadataCancel chan struct{}
 }
 
 // Engine embeds the BitTorrent protocol implementation in the AniDog process.
@@ -60,6 +62,7 @@ type Engine struct {
 	entries      map[string]*torrentEntry
 	stateDir     string
 	manifestPath string
+	metainfoDir  string
 	defaultDir   string
 	listenPort   int
 	maxActive    int
@@ -67,6 +70,7 @@ type Engine struct {
 	uploadRate   *rate.Limiter
 	httpClient   *http.Client
 	proxy        *dynamicProxy
+	done         chan struct{}
 	closed       bool
 }
 
@@ -108,6 +112,10 @@ func New(cfg *config.Config) (*Engine, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建 BT 状态目录: %w", err)
 	}
+	metainfoDir := filepath.Join(stateDir, "metainfo")
+	if err := os.MkdirAll(metainfoDir, 0o700); err != nil {
+		return nil, fmt.Errorf("创建 BT 元数据目录: %w", err)
+	}
 	defaultDir := strings.TrimSpace(cfg.MediaRoot)
 	if defaultDir == "" {
 		defaultDir = "/downloads"
@@ -148,6 +156,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		entries:      make(map[string]*torrentEntry),
 		stateDir:     stateDir,
 		manifestPath: filepath.Join(stateDir, "tasks.json"),
+		metainfoDir:  metainfoDir,
 		defaultDir:   defaultDir,
 		listenPort:   client.LocalPort(),
 		maxActive:    3,
@@ -155,6 +164,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		uploadRate:   uploadRate,
 		httpClient:   &http.Client{Transport: httpTransport, Timeout: 30 * time.Second},
 		proxy:        dynamicHTTPProxy,
+		done:         make(chan struct{}),
 	}
 	if err := engine.restore(context.Background()); err != nil {
 		_ = engine.Close()
@@ -166,19 +176,21 @@ func New(cfg *config.Config) (*Engine, error) {
 func (e *Engine) Name() string { return "AniDog Embedded BT" }
 
 func (e *Engine) AddTorrent(ctx context.Context, torrentURL, savePath string) (string, error) {
-	return e.add(ctx, torrentURL, savePath, false, time.Now(), true)
+	return e.add(ctx, torrentURL, torrentURL, savePath, false, time.Now(), true)
 }
 
 func (e *Engine) add(
 	ctx context.Context,
-	torrentURL string,
+	manifestURL string,
+	sourceURL string,
 	savePath string,
 	paused bool,
 	addedAt time.Time,
 	persist bool,
 ) (string, error) {
-	torrentURL = strings.TrimSpace(torrentURL)
-	if torrentURL == "" {
+	manifestURL = strings.TrimSpace(manifestURL)
+	sourceURL = strings.TrimSpace(sourceURL)
+	if manifestURL == "" || sourceURL == "" {
 		return "", errors.New("torrent URL 不能为空")
 	}
 	if savePath == "" {
@@ -191,12 +203,18 @@ func (e *Engine) add(
 	if err := os.MkdirAll(cleanSavePath, 0o755); err != nil {
 		return "", fmt.Errorf("创建下载目录: %w", err)
 	}
+	e.mu.RLock()
+	closed := e.closed
+	e.mu.RUnlock()
+	if closed {
+		return "", errors.New("BT 引擎已关闭")
+	}
 
 	var spec *atorrent.TorrentSpec
-	if strings.HasPrefix(strings.ToLower(torrentURL), "magnet:") {
-		spec, err = atorrent.TorrentSpecFromMagnetUri(torrentURL)
+	if strings.HasPrefix(strings.ToLower(sourceURL), "magnet:") {
+		spec, err = atorrent.TorrentSpecFromMagnetUri(sourceURL)
 	} else {
-		spec, err = e.specFromURL(ctx, torrentURL)
+		spec, err = e.specFromURL(ctx, sourceURL)
 	}
 	if err != nil {
 		return "", err
@@ -206,36 +224,50 @@ func (e *Engine) add(
 	spec.Storage = storage.NewFile(cleanSavePath)
 	spec.DisallowDataDownload = paused
 	spec.DisallowDataUpload = paused
-	t, _, err := e.client.AddTorrentSpec(spec)
+	t, added, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
 		return "", fmt.Errorf("添加 BT 任务: %w", err)
 	}
 	hash := strings.ToUpper(t.InfoHash().HexString())
+	if !added {
+		e.mu.RLock()
+		_, tracked := e.entries[hash]
+		e.mu.RUnlock()
+		if tracked {
+			return hash, nil
+		}
+		return "", fmt.Errorf("BT 客户端中已存在未受管任务: %s", hash)
+	}
 	if addedAt.IsZero() {
 		addedAt = time.Now()
 	}
 
+	var metadataCancel chan struct{}
 	e.mu.Lock()
 	if old, ok := e.entries[hash]; ok {
-		old.URL = torrentURL
+		old.URL = manifestURL
 		old.SavePath = cleanSavePath
 		old.Paused = paused
 		old.AddedAt = addedAt
 		old.torrent = t
 	} else {
+		if t.Info() == nil {
+			metadataCancel = make(chan struct{})
+		}
 		e.entries[hash] = &torrentEntry{
 			manifestEntry: manifestEntry{
 				InfoHash: hash,
-				URL:      torrentURL,
+				URL:      manifestURL,
 				SavePath: cleanSavePath,
 				Paused:   paused,
 				AddedAt:  addedAt,
 			},
-			torrent: t,
+			torrent:        t,
+			metadataCancel: metadataCancel,
 		}
 	}
-	if !paused {
-		t.DownloadAll()
+	if t.Info() != nil {
+		err = e.persistMetainfo(t, hash)
 	}
 	e.rebalanceLocked()
 	if persist {
@@ -244,6 +276,9 @@ func (e *Engine) add(
 	e.mu.Unlock()
 	if err != nil {
 		return "", err
+	}
+	if metadataCancel != nil {
+		go e.persistMetainfoWhenReady(hash, t, metadataCancel)
 	}
 	return hash, nil
 }
@@ -326,12 +361,19 @@ func (e *Engine) RemoveTorrent(_ context.Context, torrentID string, removeFiles 
 	contentPath := e.contentPathLocked(entry)
 	savePath := entry.SavePath
 	entry.torrent.Drop()
+	if entry.metadataCancel != nil {
+		close(entry.metadataCancel)
+		entry.metadataCancel = nil
+	}
 	delete(e.entries, hash)
 	e.rebalanceLocked()
 	persistErr := e.persistLocked()
 	e.mu.Unlock()
 	if persistErr != nil {
 		return persistErr
+	}
+	if err := os.Remove(e.metainfoPath(hash)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("删除 BT 元数据: %w", err)
 	}
 	if removeFiles {
 		return removeTorrentData(contentPath, savePath)
@@ -536,6 +578,7 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	e.closed = true
+	close(e.done)
 	persistErr := e.persistLocked()
 	client := e.client
 	e.mu.Unlock()
@@ -564,7 +607,11 @@ func (e *Engine) restore(ctx context.Context) error {
 	}
 	var restoreErrors []error
 	for _, item := range saved.Tasks {
-		if _, err := e.add(ctx, item.URL, item.SavePath, item.Paused, item.AddedAt, false); err != nil {
+		sourceURL := item.URL
+		if cached := e.metainfoPath(item.InfoHash); fileExists(cached) {
+			sourceURL = cached
+		}
+		if _, err := e.add(ctx, item.URL, sourceURL, item.SavePath, item.Paused, item.AddedAt, false); err != nil {
 			restoreErrors = append(restoreErrors, fmt.Errorf("恢复 %s: %w", item.InfoHash, err))
 		}
 	}
@@ -572,6 +619,67 @@ func (e *Engine) restore(ctx context.Context) error {
 		return errors.Join(restoreErrors...)
 	}
 	return nil
+}
+
+func (e *Engine) metainfoPath(infoHash string) string {
+	return filepath.Join(e.metainfoDir, strings.ToUpper(strings.TrimSpace(infoHash))+".torrent")
+}
+
+func (e *Engine) persistMetainfoWhenReady(hash string, torrent *atorrent.Torrent, cancel <-chan struct{}) {
+	select {
+	case <-torrent.GotInfo():
+	case <-cancel:
+		return
+	case <-e.done:
+		return
+	}
+
+	e.mu.Lock()
+	entry, exists := e.entries[hash]
+	active := exists && entry.torrent == torrent && !e.closed
+	if active {
+		e.rebalanceLocked()
+	}
+	e.mu.Unlock()
+	if !active {
+		return
+	}
+	if err := e.persistMetainfo(torrent, hash); err != nil {
+		zap.L().Warn("持久化 BT 元数据失败", zap.String("info_hash", hash), zap.Error(err))
+	}
+}
+
+func (e *Engine) persistMetainfo(torrent *atorrent.Torrent, hash string) error {
+	mi := torrent.Metainfo()
+	if len(mi.InfoBytes) == 0 {
+		return errors.New("BT 元数据尚未就绪")
+	}
+	path := e.metainfoPath(hash)
+	tmp := path + ".tmp"
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("创建 BT 元数据: %w", err)
+	}
+	writeErr := mi.Write(file)
+	closeErr := file.Close()
+	if writeErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("写入 BT 元数据: %w", writeErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("关闭 BT 元数据: %w", closeErr)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("提交 BT 元数据: %w", err)
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func (e *Engine) persistLocked() error {
@@ -610,6 +718,17 @@ func (e *Engine) rebalanceLocked() {
 			continue
 		}
 		entry.torrent.AllowDataUpload()
+		if entry.torrent.Info() == nil {
+			if entry.forceStart || active < e.maxActive {
+				entry.queuePaused = false
+				entry.torrent.AllowDataDownload()
+				active++
+			} else {
+				entry.queuePaused = true
+				entry.torrent.DisallowDataDownload()
+			}
+			continue
+		}
 		if entry.torrent.Complete().Bool() {
 			entry.queuePaused = false
 			entry.torrent.DisallowDataDownload()

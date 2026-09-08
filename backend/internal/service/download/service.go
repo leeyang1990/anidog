@@ -309,8 +309,8 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		return
 	}
 
-	// TorrentExecutor 成功只表示种子已提交给 qBittorrent，并不代表文件下载完成。
-	// 实际进度和 completed 只能由 QBitSyncer 根据 qBit 状态写回。
+	// TorrentExecutor 成功只表示种子已提交给 BT 引擎，并不代表文件下载完成。
+	// 实际进度和 completed 由 TorrentSyncer 根据引擎状态写回。
 	if task.DownloadType == model.DownloadTypeTorrent {
 		extra := map[string]interface{}{
 			"failure_kind":  "",
@@ -321,7 +321,7 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 			extra["torrent_id"] = result.TorrentID
 		}
 		s.updateStatus(dlID, model.DownloadStatusDownloading, extra)
-		zap.L().Info("种子已提交到 qBittorrent", zap.String("name", task.Name))
+		zap.L().Info("种子已提交到 BT 引擎", zap.String("name", task.Name))
 		return
 	}
 

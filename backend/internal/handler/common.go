@@ -15,6 +15,8 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+
+	"github.com/anidog/anidog-go/internal/downloader"
 )
 
 // serviceStart 是 AniDog 进程的启动时刻，用于算"服务运行时长"。
@@ -92,9 +94,9 @@ func humanizeDuration(sec uint64) string {
 // SystemInfoDeps 是 getSystemInfo 需要的外部依赖：DB 连接池 + 下载器健康探针。
 // 两者都可空 —— 空时对应字段返回"未知/离线"，不影响其余指标。
 type SystemInfoDeps struct {
-	DB        *gorm.DB
-	QBitPing  func(ctx context.Context) (online bool, version string) // 可空
-	MediaRoot func(ctx context.Context) string                       // 可空；动态媒体目录
+	DB                  *gorm.DB
+	TorrentEngineHealth func(ctx context.Context) downloader.EngineHealth // 可空
+	MediaRoot           func(ctx context.Context) string                  // 可空；动态媒体目录
 }
 
 // getSystemInfo gathers system information using gopsutil + 运行时 + DB + qBit。
@@ -176,24 +178,31 @@ func getSystemInfo(version string, deps SystemInfoDeps) gin.H {
 			if pingErr := sqlDB.Ping(); pingErr == nil {
 				st := sqlDB.Stats()
 				dbInfo = gin.H{
-					"connected":     true,
-					"open":          st.OpenConnections,
-					"in_use":        st.InUse,
-					"idle":          st.Idle,
-					"wait_count":    st.WaitCount,
-					"max_open":      st.MaxOpenConnections,
+					"connected":  true,
+					"type":       deps.DB.Dialector.Name(),
+					"open":       st.OpenConnections,
+					"in_use":     st.InUse,
+					"idle":       st.Idle,
+					"wait_count": st.WaitCount,
+					"max_open":   st.MaxOpenConnections,
 				}
 			}
 		}
 	}
 
-	// qBittorrent 状态
-	qbitInfo := gin.H{"online": false}
-	if deps.QBitPing != nil {
+	// BT 下载引擎状态
+	engineInfo := gin.H{"online": false, "name": "未配置"}
+	if deps.TorrentEngineHealth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		online, qVer := deps.QBitPing(ctx)
+		health := deps.TorrentEngineHealth(ctx)
 		cancel()
-		qbitInfo = gin.H{"online": online, "version": qVer}
+		engineInfo = gin.H{
+			"online":        health.Online,
+			"name":          health.Name,
+			"version":       health.Version,
+			"listen_port":   health.ListenPort,
+			"torrent_count": health.TorrentCount,
+		}
 	}
 
 	return gin.H{
@@ -211,15 +220,17 @@ func getSystemInfo(version string, deps SystemInfoDeps) gin.H {
 		"cpuCores":    runtime.NumCPU(),
 		"goroutines":  runtime.NumGoroutine(),
 		"goMemory": gin.H{
-			"alloc":       ms.Alloc,       // 当前堆上分配且仍在用的字节
-			"sys":         ms.Sys,         // 向 OS 申请的总字节
-			"num_gc":      ms.NumGC,       // GC 次数
+			"alloc":  ms.Alloc, // 当前堆上分配且仍在用的字节
+			"sys":    ms.Sys,   // 向 OS 申请的总字节
+			"num_gc": ms.NumGC, // GC 次数
 		},
-		"memory":    memInfo,
-		"disk":       diskInfo,
-		"media_disk": mediaDiskInfo,
-		"database":   dbInfo,
-		"qbittorrent": qbitInfo,
-		"timestamp": time.Now(),
+		"memory":         memInfo,
+		"disk":           diskInfo,
+		"media_disk":     mediaDiskInfo,
+		"database":       dbInfo,
+		"torrent_engine": engineInfo,
+		// Deprecated compatibility alias for an already-open v0.1.46 frontend.
+		"qbittorrent": engineInfo,
+		"timestamp":   time.Now(),
 	}
 }

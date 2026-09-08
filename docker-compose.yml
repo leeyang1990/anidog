@@ -8,8 +8,7 @@
 # 镜像由 GitHub Actions 在 push tag 时自动构建发布（amd64 + arm64）。
 # 本地开发请改用 docker-compose.dev.yml（源码挂载 + 热重载，不走镜像）。
 
-# backend 与 qBittorrent 必须看到完全相同的下载路径。
-# 宿主机目录只通过 DOWNLOAD_ROOT 配置一次，避免两个服务的挂载漂移。
+# 后端内置 BT 引擎直接写入这个目录；宿主机只配置一次下载路径。
 x-download-mount: &download-mount
   type: bind
   source: ${DOWNLOAD_ROOT:-./downloads}
@@ -35,27 +34,6 @@ services:
     networks:
       - anidog-network
 
-  qbittorrent:
-    # Docker Hub 源（等价于 lscr.io/linuxserver/qbittorrent，但可走镜像加速器，
-    # 避免 lscr.io 在部分网络下 TLS/拉取失败）
-    image: linuxserver/qbittorrent:latest
-    container_name: anidog-qbittorrent
-    restart: unless-stopped
-    environment:
-      PUID: ${PUID:-1000}
-      PGID: ${PGID:-1000}
-      TZ: ${TZ:-Asia/Shanghai}
-      WEBUI_PORT: 8080
-    volumes:
-      - qbittorrent_config:/config
-      - *download-mount
-    ports:
-      - "8080:8080"      # qBit Web UI
-      - "6881:6881"      # BT 连接
-      - "6881:6881/udp"  # DHT
-    networks:
-      - anidog-network
-
   backend:
     image: leeyang1990/anidog-backend:${TAG:-latest}
     container_name: anidog-backend
@@ -63,15 +41,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      qbittorrent:
-        condition: service_started
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-anidog}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-anidog}?sslmode=disable
 
-      DOWNLOADER_TYPE: qbittorrent
-      DOWNLOADER_HOST: http://qbittorrent:8080
-      DOWNLOADER_USERNAME: ${DOWNLOADER_USERNAME:-admin}
-      DOWNLOADER_PASSWORD: ${DOWNLOADER_PASSWORD:?请在 .env 中设置 DOWNLOADER_PASSWORD}
+      DOWNLOADER_TYPE: embedded
+      BT_LISTEN_PORT: ${BT_LISTEN_PORT:-6881}
+      BT_STATE_DIR: /var/lib/anidog/torrent
+      BT_SEED: "${BT_SEED:-true}"
       STREAM_MIN_DURATION_SECONDS: ${STREAM_MIN_DURATION_SECONDS:-100}
 
       SECRET_KEY: ${SECRET_KEY:?请在 .env 中设置 SECRET_KEY}
@@ -84,6 +60,10 @@ services:
       TMDB_BASE_URL: ${TMDB_BASE_URL:-https://api.themoviedb.org/3}
     volumes:
       - *download-mount
+      - torrent_state:/var/lib/anidog/torrent
+    ports:
+      - "${BT_LISTEN_PORT:-6881}:${BT_LISTEN_PORT:-6881}"
+      - "${BT_LISTEN_PORT:-6881}:${BT_LISTEN_PORT:-6881}/udp"
     networks:
       - anidog-network
     healthcheck:
@@ -107,7 +87,7 @@ services:
 volumes:
   postgres_data:
     driver: local
-  qbittorrent_config:
+  torrent_state:
     driver: local
 
 networks:

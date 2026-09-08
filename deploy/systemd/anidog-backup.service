@@ -1,5 +1,5 @@
 [Unit]
-Description=AniDog PostgreSQL and qBittorrent configuration backup
+Description=AniDog PostgreSQL and embedded torrent state backup
 Requires=docker.service
 After=docker.service
 

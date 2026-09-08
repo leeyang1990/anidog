@@ -1,6 +1,6 @@
 # AniDog 定时备份
 
-默认每天 03:30 备份 PostgreSQL、qBittorrent 配置和 `.env`，文件权限为 `600`，保留 14 天。
+默认每天 03:30 备份 PostgreSQL、内嵌 BT 任务状态和 `.env`，文件权限为 `600`，保留 14 天。
 媒体文件不在此任务中重复备份。
 
 ```bash

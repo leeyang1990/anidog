@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/config"
+	torrentdownloader "github.com/anidog/anidog-go/internal/downloader"
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/notification"
 	"github.com/anidog/anidog-go/internal/service/stream"
@@ -27,6 +28,7 @@ import (
 // 设计为 scheduler.Job，可定时调用。
 type QBitSyncer struct {
 	db                 *gorm.DB
+	engine             torrentdownloader.TorrentEngine
 	baseURL            string
 	user               string
 	pass               string
@@ -36,8 +38,18 @@ type QBitSyncer struct {
 	deadTorrentHandler func(context.Context, uint, int)
 	slowTorrentHandler func(context.Context, uint, int)
 	rateLimitLoader    func(context.Context) (downloadKiB, uploadKiB int64)
+	maxActiveLoader    func(context.Context) int
 	queuePolicyMu      sync.Mutex
 	queuePolicyReady   bool
+}
+
+// NewTorrentSyncer creates the provider-neutral torrent health patrol. The
+// historical QBitSyncer type name is kept temporarily so the battle-tested
+// slow/dead torrent policy can be migrated without a flag-day rewrite.
+func NewTorrentSyncer(db *gorm.DB, cfg *config.Config, engine torrentdownloader.TorrentEngine) *QBitSyncer {
+	syncer := NewQBitSyncer(db, cfg)
+	syncer.engine = engine
+	return syncer
 }
 
 func NewQBitSyncer(db *gorm.DB, cfg *config.Config) *QBitSyncer {
@@ -85,13 +97,20 @@ func (s *QBitSyncer) SetRateLimitLoader(loader func(context.Context) (downloadKi
 	s.queuePolicyReady = false
 }
 
+func (s *QBitSyncer) SetMaxActiveLoader(loader func(context.Context) int) {
+	s.queuePolicyMu.Lock()
+	defer s.queuePolicyMu.Unlock()
+	s.maxActiveLoader = loader
+	s.queuePolicyReady = false
+}
+
 func (s *QBitSyncer) InvalidatePreferences() {
 	s.queuePolicyMu.Lock()
 	defer s.queuePolicyMu.Unlock()
 	s.queuePolicyReady = false
 }
 
-func (s *QBitSyncer) Name() string { return "qbit_sync" }
+func (s *QBitSyncer) Name() string { return "torrent_sync" }
 
 // Run 实现 scheduler.Job 接口。
 func (s *QBitSyncer) Run(ctx context.Context) {
@@ -102,8 +121,12 @@ func (s *QBitSyncer) Run(ctx context.Context) {
 
 // Sync 拉取 qBit 所有种子信息，按 info_hash 更新对应 Download 记录。
 func (s *QBitSyncer) Sync(ctx context.Context) error {
-	if err := s.ensureLogin(ctx); err != nil {
-		return err
+	if s.engine == nil {
+		if err := s.ensureLogin(ctx); err != nil {
+			return err
+		}
+	} else if !s.engine.Health(ctx).Online {
+		return fmt.Errorf("BT 引擎离线")
 	}
 	s.ensureQueuePolicy(ctx)
 
@@ -452,11 +475,11 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	}
 
 	if updated > 0 || orphaned > 0 || abandoned > 0 {
-		zap.L().Info("qBit 同步完成",
+		zap.L().Info("BT 引擎同步完成",
 			zap.Int("matched", updated),
 			zap.Int("orphaned_to_failed", orphaned),
 			zap.Int("abandoned_dead_seed", abandoned),
-			zap.Int("qbit_total", len(torrents)),
+			zap.Int("engine_total", len(torrents)),
 			zap.Int("db_total", len(downloads)))
 	}
 	return nil
@@ -896,6 +919,9 @@ func (s *QBitSyncer) keepSlowTorrentAndSearch(ctx context.Context, dl *model.Dow
 }
 
 func (s *QBitSyncer) getTotalWasted(ctx context.Context, hash string) (int64, error) {
+	if s.engine != nil {
+		return s.engine.GetTotalWasted(ctx, hash)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		s.baseURL+"/api/v2/torrents/properties?hash="+url.QueryEscape(strings.ToLower(hash)), nil)
 	if err != nil {
@@ -1107,6 +1133,9 @@ func (s *QBitSyncer) deleteFromQBit(ctx context.Context, hash string) error {
 }
 
 func (s *QBitSyncer) removeFromQBit(ctx context.Context, hash string, deleteFiles bool) error {
+	if s.engine != nil {
+		return s.engine.RemoveTorrent(ctx, hash, deleteFiles)
+	}
 	data := url.Values{}
 	data.Set("hashes", strings.ToLower(hash))
 	data.Set("deleteFiles", fmt.Sprintf("%t", deleteFiles))
@@ -1132,6 +1161,9 @@ func (s *QBitSyncer) removeFromQBit(ctx context.Context, hash string, deleteFile
 // setForceStart temporarily bypasses the payload queue for magnet metadata
 // discovery. The caller turns it off as soon as has_metadata becomes true.
 func (s *QBitSyncer) setForceStart(ctx context.Context, hash string, enabled bool) error {
+	if s.engine != nil {
+		return s.engine.SetForceStart(ctx, hash, enabled)
+	}
 	data := url.Values{}
 	data.Set("hashes", strings.ToLower(hash))
 	data.Set("value", fmt.Sprintf("%t", enabled))
@@ -1170,13 +1202,39 @@ func (s *QBitSyncer) ensureQueuePolicy(ctx context.Context) {
 	}
 	downloadLimit := qbitRateLimitBytes(downloadKiB)
 	uploadLimit := qbitRateLimitBytes(uploadKiB)
+	maxActive := defaultMaxActiveDownloads
+	maxTorrents := defaultMaxActiveTorrents
+	if s.maxActiveLoader != nil {
+		if configured := s.maxActiveLoader(ctx); configured > 0 {
+			maxActive = configured
+			maxTorrents = configured + 2
+		}
+	}
+	if s.engine != nil {
+		err := s.engine.SetPolicy(ctx, torrentdownloader.TorrentPolicy{
+			MaxActiveDownloads: maxActive,
+			MaxActiveTorrents:  maxTorrents,
+			DownloadRate:       downloadLimit,
+			UploadRate:         uploadLimit,
+		})
+		if err != nil {
+			zap.L().Warn("设置 BT 引擎策略失败，下轮重试", zap.Error(err))
+			return
+		}
+		s.queuePolicyReady = true
+		zap.L().Info("BT 下载策略已启用",
+			zap.Int("max_active_downloads", maxActive),
+			zap.Int64("download_limit_kib", downloadKiB),
+			zap.Int64("upload_limit_kib", uploadKiB))
+		return
+	}
 	preferences := map[string]interface{}{
 		"dont_count_slow_torrents":       true,
 		"incomplete_files_ext":           true,
 		"slow_torrent_dl_rate_threshold": 10,
 		"slow_torrent_inactive_timer":    60,
-		"max_active_downloads":           defaultMaxActiveDownloads,
-		"max_active_torrents":            defaultMaxActiveTorrents,
+		"max_active_downloads":           maxActive,
+		"max_active_torrents":            maxTorrents,
 		"dl_limit":                       downloadLimit,
 		"up_limit":                       uploadLimit,
 	}
@@ -1207,8 +1265,8 @@ func (s *QBitSyncer) ensureQueuePolicy(ctx context.Context) {
 	}
 	s.queuePolicyReady = true
 	zap.L().Info("qBit 下载队列策略已启用",
-		zap.Int("max_active_downloads", defaultMaxActiveDownloads),
-		zap.Int("max_active_torrents", defaultMaxActiveTorrents),
+		zap.Int("max_active_downloads", maxActive),
+		zap.Int("max_active_torrents", maxTorrents),
 		zap.Int64("download_limit_kib", downloadKiB),
 		zap.Int64("upload_limit_kib", uploadKiB),
 		zap.Int("slow_rate_kib", 10),
@@ -1267,6 +1325,30 @@ func (s *QBitSyncer) ensureLogin(ctx context.Context) error {
 }
 
 func (s *QBitSyncer) listTorrents(ctx context.Context) ([]map[string]interface{}, error) {
+	if s.engine != nil {
+		snapshots, err := s.engine.ListTorrents(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]map[string]interface{}, 0, len(snapshots))
+		for _, snapshot := range snapshots {
+			out = append(out, map[string]interface{}{
+				"hash":         snapshot.ID,
+				"name":         snapshot.Name,
+				"state":        snapshot.State,
+				"has_metadata": snapshot.HasMetadata,
+				"size":         float64(snapshot.Size),
+				"downloaded":   float64(snapshot.Downloaded),
+				"dlspeed":      float64(snapshot.DownloadSpeed),
+				"progress":     snapshot.Progress,
+				"availability": snapshot.Availability,
+				"num_seeds":    float64(snapshot.ConnectedSeeds),
+				"eta":          float64(snapshot.ETASeconds),
+				"content_path": snapshot.ContentPath,
+			})
+		}
+		return out, nil
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		s.baseURL+"/api/v2/torrents/info", nil)
 	if err != nil {

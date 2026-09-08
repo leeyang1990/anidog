@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,8 +24,7 @@ func NewSettingsHandler(svc *settingsvc.Service) *SettingsHandler {
 	return &SettingsHandler{svc: svc}
 }
 
-// WithSystemDeps 注入系统信息探针（DB 连接池 + qBit 在线探测）。
-// 可选 —— 不调用时系统信息里的 database/qbittorrent 字段返回"未连接/离线"。
+// WithSystemDeps 注入系统信息探针（DB 连接池 + BT 引擎在线探测）。
 func (h *SettingsHandler) WithSystemDeps(deps SystemInfoDeps) *SettingsHandler {
 	h.deps = deps
 	return h
@@ -51,7 +51,8 @@ func (h *SettingsHandler) GetSettings(c *gin.Context) {
 		"project_name":                cfg.ProjectName,
 		"project_version":             cfg.ProjectVersion,
 		"downloader_type":             cfg.DownloaderType,
-		"downloader_host":             cfg.DownloaderHost,
+		"bt_listen_port":              cfg.BTListenPort,
+		"bt_seed":                     cfg.BTSeed,
 		"media_root":                  cfg.MediaRoot,
 		"rss_check_interval":          cfg.RSSCheckInterval,
 		"enable_notifications":        cfg.EnableNotifications,
@@ -108,6 +109,10 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 		}
 		pairs[k] = toString(v)
 	}
+	if err := validateDownloadSettings(pairs); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if len(pairs) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "没有可保存的字段"})
@@ -121,6 +126,26 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "已保存", "updated": pairs})
+}
+
+func validateDownloadSettings(values map[string]string) error {
+	integerRanges := map[string][2]int64{
+		"max_concurrent":                 {1, 100},
+		"download.bt_download_limit_kib": {0, 1 << 30},
+		"download.bt_upload_limit_kib":   {0, 1 << 30},
+		"download.check_interval":        {5, 24 * 60},
+	}
+	for key, bounds := range integerRanges {
+		raw, ok := values[key]
+		if !ok {
+			continue
+		}
+		value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil || value < bounds[0] || value > bounds[1] {
+			return fmt.Errorf("%s 必须是 %d 到 %d 之间的整数", key, bounds[0], bounds[1])
+		}
+	}
+	return nil
 }
 
 func (h *SettingsHandler) GetSystemInfo(c *gin.Context) {

@@ -13,6 +13,7 @@ import (
 
 type FileSystemHandler struct {
 	downloadDir string
+	rootLoader  func() string
 }
 
 func NewFileSystemHandler(downloadDir string) *FileSystemHandler {
@@ -21,12 +22,25 @@ func NewFileSystemHandler(downloadDir string) *FileSystemHandler {
 	}
 }
 
+func NewDynamicFileSystemHandler(rootLoader func() string) *FileSystemHandler {
+	return &FileSystemHandler{downloadDir: "/downloads", rootLoader: rootLoader}
+}
+
+func (h *FileSystemHandler) root() string {
+	if h.rootLoader != nil {
+		if root := strings.TrimSpace(h.rootLoader()); root != "" {
+			return root
+		}
+	}
+	return h.downloadDir
+}
+
 var errPathOutsideDownloadDir = errors.New("path outside download directory")
 
 // resolveDownloadPath 将客户端传入的相对路径限制在下载根目录内。
 // 除了拦截 ../，还会检查已存在的父目录，避免通过符号链接逃逸。
 func (h *FileSystemHandler) resolveDownloadPath(requestPath string) (string, string, error) {
-	absRoot, err := filepath.Abs(h.downloadDir)
+	absRoot, err := filepath.Abs(h.root())
 	if err != nil {
 		return "", "", err
 	}
@@ -104,6 +118,7 @@ type DirectoryResponse struct {
 	Size       int64                     `json:"size"`
 	Children   []FileSystemEntryResponse `json:"children,omitempty"`
 	ParentPath string                    `json:"parent_path,omitempty"`
+	RootPath   string                    `json:"root_path"`
 }
 
 // FileSystemEntryResponse 文件系统条目响应
@@ -156,14 +171,16 @@ func (h *FileSystemHandler) ListDirectory(c *gin.Context) {
 	// 不存在的路径回退到 root（避免浏览器看到 404）
 	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 		cleanPath = ""
-		fullPath = h.downloadDir
+		root := h.root()
+		fullPath = root
 		if _, err2 := os.Stat(fullPath); os.IsNotExist(err2) {
 			// root 也不存在，返回空
 			c.JSON(http.StatusOK, gin.H{
-				"name":     filepath.Base(h.downloadDir),
-				"path":     "",
-				"is_dir":   true,
-				"children": []interface{}{},
+				"name":      filepath.Base(root),
+				"path":      "",
+				"is_dir":    true,
+				"root_path": root,
+				"children":  []interface{}{},
 			})
 			return
 		}
@@ -205,6 +222,7 @@ func (h *FileSystemHandler) ListDirectory(c *gin.Context) {
 		IsDir:      true,
 		Children:   entries,
 		ParentPath: parentPath,
+		RootPath:   h.root(),
 	})
 }
 
@@ -360,7 +378,8 @@ func (h *FileSystemHandler) calculateDirectorySize(entries []FileSystemEntryResp
 
 // GetRootDirectories 获取根目录列表
 func (h *FileSystemHandler) GetRootDirectories(c *gin.Context) {
-	entries, err := os.ReadDir(h.downloadDir)
+	root := h.root()
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		zap.L().Error("读取下载目录失败", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取下载目录失败"})
@@ -370,7 +389,7 @@ func (h *FileSystemHandler) GetRootDirectories(c *gin.Context) {
 	var rootEntries []FileSystemEntryResponse
 	for _, entry := range entries {
 		entryName := entry.Name()
-		fullPath := filepath.Join(h.downloadDir, entryName)
+		fullPath := filepath.Join(root, entryName)
 		info, err := entry.Info()
 		if err != nil {
 			continue

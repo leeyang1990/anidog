@@ -69,13 +69,13 @@ const parentPath = ref('')
 const directories = ref([])
 const loading = ref(false)
 const pathFallback = ref(false)
-const ROOT_PATH = '/downloads'
+const rootPath = ref('/downloads')
 
 const displayPath = computed(() => props.modelValue || '/')
 
 function toRelativePath(path) {
-  if (!path || path === '/' || path === ROOT_PATH) return ''
-  if (path.startsWith(ROOT_PATH + '/')) return path.slice(ROOT_PATH.length + 1)
+  if (!path || path === '/' || path === rootPath.value) return ''
+  if (path.startsWith(rootPath.value + '/')) return path.slice(rootPath.value.length + 1)
   return path.replace(/^\/+/, '')
 }
 
@@ -91,6 +91,7 @@ async function fetchDir(path, preserveFallback = false) {
   loading.value = true
   try {
     const data = await post('/filesystem/list', { path: path || '' })
+    rootPath.value = data.root_path || rootPath.value
     directories.value = (data.children || []).filter(x => x.is_dir)
     currentPath.value = data.path || ''
     parentPath.value = data.parent_path || ''
@@ -108,7 +109,7 @@ async function fetchDir(path, preserveFallback = false) {
 }
 
 function enter(d) {
-  emit('update:modelValue', `${ROOT_PATH}/${d.path}`)
+  emit('update:modelValue', `${rootPath.value}/${d.path}`)
   fetchDir(d.path)
 }
 function goUp() { fetchDir(parentPath.value) }

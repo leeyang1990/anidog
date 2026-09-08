@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	downloader.Register("qbittorrent", func(cfg *config.Config) (downloader.Downloader, error) {
+	downloader.Register("qbittorrent", func(cfg *config.Config) (downloader.TorrentEngine, error) {
 		return NewProvider(cfg)
 	})
 }

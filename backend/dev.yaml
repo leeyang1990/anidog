@@ -1,11 +1,10 @@
 access_token_expire_minutes: 1440
 
-# 下载器（开发环境连 docker 内的 qBittorrent）
-# 注意：这些是开发默认值，生产部署请通过 docker env 覆盖
-downloader_type: "qbittorrent"
-downloader_host: "http://qbittorrent:8080"
-downloader_username: "admin"
-downloader_password: "adminadmin"
+# 内嵌 BT 引擎（开发与生产使用同一实现）
+downloader_type: "embedded"
+bt_listen_port: 6881
+bt_state_dir: "/var/lib/anidog/torrent"
+bt_seed: true
 
 # 数据库（Docker 开发环境）
 database_url: "postgres://anidog:anidog123@postgres:5432/anidog_dev?sslmode=disable"

@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **后端**：Go + Gin + GORM + PostgreSQL
 - **前端**：Vue 3 + Naive UI + Tailwind CSS + Vite
-- **下载器**：qBittorrent（Docker 容器）
+- **下载器**：基于 anacrolix/torrent 的内嵌 Go BT 引擎
 - **流媒体抓取**：go-rod 浏览器自动化 + ffmpeg
 
 核心能力：
@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 开发
 
-使用 Docker Compose 统一开发环境（PostgreSQL + qBittorrent + Backend + Frontend）：
+使用 Docker Compose 统一开发环境（PostgreSQL + Backend + Frontend，BT 引擎在 Backend 内）：
 
 ```bash
 # 启动全部服务（air 热重载 + Vite HMR）
@@ -31,7 +31,6 @@ docker compose -f docker-compose.dev.yml logs -f backend
 
 # 访问
 open http://localhost:3002         # 前端
-open http://localhost:8080         # qBittorrent WebUI (admin/adminadmin)
 ```
 
 本地调试 Go 代码或运行单测：
@@ -116,7 +115,7 @@ Orchestrator 定时扫描（30 min）：
                               ↓
                      download 表（source=bt/rss/stream）
                               ↓
-                        qBittorrent / ffmpeg
+                     内嵌 BT 引擎 / ffmpeg
                               ↓
                   /downloads/<番剧名 (年份)>/Season NN/
 ```
@@ -168,6 +167,6 @@ curl -X POST http://localhost:3002/api/v1/orchestrator/run-all -H "Authorization
 
 ## 注意事项
 
-1. **生产部署必改**：`SECRET_KEY`、`POSTGRES_PASSWORD`、`DOWNLOADER_PASSWORD` 都通过 docker-compose 的 env 传入，务必覆盖默认值
-2. **下载目录共享**：`./downloads` bind mount 同时挂到 backend 和 qBit 容器，确保一致
-3. **qBit 首次登录**：使用临时密码（容器日志里），需要通过 Web UI 或 API 改成 compose 里设置的 `adminadmin`，否则 backend 登录失败
+1. **生产部署必改**：`SECRET_KEY`、`POSTGRES_PASSWORD` 都通过 docker-compose 的 env 传入，务必覆盖默认值
+2. **下载目录**：`DOWNLOAD_ROOT` bind mount 到 backend 的 `/downloads`，内嵌 BT 与归档流程直接共用
+3. **BT 状态**：`torrent_state` volume 持久化任务清单；TCP/UDP `BT_LISTEN_PORT` 必须放行

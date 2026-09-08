@@ -34,6 +34,9 @@ type Config struct {
 	DownloaderHost     string
 	DownloaderUsername string
 	DownloaderPassword string
+	BTListenPort       int
+	BTStateDir         string
+	BTSeed             bool
 
 	// 媒体目录
 	MediaRoot string
@@ -95,10 +98,13 @@ func Load() *Config {
 	viper.SetDefault("database_url", "sqlite:///./mikanani.db")
 	viper.SetDefault("secret_key", "supersecretkey")
 	viper.SetDefault("access_token_expire_minutes", 1440)
-	viper.SetDefault("downloader_type", "qbittorrent")
+	viper.SetDefault("downloader_type", "embedded")
 	viper.SetDefault("downloader_host", "http://localhost:8080")
 	viper.SetDefault("downloader_username", "admin")
 	viper.SetDefault("downloader_password", "adminadmin")
+	viper.SetDefault("bt_listen_port", 6881)
+	viper.SetDefault("bt_state_dir", "./data/torrent")
+	viper.SetDefault("bt_seed", true)
 	viper.SetDefault("rss_check_interval", 30)
 	viper.SetDefault("log_level", "INFO")
 	viper.SetDefault("tmdb_language", "zh-CN")
@@ -138,6 +144,9 @@ func Load() *Config {
 		DownloaderHost:           viper.GetString("downloader_host"),
 		DownloaderUsername:       viper.GetString("downloader_username"),
 		DownloaderPassword:       viper.GetString("downloader_password"),
+		BTListenPort:             viper.GetInt("bt_listen_port"),
+		BTStateDir:               viper.GetString("bt_state_dir"),
+		BTSeed:                   viper.GetBool("bt_seed"),
 		RSSCheckInterval:         viper.GetInt("rss_check_interval"),
 		LogLevel:                 viper.GetString("log_level"),
 		RenameMethod:             viper.GetString("rename_method"),
@@ -145,6 +154,8 @@ func Load() *Config {
 		Language:                 viper.GetString("language"),
 		EnableScheduler:          viper.GetBool("enable_scheduler"),
 		BangumiAPIURL:            viper.GetString("bangumi_api_url"),
+		BangumiAccessToken:       viper.GetString("bangumi_access_token"),
+		HTTPProxy:                viper.GetString("http_proxy"),
 		FFMPEGPath:               viper.GetString("ffmpeg_path"),
 		StreamMaxConcurrent:      viper.GetInt("stream_max_concurrent"),
 		StreamMinDurationSeconds: viper.GetInt("stream_min_duration_seconds"),

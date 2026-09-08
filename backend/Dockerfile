@@ -38,8 +38,8 @@ FROM leeyang1990/anidog-backend-runtime:alpine3.24-v1
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/anidog .
 
-# 暴露端口
-EXPOSE 8088
+# HTTP API + 内嵌 BT TCP/UDP
+EXPOSE 8088 6881/tcp 6881/udp
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

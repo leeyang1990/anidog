@@ -22,7 +22,7 @@ type QBittorrent struct {
 	sessionID string
 }
 
-func NewProvider(cfg *config.Config) (downloader.Downloader, error) {
+func NewProvider(cfg *config.Config) (downloader.TorrentEngine, error) {
 	q := &QBittorrent{
 		config: NewConfig(
 			cfg.DownloaderHost,
@@ -249,3 +249,196 @@ func (q *QBittorrent) GetTorrentInfo(ctx context.Context, torrentID string) (map
 func (q *QBittorrent) Name() string {
 	return "qBittorrent"
 }
+
+func (q *QBittorrent) ListTorrents(ctx context.Context) ([]downloader.TorrentSnapshot, error) {
+	if err := q.login(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, q.baseURL+"/api/v2/torrents/info", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Referer", q.baseURL)
+	resp, err := q.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("qBittorrent 列表返回 status=%d: %s", resp.StatusCode, body)
+	}
+	var raw []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, err
+	}
+	out := make([]downloader.TorrentSnapshot, 0, len(raw))
+	for _, item := range raw {
+		out = append(out, downloader.TorrentSnapshot{
+			ID:             stringField(item, "hash"),
+			Name:           stringField(item, "name"),
+			State:          stringField(item, "state"),
+			HasMetadata:    boolField(item, "has_metadata", stringField(item, "state") != "metaDL"),
+			Size:           int64Field(item, "size"),
+			Downloaded:     int64Field(item, "downloaded"),
+			DownloadSpeed:  int64Field(item, "dlspeed"),
+			Progress:       floatField(item, "progress"),
+			Availability:   floatFieldDefault(item, "availability", -1),
+			ConnectedSeeds: int(int64Field(item, "num_seeds")),
+			ETASeconds:     int(int64Field(item, "eta")),
+			ContentPath:    stringField(item, "content_path"),
+		})
+	}
+	return out, nil
+}
+
+func (q *QBittorrent) GetTotalWasted(ctx context.Context, torrentID string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		q.baseURL+"/api/v2/torrents/properties?hash="+url.QueryEscape(strings.ToLower(torrentID)), nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Referer", q.baseURL)
+	resp, err := q.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("qBittorrent 属性返回 status=%d: %s", resp.StatusCode, body)
+	}
+	var data struct {
+		TotalWasted float64 `json:"total_wasted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return 0, err
+	}
+	if data.TotalWasted < 0 {
+		return 0, nil
+	}
+	return int64(data.TotalWasted), nil
+}
+
+func (q *QBittorrent) SetForceStart(ctx context.Context, torrentID string, enabled bool) error {
+	values := url.Values{
+		"hashes": {strings.ToLower(torrentID)},
+		"value":  {fmt.Sprintf("%t", enabled)},
+	}
+	return q.postForm(ctx, "/api/v2/torrents/setForceStart", values)
+}
+
+func (q *QBittorrent) SetPolicy(ctx context.Context, policy downloader.TorrentPolicy) error {
+	maxDownloads := policy.MaxActiveDownloads
+	if maxDownloads <= 0 {
+		maxDownloads = 3
+	}
+	maxTorrents := policy.MaxActiveTorrents
+	if maxTorrents <= 0 {
+		maxTorrents = maxDownloads + 2
+	}
+	prefs := map[string]interface{}{
+		"dont_count_slow_torrents":       true,
+		"incomplete_files_ext":           true,
+		"slow_torrent_dl_rate_threshold": 10,
+		"slow_torrent_inactive_timer":    60,
+		"max_active_downloads":           maxDownloads,
+		"max_active_torrents":            maxTorrents,
+		"dl_limit":                       policy.DownloadRate,
+		"up_limit":                       policy.UploadRate,
+	}
+	raw, err := json.Marshal(prefs)
+	if err != nil {
+		return err
+	}
+	return q.postForm(ctx, "/api/v2/app/setPreferences", url.Values{"json": {string(raw)}})
+}
+
+// SetHTTPProxy is intentionally a no-op for the legacy external provider. Its
+// proxy belongs to qBittorrent itself rather than AniDog's process.
+func (q *QBittorrent) SetHTTPProxy(context.Context, string) error { return nil }
+
+func (q *QBittorrent) Health(ctx context.Context) downloader.EngineHealth {
+	health := downloader.EngineHealth{Name: q.Name()}
+	list, err := q.ListTorrents(ctx)
+	if err != nil {
+		return health
+	}
+	health.Online = true
+	health.TorrentCount = len(list)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, q.baseURL+"/api/v2/app/version", nil)
+	if err == nil {
+		if resp, requestErr := q.client.Do(req); requestErr == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 128))
+				health.Version = strings.TrimSpace(string(body))
+			}
+		}
+	}
+	return health
+}
+
+func (q *QBittorrent) Close() error { return nil }
+
+func (q *QBittorrent) postForm(ctx context.Context, path string, values url.Values) error {
+	if err := q.login(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, q.baseURL+path, strings.NewReader(values.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", q.baseURL)
+	resp, err := q.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("qBittorrent %s 返回 status=%d: %s", path, resp.StatusCode, body)
+	}
+	return nil
+}
+
+func stringField(item map[string]interface{}, key string) string {
+	value, _ := item[key].(string)
+	return value
+}
+
+func boolField(item map[string]interface{}, key string, fallback bool) bool {
+	value, ok := item[key].(bool)
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
+func int64Field(item map[string]interface{}, key string) int64 {
+	switch value := item[key].(type) {
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	default:
+		return 0
+	}
+}
+
+func floatField(item map[string]interface{}, key string) float64 {
+	return floatFieldDefault(item, key, 0)
+}
+
+func floatFieldDefault(item map[string]interface{}, key string, fallback float64) float64 {
+	value, ok := item[key].(float64)
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
+var _ downloader.TorrentEngine = (*QBittorrent)(nil)

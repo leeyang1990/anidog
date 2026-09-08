@@ -293,7 +293,7 @@
               <div class="flex items-center gap-2.5">
                 <span class="inline-block size-2.5 rounded-full" :class="systemInfo.database?.connected ? 'bg-ac-leaf' : 'bg-ac-heart'"></span>
                 <div>
-                  <div class="text-sm font-bold">PostgreSQL</div>
+                  <div class="text-sm font-bold">{{ systemInfo.database?.type === 'sqlite' ? 'SQLite' : 'PostgreSQL' }}</div>
                   <div class="text-xs text-muted-foreground">
                     {{ systemInfo.database?.connected ? t('settings.details.connected') : t('settings.details.disconnected') }}
                     <template v-if="systemInfo.database?.connected">
@@ -303,15 +303,16 @@
                 </div>
               </div>
             </div>
-            <!-- qBittorrent -->
+            <!-- BT 引擎 -->
             <div class="flex items-center justify-between p-3 rounded-2xl border-2 border-ac-sand">
               <div class="flex items-center gap-2.5">
-                <span class="inline-block size-2.5 rounded-full" :class="systemInfo.qbittorrent?.online ? 'bg-ac-leaf' : 'bg-ac-heart'"></span>
+                <span class="inline-block size-2.5 rounded-full" :class="systemInfo.torrent_engine?.online ? 'bg-ac-leaf' : 'bg-ac-heart'"></span>
                 <div>
-                  <div class="text-sm font-bold">qBittorrent</div>
+                  <div class="text-sm font-bold">{{ systemInfo.torrent_engine?.name || 'BT Engine' }}</div>
                   <div class="text-xs text-muted-foreground">
-                    {{ systemInfo.qbittorrent?.online ? t('settings.details.online') : t('settings.details.offline') }}
-                    <template v-if="systemInfo.qbittorrent?.version"> · {{ systemInfo.qbittorrent.version }}</template>
+                    {{ systemInfo.torrent_engine?.online ? t('settings.details.online') : t('settings.details.offline') }}
+                    <template v-if="systemInfo.torrent_engine?.version"> · {{ systemInfo.torrent_engine.version }}</template>
+                    <template v-if="systemInfo.torrent_engine?.listen_port"> · TCP/UDP {{ systemInfo.torrent_engine.listen_port }}</template>
                   </div>
                 </div>
               </div>

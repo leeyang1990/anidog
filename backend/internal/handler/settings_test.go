@@ -44,6 +44,26 @@ func TestSettings_UpdateSettings(t *testing.T) {
 	}
 }
 
+func TestSettings_RejectsInvalidTorrentLimits(t *testing.T) {
+	h, _ := setupSettingsHandler()
+	router := testutil.SetupRouter()
+	v1 := router.Group("/api/v1")
+	h.RegisterRoutes(v1)
+
+	for name, body := range map[string]map[string]interface{}{
+		"zero concurrency": {"max_concurrent": 0},
+		"negative rate":    {"download.bt_download_limit_kib": -1},
+		"short interval":   {"download.check_interval": 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := testutil.MakeRequest(router, http.MethodPut, "/api/v1/settings", body, "")
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d; body = %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestSettings_GetSystemInfo(t *testing.T) {
 	h, _ := setupSettingsHandler()
 	router := testutil.SetupRouter()

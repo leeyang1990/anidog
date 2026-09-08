@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anidog/anidog-go/internal/service"
+	"github.com/anidog/anidog-go/internal/downloader"
 )
 
 // publicTrackers 是一组高活跃度的公共 BT tracker，入队前会注入到不带 &tr= 参数
@@ -88,17 +88,17 @@ func percentEncodeTracker(s string) string {
 	return b.String()
 }
 
-// TorrentExecutor executes torrent downloads via qBittorrent.
+// TorrentExecutor submits torrent work to the configured engine.
 type TorrentExecutor struct {
-	client service.Downloader
+	client downloader.Downloader
 }
 
 // NewTorrentExecutor creates a new torrent executor.
-func NewTorrentExecutor(client service.Downloader) *TorrentExecutor {
+func NewTorrentExecutor(client downloader.Downloader) *TorrentExecutor {
 	return &TorrentExecutor{client: client}
 }
 
-// Execute adds a torrent to qBittorrent and returns the hash.
+// Execute adds a torrent to the engine and returns the info hash.
 func (e *TorrentExecutor) Execute(ctx context.Context, task *Task, progressCB ProgressCallback) (*Result, error) {
 	savePath := ""
 	if task.SavePath != "" {
@@ -115,22 +115,22 @@ func (e *TorrentExecutor) Execute(ctx context.Context, task *Task, progressCB Pr
 	return &Result{TorrentID: hash}, nil
 }
 
-// Cancel removes the torrent from qBittorrent.
+// Cancel removes the torrent from the engine.
 func (e *TorrentExecutor) Cancel(taskID string) error {
 	return e.client.RemoveTorrent(context.Background(), taskID, true)
 }
 
-// Pause pauses the torrent in qBittorrent.
+// Pause pauses the torrent in the engine.
 func (e *TorrentExecutor) Pause(taskID string) error {
 	return e.client.PauseTorrent(context.Background(), taskID)
 }
 
-// Resume resumes the torrent in qBittorrent.
+// Resume resumes the torrent in the engine.
 func (e *TorrentExecutor) Resume(taskID string) error {
 	return e.client.ResumeTorrent(context.Background(), taskID)
 }
 
-// Remove removes the torrent from qBittorrent.
+// Remove removes the torrent from the engine.
 func (e *TorrentExecutor) Remove(taskID string, removeFiles bool) error {
 	return e.client.RemoveTorrent(context.Background(), taskID, removeFiles)
 }

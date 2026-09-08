@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/anidog/anidog-go/internal/handler"
 
 	// 导入下载器 provider 以触发注册
+	_ "github.com/anidog/anidog-go/internal/downloader/providers/embedded"
 	_ "github.com/anidog/anidog-go/internal/downloader/providers/mock"
 	_ "github.com/anidog/anidog-go/internal/downloader/providers/qbittorrent"
 	"github.com/anidog/anidog-go/internal/middleware"
@@ -76,13 +79,14 @@ func main() {
 	// 5a. 统一下载服务
 	dlSvc := dlservice.NewService(db, cfg, wsHub)
 	dlSvc.RegisterExecutor(model.DownloadTypeStream, dlservice.NewStreamExecutor(streamManager, db))
-	qbitClient, err := downloader.Create(cfg.DownloaderType, cfg)
+	torrentEngine, err := downloader.Create(cfg.DownloaderType, cfg)
 	if err != nil {
-		zap.L().Warn("创建下载器失败，种子下载功能将不可用", zap.Error(err))
-		qbitClient = nil
+		zap.L().Warn("创建 BT 引擎失败，种子下载功能将不可用", zap.Error(err))
+		torrentEngine = nil
 	}
-	if qbitClient != nil {
-		dlSvc.RegisterExecutor(model.DownloadTypeTorrent, dlservice.NewTorrentExecutor(qbitClient))
+	if torrentEngine != nil {
+		dlSvc.RegisterExecutor(model.DownloadTypeTorrent, dlservice.NewTorrentExecutor(torrentEngine))
+		restoreTorrentDownloads(context.Background(), db, torrentEngine, cfg.BTStateDir)
 	}
 
 	// 5c. RSS Engine + CRUD
@@ -98,6 +102,11 @@ func main() {
 	settingSvc.OnChange("http_proxy", func(value string) {
 		proxyProvider.Set(value)
 		bangumiSvc.ClearCache()
+		if torrentEngine != nil {
+			if err := torrentEngine.SetHTTPProxy(context.Background(), value); err != nil {
+				zap.L().Warn("BT 引擎代理更新失败", zap.Error(err))
+			}
+		}
 		zap.L().Info("HTTP 代理已动态更新", zap.String("proxy", value))
 	})
 
@@ -156,16 +165,16 @@ func main() {
 	sourceHealthSvc := bangumisvc.NewSourceHealthService(db)
 	sched.Register(scheduler.NewSourceHealthJob(sourceHealthSvc), 3*time.Minute, true)
 
-	// qBit 进度同步：每 15 秒把 qBit 种子的 size/progress 写回 DB
-	if qbitClient != nil {
-		qbitSync := dlservice.NewQBitSyncer(db, cfg)
+	// BT 进度同步：每 15 秒把引擎状态写回 DB
+	if torrentEngine != nil {
+		torrentSync := dlservice.NewTorrentSyncer(db, cfg, torrentEngine)
 		// 注入通知服务：当一条下载从非完成态翻成 completed 时，
 		// QBitSyncer 会广播到所有 enabled 渠道（telegram/bark/...）
-		qbitSync.SetNotificationService(notifSvc)
-		qbitSync.SetRaceService(dlSvc)
-		qbitSync.SetDeadTorrentHandler(orch.RetryEpisodeAfterCandidateFailure)
-		qbitSync.SetSlowTorrentHandler(orch.RetryEpisodeAfterCandidateFailure)
-		qbitSync.SetRateLimitLoader(func(ctx context.Context) (downloadKiB, uploadKiB int64) {
+		torrentSync.SetNotificationService(notifSvc)
+		torrentSync.SetRaceService(dlSvc)
+		torrentSync.SetDeadTorrentHandler(orch.RetryEpisodeAfterCandidateFailure)
+		torrentSync.SetSlowTorrentHandler(orch.RetryEpisodeAfterCandidateFailure)
+		torrentSync.SetRateLimitLoader(func(ctx context.Context) (downloadKiB, uploadKiB int64) {
 			read := func(key string) int64 {
 				raw, ok, err := settingSvc.Get(ctx, key)
 				if err != nil || !ok {
@@ -179,13 +188,27 @@ func main() {
 			}
 			return read("download.bt_download_limit_kib"), read("download.bt_upload_limit_kib")
 		})
+		torrentSync.SetMaxActiveLoader(func(ctx context.Context) int {
+			raw, ok, err := settingSvc.Get(ctx, "max_concurrent")
+			if err != nil || !ok {
+				return 3
+			}
+			value, err := strconv.Atoi(raw)
+			if err != nil || value <= 0 {
+				return 3
+			}
+			return value
+		})
 		settingSvc.OnChange("download.bt_download_limit_kib", func(string) {
-			qbitSync.InvalidatePreferences()
+			torrentSync.InvalidatePreferences()
 		})
 		settingSvc.OnChange("download.bt_upload_limit_kib", func(string) {
-			qbitSync.InvalidatePreferences()
+			torrentSync.InvalidatePreferences()
 		})
-		sched.Register(qbitSync, 15*time.Second, true)
+		settingSvc.OnChange("max_concurrent", func(string) {
+			torrentSync.InvalidatePreferences()
+		})
+		sched.Register(torrentSync, 15*time.Second, true)
 	}
 
 	// 6. 启动流媒体管理器（异步，不阻塞主流程）
@@ -249,16 +272,11 @@ func main() {
 		WithSystemDeps(handler.SystemInfoDeps{
 			DB:        db,
 			MediaRoot: dlSvc.MediaRoot,
-			QBitPing: func(ctx context.Context) (bool, string) {
-				if qbitClient == nil {
-					return false, ""
+			TorrentEngineHealth: func(ctx context.Context) downloader.EngineHealth {
+				if torrentEngine == nil {
+					return downloader.EngineHealth{Name: "未配置"}
 				}
-				// 用 GetTorrentInfo 当 ping —— 能返回（即便空列表）即视为在线。
-				// qbit provider 未暴露版本 API，版本字段留空。
-				if _, err := qbitClient.GetTorrentInfo(ctx, ""); err != nil {
-					return false, ""
-				}
-				return true, ""
+				return torrentEngine.Health(ctx)
 			},
 		}).
 		RegisterRoutes(v1)
@@ -269,7 +287,9 @@ func main() {
 	handler.NewBangumiHandler(animeSvc, bangumiSvc, orch).RegisterRoutes(v1)
 	handler.NewStreamRuleHandler(streamRuleSvc).RegisterRoutes(v1)
 	handler.NewStreamHandler(streamRuleSvc, streamManager, dlSvc).RegisterRoutes(v1)
-	handler.NewFileSystemHandler("/downloads").RegisterRoutes(v1)
+	handler.NewDynamicFileSystemHandler(func() string {
+		return dlSvc.MediaRoot(context.Background())
+	}).RegisterRoutes(v1)
 	handler.NewDefaultRulesHandler(cfg).RegisterRoutes(v1)
 	handler.NewIndexerHandler(settingSvc).RegisterRoutes(v1)
 	handler.NewOrchestratorHandler(db, orch, settingSvc).RegisterRoutes(v1)
@@ -326,6 +346,11 @@ func main() {
 
 	sched.Stop()
 	streamManager.Close()
+	if torrentEngine != nil {
+		if err := torrentEngine.Close(); err != nil {
+			zap.L().Warn("关闭 BT 引擎失败", zap.Error(err))
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -335,6 +360,60 @@ func main() {
 	}
 
 	zap.L().Info("服务器已关闭")
+}
+
+func restoreTorrentDownloads(ctx context.Context, db *gorm.DB, engine downloader.TorrentEngine, stateDir string) {
+	existing, err := engine.ListTorrents(ctx)
+	if err != nil {
+		zap.L().Warn("读取 BT 引擎恢复状态失败", zap.Error(err))
+		return
+	}
+	known := make(map[string]bool, len(existing))
+	for _, item := range existing {
+		known[strings.ToUpper(item.ID)] = true
+	}
+	var rows []model.Download
+	if err := db.WithContext(ctx).
+		Where("download_type = ? AND status IN ?", model.DownloadTypeTorrent,
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading, model.DownloadStatusPaused}).
+		Find(&rows).Error; err != nil {
+		zap.L().Warn("读取待恢复 BT 任务失败", zap.Error(err))
+		return
+	}
+	restored := 0
+	for i := range rows {
+		row := &rows[i]
+		if row.InfoHash != nil && known[strings.ToUpper(*row.InfoHash)] {
+			continue
+		}
+		savePath := ""
+		if row.SavePath != nil {
+			savePath = *row.SavePath
+		}
+		torrentURL := row.URL
+		if row.InfoHash != nil {
+			imported := filepath.Join(stateDir, "import", strings.ToLower(strings.TrimSpace(*row.InfoHash))+".torrent")
+			if _, statErr := os.Stat(imported); statErr == nil {
+				torrentURL = imported
+			}
+		}
+		hash, err := engine.AddTorrent(ctx, torrentURL, savePath)
+		if err != nil {
+			zap.L().Warn("恢复 BT 任务失败", zap.Uint("id", row.ID), zap.Error(err))
+			continue
+		}
+		if row.Status == model.DownloadStatusPaused {
+			_ = engine.PauseTorrent(ctx, hash)
+		}
+		if row.InfoHash == nil || !strings.EqualFold(*row.InfoHash, hash) {
+			normalized := strings.ToUpper(hash)
+			_ = db.WithContext(ctx).Model(row).Update("info_hash", normalized).Error
+		}
+		restored++
+	}
+	if restored > 0 {
+		zap.L().Info("BT 任务恢复完成", zap.Int("count", restored), zap.String("engine", engine.Name()))
+	}
 }
 
 // orchRetryAdapter 把 *orchestrator.Orchestrator.CheckAnime（接受 typed

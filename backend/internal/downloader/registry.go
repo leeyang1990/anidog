@@ -9,11 +9,11 @@ import (
 )
 
 // ProviderFactory 下载器工厂函数类型
-type ProviderFactory func(cfg *config.Config) (Downloader, error)
+type ProviderFactory func(cfg *config.Config) (TorrentEngine, error)
 
 // Registry 下载器注册表
 type Registry struct {
-	mu       sync.RWMutex
+	mu        sync.RWMutex
 	factories map[string]ProviderFactory
 }
 
@@ -33,7 +33,7 @@ func Register(name string, factory ProviderFactory) {
 }
 
 // Create 创建下载器实例
-func Create(downloaderType string, cfg *config.Config) (Downloader, error) {
+func Create(downloaderType string, cfg *config.Config) (TorrentEngine, error) {
 	globalRegistry.mu.RLock()
 	factory, ok := globalRegistry.factories[downloaderType]
 	globalRegistry.mu.RUnlock()
@@ -59,8 +59,8 @@ func ListProviders() []string {
 
 // DownloaderError 下载器错误
 type DownloaderError struct {
-	Type   DownloaderErrorType
-	Name   string
+	Type DownloaderErrorType
+	Name string
 }
 
 // DownloaderErrorType 错误类型

@@ -20,7 +20,7 @@
 
 AniDog 是一个运行在家庭服务器或 NAS 上的番剧自动下载管理工具。
 
-添加想追的番剧后，它会定时检查缺失剧集，从 Mikan、普通 BT、流媒体或 RSS 中选择资源，交给 qBittorrent / ffmpeg 下载，并整理成 Emby、Jellyfin、Plex 容易识别的目录。
+添加想追的番剧后，它会定时检查缺失剧集，从 Mikan、普通 BT、流媒体或 RSS 中选择资源，交给内嵌 BT 引擎 / ffmpeg 下载，并整理成 Emby、Jellyfin、Plex 容易识别的目录。
 
 支持简体中文、繁体中文、日语和英语，提供动森与 Classic 两套主题。
 
@@ -69,10 +69,10 @@ cp .env.example .env
 DOWNLOAD_ROOT=/mnt/media/anime
 POSTGRES_PASSWORD=请替换为强密码
 SECRET_KEY=请替换为随机字符串
-DOWNLOADER_PASSWORD=请替换为强密码
+BT_LISTEN_PORT=6881
 ```
 
-`DOWNLOAD_ROOT` 是宿主机上的媒体目录，AniDog 和 qBittorrent 会共同把它挂载为容器内的 `/downloads`。
+`DOWNLOAD_ROOT` 是宿主机上的媒体目录，AniDog 会把它挂载为容器内的 `/downloads`。BT 引擎已经内置在后端中，不需要额外部署或登录下载器。
 
 ### 2. 启动
 
@@ -82,21 +82,7 @@ docker compose up -d
 docker compose ps
 ```
 
-打开 `http://服务器地址:3002` 并注册 AniDog 账户。qBittorrent WebUI 默认位于 `http://服务器地址:8080`。
-
-### 3. 首次连接 qBittorrent
-
-qBittorrent 首次启动会生成临时密码：
-
-```bash
-docker logs anidog-qbittorrent 2>&1 | grep -i "temporary password"
-```
-
-使用用户名 `admin` 和临时密码登录 qBittorrent，把 WebUI 密码改成 `.env` 中的 `DOWNLOADER_PASSWORD`，然后执行：
-
-```bash
-docker compose restart backend
-```
+打开 `http://服务器地址:3002` 并注册 AniDog 账户。BT 下载状态、监听端口和限速都在 AniDog 的「设置 → 下载偏好」中管理。
 
 ## 使用方法
 
@@ -131,7 +117,7 @@ Mikan、普通 BT、流媒体参与主动源排序；RSS 是独立的被动通�
 
 ## 通知与代理
 
-通知支持 Telegram、Bark、Webhook、Discord、Server 酱和企业微信。网络代理会用于 Bangumi、BT Indexer、Mikan、RSS 和通知请求，不会自动代理 qBittorrent 的 BT 流量或 ffmpeg 视频流量。
+通知支持 Telegram、Bark、Webhook、Discord、Server 酱和企业微信。网络代理会用于 Bangumi、BT Indexer、Mikan、RSS、通知和 BT 的 HTTP tracker 请求；BT peer、DHT 与 ffmpeg 视频流量仍然直连。
 
 ## 升级
 
@@ -141,11 +127,11 @@ docker compose pull
 docker compose up -d --remove-orphans
 ```
 
-需要固定版本时，在 `.env` 中设置 `TAG=v0.1.43`。不要使用 `docker compose down -v`，除非明确要删除数据库和 qBittorrent 配置。
+需要固定版本时，在 `.env` 中设置 `TAG=v0.2.0`。不要使用 `docker compose down -v`，除非明确要删除数据库和 BT 任务状态。
 
 ## 遇到问题
 
-- qBittorrent 离线：确认 WebUI 密码与 `.env` 完全一致。
+- BT 引擎离线：查看后端日志，并确认 `BT_LISTEN_PORT` 未被其他进程占用。
 - 搜索不到资源：查看单集诊断，并检查代理、源状态和筛选条件。
 - 页面测试通知失败：检查后端容器日志和「设置 → 网络代理」。
 - 更新后页面异常：关闭旧标签页重新打开，并确认 frontend 已拉到目标镜像。

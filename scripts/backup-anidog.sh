@@ -25,13 +25,13 @@ tmp_dir="$(mktemp -d "$backup_dir/.anidog-backup-$stamp.XXXXXX")"
 trap 'rm -rf -- "$tmp_dir"' EXIT
 
 db_file="$tmp_dir/anidog-db-$stamp.sql.gz"
-qbit_file="$tmp_dir/anidog-qbit-$stamp.tar.gz"
+torrent_file="$tmp_dir/anidog-torrent-state-$stamp.tar.gz"
 
 docker exec anidog-postgres sh -c 'exec pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip -9 > "$db_file"
-docker exec anidog-qbittorrent tar -czf - -C /config . > "$qbit_file"
+docker exec anidog-backend tar -czf - -C /var/lib/anidog/torrent . > "$torrent_file"
 
 gzip -t "$db_file"
-tar -tzf "$qbit_file" >/dev/null
+tar -tzf "$torrent_file" >/dev/null
 
 if [[ -f "$project_dir/.env" ]]; then
   install -m 600 "$project_dir/.env" "$tmp_dir/anidog-env-$stamp"

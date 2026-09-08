@@ -1,4 +1,4 @@
-package mock
+package embedded
 
 import (
 	"github.com/anidog/anidog-go/internal/config"
@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	downloader.Register("mock", func(cfg *config.Config) (downloader.TorrentEngine, error) {
-		return NewProvider(cfg)
+	downloader.Register("embedded", func(cfg *config.Config) (downloader.TorrentEngine, error) {
+		return New(cfg)
 	})
 }

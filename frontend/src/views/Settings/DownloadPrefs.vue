@@ -44,6 +44,15 @@
           </div>
 
           <div v-if="form.source_enabled_bt" class="pt-2">
+            <div class="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl border-2 border-ac-sand bg-ac-cream/40 px-3 py-2 text-xs">
+              <span class="inline-block size-2 rounded-full" :class="engineInfo.online ? 'bg-ac-leaf' : 'bg-ac-heart'"></span>
+              <span class="font-bold text-foreground">{{ engineInfo.name || t('downloadPrefs.engineName') }}</span>
+              <span class="text-muted-foreground">
+                {{ engineInfo.online ? t('settings.details.online') : t('settings.details.offline') }}
+                <template v-if="engineInfo.listen_port"> · {{ t('downloadPrefs.enginePort', { port: engineInfo.listen_port }) }}</template>
+                · {{ t('downloadPrefs.engineTasks', { count: engineInfo.torrent_count || 0 }) }}
+              </span>
+            </div>
             <label class="text-xs font-bold text-muted-foreground mb-2 block">{{ t('downloadPrefs.enabledIndexers') }}</label>
             <div class="flex flex-wrap gap-2">
               <button v-for="ix in indexerOptions" :key="ix.value"
@@ -220,7 +229,7 @@
 
           <div class="space-y-2 md:max-w-sm">
             <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.concurrency') }}</label>
-            <AcInput v-model="form.max_concurrent" type="number" />
+            <AcInput v-model="form.max_concurrent" type="number" min="1" max="100" />
             <p class="text-xs text-muted-foreground">{{ t('downloadPrefs.concurrencyDesc') }}</p>
           </div>
 
@@ -288,6 +297,7 @@ const defaults = {
 const form = reactive({ ...JSON.parse(JSON.stringify(defaults)) })
 const newGroup = ref('')
 const saving = ref(false)
+const engineInfo = ref({ online: false, name: '', listen_port: 0, torrent_count: 0 })
 
 const qualityOptions = computed(() => [
   { label: '720p', value: '720p' },
@@ -369,9 +379,13 @@ async function load() {
 
     // 下载与归档
     form.download_dir = map['download_dir'] || map['media_root'] || defaults.download_dir
-    form.max_concurrent = parseInt(map['max_concurrent']) || parseInt(map['stream_max_concurrent']) || defaults.max_concurrent
+    form.max_concurrent = Math.min(100, Math.max(1, parseInt(map['max_concurrent']) || parseInt(map['stream_max_concurrent']) || defaults.max_concurrent))
     form.media_min_free_gb = Math.max(0, parseFloat(map['media.min_free_gb']) || defaults.media_min_free_gb)
     form.media_max_used_percent = Math.max(0, parseFloat(map['media.max_used_percent']) || defaults.media_max_used_percent)
+    try {
+      const system = await get('/system/info')
+      engineInfo.value = system.torrent_engine || system.qbittorrent || engineInfo.value
+    } catch (e) { console.error('加载 BT 引擎状态失败', e) }
   } catch (e) { console.error('加载偏好失败', e) }
 }
 
@@ -397,7 +411,7 @@ async function save() {
     'download.bt_upload_limit_kib': String(Math.max(0, parseInt(form.bt_upload_limit_kib) || 0)),
     // 下载与归档（扁平 key，与后端白名单一致）
     'download_dir': form.download_dir,
-    'max_concurrent': String(form.max_concurrent),
+    'max_concurrent': String(Math.min(100, Math.max(1, parseInt(form.max_concurrent) || defaults.max_concurrent))),
     'media.min_free_gb': String(Math.max(0, parseFloat(form.media_min_free_gb) || 0)),
     'media.max_used_percent': String(Math.max(0, parseFloat(form.media_max_used_percent) || 0)),
   }

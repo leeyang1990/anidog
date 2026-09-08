@@ -477,6 +477,11 @@ type seasonPackMovePlan struct {
 	size int64
 }
 
+type seasonPackFileMove struct {
+	from string
+	to   string
+}
+
 // CompleteSeasonPack 把一个合集候选中的多集视频分别提升到标准媒体目录，
 // 并一次性写入 AnimeEpisode。任何目标冲突或移动失败都会回滚已经移动的文件，
 // 避免只归档半季却把合集标成完成。
@@ -500,6 +505,7 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 	}
 	sort.Ints(episodes)
 	plans := make([]seasonPackMovePlan, 0, len(episodes))
+	moves := make([]seasonPackFileMove, 0, len(episodes)*3)
 	for _, ep := range episodes {
 		from := stagingFiles[ep]
 		if _, err := os.Stat(from); err != nil {
@@ -514,20 +520,27 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 			return false
 		}
 		plans = append(plans, seasonPackMovePlan{ep: ep, from: from, to: to, size: fileSize(from)})
+		moves = append(moves, seasonPackFileMove{from: from, to: to})
+		sidecars, err := seasonPackSidecarMoves(from, to)
+		if err != nil {
+			zap.L().Warn("合集字幕归档目标冲突", zap.Uint("id", dlID), zap.Int("episode", ep), zap.Error(err))
+			return false
+		}
+		moves = append(moves, sidecars...)
 	}
 
-	moved := make([]seasonPackMovePlan, 0, len(plans))
-	for _, plan := range plans {
-		if err := os.MkdirAll(filepath.Dir(plan.to), 0755); err != nil {
+	moved := make([]seasonPackFileMove, 0, len(moves))
+	for _, move := range moves {
+		if err := os.MkdirAll(filepath.Dir(move.to), 0755); err != nil {
 			rollbackSeasonPackMoves(moved)
 			return false
 		}
-		if err := os.Rename(plan.from, plan.to); err != nil {
+		if err := os.Rename(move.from, move.to); err != nil {
 			rollbackSeasonPackMoves(moved)
-			zap.L().Error("合集文件归档失败", zap.Uint("id", dlID), zap.Int("episode", plan.ep), zap.Error(err))
+			zap.L().Error("合集文件归档失败", zap.Uint("id", dlID), zap.String("path", move.from), zap.Error(err))
 			return false
 		}
-		moved = append(moved, plan)
+		moved = append(moved, move)
 	}
 
 	now := time.Now()
@@ -577,7 +590,14 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 			zap.L().Warn("移除已归档合集的 qBit 任务失败", zap.Uint("id", candidate.ID), zap.Error(err))
 		}
 	}
-	removeTorrentRaceDirectory(candidate.SavePath)
+	if extrasPath, preserved, err := preserveSeasonPackExtras(candidate.SavePath, plans[0].from, filepath.Dir(plans[0].to)); err != nil {
+		zap.L().Warn("合集附件保留失败，原文件仍留在竞速目录", zap.Uint("id", candidate.ID), zap.Error(err))
+	} else {
+		removeTorrentRaceDirectory(candidate.SavePath)
+		if preserved {
+			zap.L().Info("合集附加内容已保留", zap.Uint("id", candidate.ID), zap.String("path", extrasPath))
+		}
+	}
 	s.updateAnimeProgressFromEpisodeTable(ctx, *candidate.AnimeID)
 	s.notifyCompletion(candidate.ID)
 	zap.L().Info("整季合集归档完成", zap.Uint("id", candidate.ID), zap.String("name", candidate.Name), zap.Int("episodes", len(plans)))
@@ -591,10 +611,93 @@ func candidateAnimeID(candidate model.Download) uint {
 	return *candidate.AnimeID
 }
 
-func rollbackSeasonPackMoves(moved []seasonPackMovePlan) {
+func rollbackSeasonPackMoves(moved []seasonPackFileMove) {
 	for i := len(moved) - 1; i >= 0; i-- {
 		_ = os.Rename(moved[i].to, moved[i].from)
 	}
+}
+
+func seasonPackSidecarMoves(videoFrom, videoTo string) ([]seasonPackFileMove, error) {
+	dir := filepath.Dir(videoFrom)
+	prefix := strings.TrimSuffix(filepath.Base(videoFrom), filepath.Ext(videoFrom))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var moves []seasonPackFileMove
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix+".") || !isSubtitleExtension(filepath.Ext(entry.Name())) {
+			continue
+		}
+		suffix := strings.TrimPrefix(entry.Name(), prefix)
+		to := strings.TrimSuffix(videoTo, filepath.Ext(videoTo)) + suffix
+		if _, err := os.Stat(to); err == nil {
+			return nil, fmt.Errorf("字幕目标已存在: %s", to)
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		moves = append(moves, seasonPackFileMove{from: filepath.Join(dir, entry.Name()), to: to})
+	}
+	return moves, nil
+}
+
+func isSubtitleExtension(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".ass", ".ssa", ".srt", ".sub", ".vtt":
+		return true
+	default:
+		return false
+	}
+}
+
+func preserveSeasonPackExtras(savePath *string, firstVideo, seasonDir string) (string, bool, error) {
+	if savePath == nil || strings.TrimSpace(*savePath) == "" {
+		return "", false, nil
+	}
+	rel, err := filepath.Rel(filepath.Clean(*savePath), filepath.Clean(firstVideo))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false, fmt.Errorf("无法确定合集内容根目录: %s", firstVideo)
+	}
+	firstPart := strings.Split(rel, string(filepath.Separator))[0]
+	contentRoot := filepath.Join(*savePath, firstPart)
+	info, err := os.Stat(contentRoot)
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if !info.IsDir() {
+		return "", false, nil
+	}
+	hasFiles := false
+	if err := filepath.WalkDir(contentRoot, func(_ string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			hasFiles = true
+		}
+		return nil
+	}); err != nil {
+		return "", false, err
+	}
+	if !hasFiles {
+		return "", false, nil
+	}
+	extrasPath := filepath.Join(seasonDir, "Extras", filepath.Base(contentRoot))
+	if _, err := os.Stat(extrasPath); err == nil {
+		return "", false, fmt.Errorf("附件目录已存在: %s", extrasPath)
+	} else if !os.IsNotExist(err) {
+		return "", false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(extrasPath), 0o755); err != nil {
+		return "", false, err
+	}
+	if err := os.Rename(contentRoot, extrasPath); err != nil {
+		return "", false, err
+	}
+	return extrasPath, true, nil
 }
 
 func (s *Service) settleSeasonPack(ctx context.Context, winner *model.Download, episodes []int) {

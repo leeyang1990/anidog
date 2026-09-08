@@ -46,13 +46,26 @@ func TestCompleteSeasonPackArchivesEveryMappedEpisode(t *testing.T) {
 	if err := os.MkdirAll(savePath, 0755); err != nil {
 		t.Fatal(err)
 	}
+	contentDir := filepath.Join(savePath, "Lucky Star Pack")
+	if err := os.MkdirAll(contentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	files := make(map[int]string)
 	for ep := start; ep <= end; ep++ {
-		path := filepath.Join(savePath, fmt.Sprintf("episode-%02d.mkv", ep))
+		path := filepath.Join(contentDir, fmt.Sprintf("episode-%02d.mkv", ep))
 		if err := os.WriteFile(path, []byte(fmt.Sprintf("episode-%d", ep)), 0600); err != nil {
 			t.Fatal(err)
 		}
 		files[ep] = path
+	}
+	if err := os.WriteFile(filepath.Join(contentDir, "episode-01.sc.ass"), []byte("subtitle"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(contentDir, "SP"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contentDir, "SP", "bonus.mkv"), []byte("bonus"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	dl := model.Download{
 		TorrentID: "pack", Name: "Lucky Star - 合集 01-04", URL: "magnet",
@@ -87,6 +100,16 @@ func TestCompleteSeasonPackArchivesEveryMappedEpisode(t *testing.T) {
 		if _, err := os.Stat(*episode.FilePath); err != nil {
 			t.Fatalf("episode %d final file missing: %v", episode.EpisodeNumber, err)
 		}
+	}
+	seasonDir := filepath.Dir(*episodes[0].FilePath)
+	if _, err := os.Stat(filepath.Join(seasonDir, "Lucky Star S01E01.sc.ass")); err != nil {
+		t.Fatalf("episode sidecar was not archived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(seasonDir, "Extras", "Lucky Star Pack", "SP", "bonus.mkv")); err != nil {
+		t.Fatalf("pack extras were not preserved: %v", err)
+	}
+	if _, err := os.Stat(savePath); !os.IsNotExist(err) {
+		t.Fatalf("race directory was not cleaned: %v", err)
 	}
 }
 

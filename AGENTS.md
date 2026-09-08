@@ -67,7 +67,7 @@ internal/
     auth/           登录 + token
     bangumi.go      Bangumi API 客户端（搜索 / 详情 / 日历）
     bangumi/        自动下载 + 源健康检测
-    download/       下载编排（Task / Executor / QBit provider 同步）
+    download/       下载编排（Task / Executor / BT 引擎状态同步）
     indexer/        BT 聚合搜索（Mikan / Dmhy / BangumiMoe / Nyaa）
     orchestrator/   剧集驱动的多源调度器（核心）
     rss/            RSS 解析 + 规则匹配
@@ -76,7 +76,7 @@ internal/
     stream/         流媒体规则执行 + ffmpeg 下载
     streamrule/     流媒体规则 CRUD
     titleparse/     种子标题解析
-  downloader/       下载 provider 抽象（qBit / mock）
+  downloader/       BT provider 抽象（embedded / qBit 兼容 / mock）
   ws/               WebSocket Hub（下载进度推送）
 ```
 

@@ -7,6 +7,10 @@ FROM golang:1.26.2-alpine AS builder
 
 WORKDIR /build
 
+# 默认使用官方模块代理；网络受限的部署机可通过 --build-arg GOPROXY=... 覆盖。
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+
 # 安装必要的工具
 RUN apk add --no-cache git ca-certificates
 

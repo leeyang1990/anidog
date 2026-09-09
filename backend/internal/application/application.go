@@ -1,0 +1,503 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gorm.io/gorm"
+
+	"github.com/anidog/anidog-go/internal/config"
+	"github.com/anidog/anidog-go/internal/database"
+	"github.com/anidog/anidog-go/internal/downloader"
+	"github.com/anidog/anidog-go/internal/handler"
+
+	// 导入下载器 provider 以触发注册
+	_ "github.com/anidog/anidog-go/internal/downloader/providers/embedded"
+	_ "github.com/anidog/anidog-go/internal/downloader/providers/mock"
+	_ "github.com/anidog/anidog-go/internal/downloader/providers/qbittorrent"
+	"github.com/anidog/anidog-go/internal/middleware"
+	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service"
+	animesvc "github.com/anidog/anidog-go/internal/service/anime"
+	authsvc "github.com/anidog/anidog-go/internal/service/auth"
+	bangumisvc "github.com/anidog/anidog-go/internal/service/bangumi"
+	dashboardsvc "github.com/anidog/anidog-go/internal/service/dashboard"
+	dlservice "github.com/anidog/anidog-go/internal/service/download"
+	"github.com/anidog/anidog-go/internal/service/episode"
+	"github.com/anidog/anidog-go/internal/service/network"
+	notifsvc "github.com/anidog/anidog-go/internal/service/notification"
+	"github.com/anidog/anidog-go/internal/service/orchestrator"
+	rssservice "github.com/anidog/anidog-go/internal/service/rss"
+	"github.com/anidog/anidog-go/internal/service/scheduler"
+	settingsvc "github.com/anidog/anidog-go/internal/service/setting"
+	"github.com/anidog/anidog-go/internal/service/stream"
+	streamrulesvc "github.com/anidog/anidog-go/internal/service/streamrule"
+	usersvc "github.com/anidog/anidog-go/internal/service/user"
+	"github.com/anidog/anidog-go/internal/ws"
+)
+
+// Runtime 是服务端与 Wails 桌面端共用的完整 AniDog 运行时。
+// Handler 可以交给 net/http，也可以直接交给 Wails AssetServer。
+type Runtime struct {
+	Config        *config.Config
+	Handler       http.Handler
+	DB            *gorm.DB
+	Scheduler     *scheduler.Scheduler
+	StreamManager *stream.StreamManager
+	TorrentEngine downloader.TorrentEngine
+
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// New 完成依赖注入并启动后台任务，但不绑定任何 HTTP 端口。
+// 这样 Docker 服务端和桌面端能复用完全相同的业务实现。
+func New(cfg *config.Config) (*Runtime, error) {
+	if cfg == nil {
+		return nil, errors.New("配置不能为空")
+	}
+	// 2. 初始化日志
+	InitLogger(cfg)
+	zap.L().Info(fmt.Sprintf("启动 %s %s...", cfg.ProjectName, cfg.ProjectVersion))
+
+	// 3. 初始化数据库
+	db := database.Init(cfg)
+
+	// 3a. 从 DB setting 覆盖运行时配置（目前只覆盖代理）
+	applyDBConfigOverrides(db, cfg)
+
+	// 4. WebSocket Hub
+	wsHub := ws.NewHub()
+	go wsHub.Run()
+
+	// 5. 构建服务
+	proxyProvider := network.NewProxyProvider(cfg.HTTPProxy)
+	httpClient := network.NewHTTPClient(cfg, proxyProvider)
+	bangumiSvc := service.NewBangumiService(cfg, httpClient.Client())
+	streamManager := stream.NewStreamManager(cfg, httpClient, db)
+
+	// 5a. 认证与用户服务
+	authSvc := authsvc.New(db, cfg.SecretKey, cfg.AccessTokenExpireDuration)
+	userSvc := usersvc.New(db)
+	animeSvc := animesvc.New(db)
+
+	// 5a. 统一下载服务
+	dlSvc := dlservice.NewService(db, cfg, wsHub)
+	dlSvc.RegisterExecutor(model.DownloadTypeStream, dlservice.NewStreamExecutor(streamManager, db))
+	torrentEngine, err := downloader.Create(cfg.DownloaderType, cfg)
+	if err != nil {
+		zap.L().Warn("创建 BT 引擎失败，种子下载功能将不可用", zap.Error(err))
+		torrentEngine = nil
+	}
+	if torrentEngine != nil {
+		dlSvc.RegisterExecutor(model.DownloadTypeTorrent, dlservice.NewTorrentExecutor(torrentEngine))
+		restoreTorrentDownloads(context.Background(), db, torrentEngine, cfg.BTStateDir)
+	}
+
+	// 5c. RSS Engine + CRUD
+	rssCrudSvc := rssservice.NewCRUDService(db)
+	rssEngine := rssservice.NewEngine(db, dlSvc)
+
+	// 5d. Dashboard / Notification / StreamRule / Settings
+	dashboardSvc := dashboardsvc.New(db, bangumiSvc)
+	notificationHTTPClient := network.NewClient(proxyProvider, 15*time.Second)
+	notifSvc := notifsvc.NewService(db, notificationHTTPClient)
+	streamRuleSvc := streamrulesvc.NewService(db, streamManager)
+	settingSvc := settingsvc.NewService(cfg, db)
+	settingSvc.OnChange("http_proxy", func(value string) {
+		proxyProvider.Set(value)
+		bangumiSvc.ClearCache()
+		if torrentEngine != nil {
+			if err := torrentEngine.SetHTTPProxy(context.Background(), value); err != nil {
+				zap.L().Warn("BT 引擎代理更新失败", zap.Error(err))
+			}
+		}
+		zap.L().Info("HTTP 代理已动态更新", zap.String("proxy", value))
+	})
+
+	// 把通知服务注入下载服务：所有下载完成事件（BT/Stream/手动）走 updateStatus 时
+	// 都会触发一次通知。这个调用得放在 dlSvc 创建之后，看上面 5b 阶段。
+	dlSvc.SetNotificationService(notifSvc)
+
+	// 下载根目录：下载服务会把带番剧/集数的 BT 任务统一放进竞速隔离目录，
+	// 完成后再归档到 <mediaRoot>/<番剧名 (年份)>/Season NN。
+	mediaRoot := cfg.MediaRoot
+	if mediaRoot == "" {
+		mediaRoot = "/downloads"
+	}
+	// 5d2. Orchestrator：多源剧集填坑调度器（替代旧的 bangumi.CheckAllSubscribed）
+	orch := orchestrator.New(db, dlSvc, streamManager, settingSvc, nil, mediaRoot, httpClient.Client())
+	dlSvc.SetRejectedStreamHandler(orch.RetryEpisodeAfterCandidateFailure)
+
+	// 5d3. Episode 同步：从 Bangumi 拉取每集的播出时间，让前端能区分
+	// "未下载" 和 "待发布"，让 Orchestrator 不去搜未播出的集
+	episodeSvc := episode.NewService(db, bangumiSvc)
+
+	// Seed 内置 Kazumi 默认规则 (仅在数据库为空时)
+	if err := streamRuleSvc.SeedDefaultRules(context.Background()); err != nil {
+		zap.L().Warn("Seed 默认规则失败", zap.Error(err))
+	}
+
+	// 5e. 调度器
+	sched := scheduler.New()
+	rssInterval := time.Duration(cfg.RSSCheckInterval) * time.Minute
+	if rssInterval <= 0 {
+		rssInterval = 30 * time.Minute
+	}
+	// RSS 是否启用：每轮 Run 之前从 setting 读取 download.source_enabled.rss，
+	// 关闭时直接跳过 RefreshAll（实现"动森设置 → RSS 开关"的纯被动语义）。
+	rssEnabled := func(ctx context.Context) bool {
+		pref := orchestrator.LoadGlobal(ctx, settingSvc)
+		return pref.RSSEnabled
+	}
+	sched.Register(scheduler.NewRSSRefreshJob(rssEngine, rssEnabled), rssInterval, true)
+	// 追番更新检查（每 30 分钟）
+	// 番剧更新检查：改为由 Orchestrator 驱动多源下载
+	sched.Register(scheduler.NewBangumiCheckJob(orch), 30*time.Minute, false)
+	// 剧集元数据同步（每 6h）：拉 Bangumi /v0/episodes 更新 air_date
+	sched.Register(episodeSvc, 6*time.Hour, true)
+	// 失败重试（每 5min）：扫 transient 失败行，到点触发对应 anime 的 orchestrator 重排
+	retryConductor := scheduler.RetryConductor(&orchRetryAdapter{orch: orch})
+	retryPrefLoader := func(ctx context.Context) interface{} {
+		return orchestrator.LoadGlobal(ctx, settingSvc)
+	}
+	sched.Register(scheduler.NewRetryFailedJob(db, retryConductor, retryPrefLoader), 5*time.Minute, false)
+	// 死种黑名单 TTL 清理（每 6h 一次，14 天过期）
+	sched.Register(scheduler.NewAbandonedTorrentTTLJob(db, 14*24*time.Hour), 6*time.Hour, true)
+	// 竞速历史维护：只清理 90 天前已 superseded 的候选，保留完成和失败记录。
+	sched.Register(scheduler.NewMaintenanceJob(db, 90*24*time.Hour), 24*time.Hour, false)
+	// 源健康检测（每 3 分钟）
+	sourceHealthSvc := bangumisvc.NewSourceHealthService(db)
+	sched.Register(scheduler.NewSourceHealthJob(sourceHealthSvc), 3*time.Minute, true)
+
+	// BT 进度同步：每 15 秒把引擎状态写回 DB
+	if torrentEngine != nil {
+		torrentSync := dlservice.NewTorrentSyncer(db, cfg, torrentEngine)
+		// 注入通知服务：当一条下载从非完成态翻成 completed 时，
+		// QBitSyncer 会广播到所有 enabled 渠道（telegram/bark/...）
+		torrentSync.SetNotificationService(notifSvc)
+		torrentSync.SetRaceService(dlSvc)
+		torrentSync.SetDeadTorrentHandler(orch.RetryEpisodeAfterCandidateFailure)
+		torrentSync.SetSlowTorrentHandler(orch.RetryEpisodeAfterCandidateFailure)
+		torrentSync.SetRateLimitLoader(func(ctx context.Context) (downloadKiB, uploadKiB int64) {
+			read := func(key string) int64 {
+				raw, ok, err := settingSvc.Get(ctx, key)
+				if err != nil || !ok {
+					return 0
+				}
+				value, err := strconv.ParseInt(raw, 10, 64)
+				if err != nil || value < 0 {
+					return 0
+				}
+				return value
+			}
+			return read("download.bt_download_limit_kib"), read("download.bt_upload_limit_kib")
+		})
+		torrentSync.SetMaxActiveLoader(func(ctx context.Context) int {
+			raw, ok, err := settingSvc.Get(ctx, "max_concurrent")
+			if err != nil || !ok {
+				return 3
+			}
+			value, err := strconv.Atoi(raw)
+			if err != nil || value <= 0 {
+				return 3
+			}
+			return value
+		})
+		settingSvc.OnChange("download.bt_download_limit_kib", func(string) {
+			torrentSync.InvalidatePreferences()
+		})
+		settingSvc.OnChange("download.bt_upload_limit_kib", func(string) {
+			torrentSync.InvalidatePreferences()
+		})
+		settingSvc.OnChange("max_concurrent", func(string) {
+			torrentSync.InvalidatePreferences()
+		})
+		sched.Register(torrentSync, 15*time.Second, true)
+	}
+
+	// 6. 启动流媒体管理器（异步，不阻塞主流程）
+	go func() {
+		if err := streamManager.Start(); err != nil {
+			zap.L().Warn("流媒体管理器启动失败，流媒体功能不可用", zap.Error(err))
+		}
+		// 流媒体就绪后恢复未完成的下载任务
+		dlSvc.RecoverPending(context.Background())
+	}()
+
+	// 7. 启动调度器。数据库中的在线设置优先于配置文件；后续切换立即生效。
+	schedulerEnabled := cfg.EnableScheduler
+	if value, ok, err := settingSvc.Get(context.Background(), "enable_scheduler"); err == nil && ok {
+		if parsed, parseErr := strconv.ParseBool(value); parseErr == nil {
+			schedulerEnabled = parsed
+		}
+	}
+	cfg.EnableScheduler = schedulerEnabled
+	settingSvc.OnChange("enable_scheduler", func(value string) {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			zap.L().Warn("忽略无效的调度器开关", zap.String("value", value))
+			return
+		}
+		cfg.EnableScheduler = enabled
+		go func() {
+			if enabled {
+				sched.Start()
+			} else {
+				sched.Stop()
+			}
+		}()
+	})
+	if schedulerEnabled {
+		sched.Start()
+	} else {
+		zap.L().Info("调度器已按配置禁用")
+	}
+
+	// 8. 创建 Gin 引擎
+	if cfg.LogLevel != "DEBUG" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	router := gin.New()
+	router.Use(gin.Recovery())
+	router.Use(middleware.Logger())
+	router.Use(middleware.CORS())
+	router.Use(middleware.AuthMiddleware(cfg))
+
+	// 9. 注册路由
+	v1 := router.Group("/api/v1")
+
+	handler.NewAuthHandler(authSvc).RegisterRoutes(v1)
+	handler.NewUserHandler(userSvc, authSvc).RegisterRoutes(v1)
+	handler.NewAnimeHandler(animeSvc, orch).RegisterRoutes(v1)
+	handler.NewRSSHandler(rssCrudSvc, rssEngine).RegisterRoutes(v1)
+	handler.NewDownloadHandler(dlSvc).RegisterRoutes(v1)
+	handler.NewSettingsHandler(settingSvc).
+		WithSystemDeps(handler.SystemInfoDeps{
+			DB:        db,
+			MediaRoot: dlSvc.MediaRoot,
+			TorrentEngineHealth: func(ctx context.Context) downloader.EngineHealth {
+				if torrentEngine == nil {
+					return downloader.EngineHealth{Name: "未配置"}
+				}
+				return torrentEngine.Health(ctx)
+			},
+		}).
+		RegisterRoutes(v1)
+	handler.NewDashboardHandler(dashboardSvc).RegisterRoutes(v1)
+	handler.NewSearchHandler(bangumiSvc).RegisterRoutes(v1)
+	handler.NewNotificationHandler(notifSvc).RegisterRoutes(v1)
+	handler.NewCalendarHandler(animeSvc, bangumiSvc).RegisterRoutes(v1)
+	handler.NewBangumiHandler(animeSvc, bangumiSvc, orch).RegisterRoutes(v1)
+	handler.NewStreamRuleHandler(streamRuleSvc).RegisterRoutes(v1)
+	handler.NewStreamHandler(streamRuleSvc, streamManager, dlSvc).RegisterRoutes(v1)
+	handler.NewDynamicFileSystemHandler(func() string {
+		return dlSvc.MediaRoot(context.Background())
+	}).RegisterRoutes(v1)
+	handler.NewDefaultRulesHandler(cfg).RegisterRoutes(v1)
+	handler.NewIndexerHandler(settingSvc).RegisterRoutes(v1)
+	handler.NewOrchestratorHandler(db, orch, settingSvc).RegisterRoutes(v1)
+
+	// WebSocket 路由
+	router.GET("/ws/:client_id", func(c *gin.Context) {
+		ws.HandleWebSocket(wsHub, c)
+	})
+
+	// 健康检查
+	router.GET("/healthcheck", func(c *gin.Context) {
+		schedulerStatus := "stopped"
+		if sched.Running() {
+			schedulerStatus = "running"
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":    "ok",
+			"scheduler": schedulerStatus,
+		})
+	})
+
+	// 静态文件 (前端) - 必须在所有 API 路由之后注册
+	if _, err := os.Stat("../frontend/dist"); err == nil {
+		router.NoRoute(func(c *gin.Context) {
+			path := c.Request.URL.Path
+			filePath := "../frontend/dist" + path
+			if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+				c.File(filePath)
+				return
+			}
+			c.File("../frontend/dist/index.html")
+		})
+		zap.L().Info("已配置前端静态文件服务")
+	}
+
+	return &Runtime{
+		Config:        cfg,
+		Handler:       router,
+		DB:            db,
+		Scheduler:     sched,
+		StreamManager: streamManager,
+		TorrentEngine: torrentEngine,
+	}, nil
+}
+
+// Close 按依赖反序关闭后台任务并落盘 BT 状态。可安全重复调用。
+func (r *Runtime) Close(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.closeOnce.Do(func() {
+		if r.Scheduler != nil {
+			r.Scheduler.Stop()
+		}
+		if r.StreamManager != nil {
+			r.StreamManager.Close()
+		}
+		var errs []error
+		if r.TorrentEngine != nil {
+			if err := r.TorrentEngine.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("关闭 BT 引擎: %w", err))
+			}
+		}
+		if r.DB != nil {
+			if sqlDB, err := r.DB.DB(); err == nil {
+				if err := sqlDB.Close(); err != nil {
+					errs = append(errs, fmt.Errorf("关闭数据库: %w", err))
+				}
+			}
+		}
+		r.closeErr = errors.Join(errs...)
+		zap.L().Info("AniDog 运行时已关闭")
+	})
+	return r.closeErr
+}
+
+func restoreTorrentDownloads(ctx context.Context, db *gorm.DB, engine downloader.TorrentEngine, stateDir string) {
+	existing, err := engine.ListTorrents(ctx)
+	if err != nil {
+		zap.L().Warn("读取 BT 引擎恢复状态失败", zap.Error(err))
+		return
+	}
+	known := make(map[string]bool, len(existing))
+	for _, item := range existing {
+		known[strings.ToUpper(item.ID)] = true
+	}
+	var rows []model.Download
+	if err := db.WithContext(ctx).
+		Where("download_type = ? AND status IN ?", model.DownloadTypeTorrent,
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading, model.DownloadStatusPaused}).
+		Find(&rows).Error; err != nil {
+		zap.L().Warn("读取待恢复 BT 任务失败", zap.Error(err))
+		return
+	}
+	restored := 0
+	for i := range rows {
+		row := &rows[i]
+		if row.InfoHash != nil && known[strings.ToUpper(*row.InfoHash)] {
+			continue
+		}
+		savePath := ""
+		if row.SavePath != nil {
+			savePath = *row.SavePath
+		}
+		torrentURL := row.URL
+		if row.InfoHash != nil {
+			imported := filepath.Join(stateDir, "import", strings.ToLower(strings.TrimSpace(*row.InfoHash))+".torrent")
+			if _, statErr := os.Stat(imported); statErr == nil {
+				torrentURL = imported
+			}
+		}
+		hash, err := engine.AddTorrent(ctx, torrentURL, savePath)
+		if err != nil {
+			zap.L().Warn("恢复 BT 任务失败", zap.Uint("id", row.ID), zap.Error(err))
+			continue
+		}
+		if row.Status == model.DownloadStatusPaused {
+			_ = engine.PauseTorrent(ctx, hash)
+		}
+		if row.InfoHash == nil || !strings.EqualFold(*row.InfoHash, hash) {
+			normalized := strings.ToUpper(hash)
+			_ = db.WithContext(ctx).Model(row).Update("info_hash", normalized).Error
+		}
+		restored++
+	}
+	if restored > 0 {
+		zap.L().Info("BT 任务恢复完成", zap.Int("count", restored), zap.String("engine", engine.Name()))
+	}
+}
+
+// orchRetryAdapter 把 *orchestrator.Orchestrator.CheckAnime（接受 typed
+// orchestrator.Preference）适配到 scheduler.RetryConductor 的 interface{} 形参，
+// 避免 scheduler 包反向 import orchestrator 造成循环依赖。
+type orchRetryAdapter struct {
+	orch *orchestrator.Orchestrator
+}
+
+func (a *orchRetryAdapter) CheckAnime(ctx context.Context, anime *model.Anime, prefAny interface{}) {
+	pref, ok := prefAny.(orchestrator.Preference)
+	if !ok {
+		// 兜底：让 orchestrator 自己 reload（性能不会差，5min 一次）
+		// nil 也走 reload，毕竟我们没法在调用前看出"准确的 pref"是啥
+		// 由 orchestrator 内部 LoadGlobal 解决
+		zap.L().Debug("retry: 未提供 Preference，orchestrator 内部 reload")
+		// CheckAnime 本身要 Preference 类型，无法传 nil；用 Defaults 兜底
+		pref = orchestrator.Defaults()
+	}
+	a.orch.CheckAnime(ctx, anime, pref)
+}
+
+func InitLogger(cfg *config.Config) {
+	var zapLevel zapcore.Level
+	switch cfg.LogLevel {
+	case "DEBUG":
+		zapLevel = zapcore.DebugLevel
+	case "WARN":
+		zapLevel = zapcore.WarnLevel
+	case "ERROR":
+		zapLevel = zapcore.ErrorLevel
+	default:
+		zapLevel = zapcore.InfoLevel
+	}
+
+	encoderConfig := zap.NewProductionEncoderConfig()
+	encoderConfig.TimeKey = "time"
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+
+	core := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encoderConfig),
+		zapcore.AddSync(os.Stdout),
+		zapLevel,
+	)
+
+	logger := zap.New(core, zap.AddCaller())
+	zap.ReplaceGlobals(logger)
+}
+
+// applyDBConfigOverrides 把 Setting 表里的可覆盖字段写回 cfg，让后续的 HTTP client
+// 构建都用上用户在 UI 里配置的值。目前只处理代理。
+func applyDBConfigOverrides(db *gorm.DB, cfg *config.Config) {
+	var items []model.Setting
+	if err := db.Where("key IN ?", []string{"http_proxy"}).Find(&items).Error; err != nil {
+		return
+	}
+	for _, it := range items {
+		switch it.Key {
+		case "http_proxy":
+			if it.Value != "" {
+				cfg.HTTPProxy = it.Value
+				zap.L().Info("使用 DB 中配置的 HTTP 代理", zap.String("proxy", it.Value))
+			}
+		}
+	}
+}

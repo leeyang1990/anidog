@@ -1,4 +1,5 @@
 import { useAuthStore } from '@/stores/auth'
+import { isDesktopRuntime } from '@/utils/desktop'
 
 const API_BASE_URL = '/api/v1'
 const MAX_RETRIES = 3
@@ -23,8 +24,11 @@ async function request(endpoint, options = {}, retryCount = 0, authRetried = fal
     // 清理本地状态 + 跳转登录
     authStore.logout()
     if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/')) {
-      const next = window.location.pathname + window.location.search
-      window.location.replace('/auth/login?redirect=' + encodeURIComponent(next))
+      const next = isDesktopRuntime()
+        ? (window.location.hash.replace(/^#/, '') || '/')
+        : window.location.pathname + window.location.search
+      const login = '/auth/login?redirect=' + encodeURIComponent(next)
+      window.location.replace(isDesktopRuntime() ? '#' + login : login)
     }
     throw new ApiError('未登录，请先登录', 401)
   }

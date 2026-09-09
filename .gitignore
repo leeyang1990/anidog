@@ -238,8 +238,25 @@ config.local.py
 *.old
 
 # Build outputs
+frontend/package.json.md5
+frontend/src/wailsjs/
 dist/
 build/
+
+# Wails 构建输入：提交图标、平台元数据和 go:embed 占位符，不提交产物。
+!backend/cmd/anidog-desktop/build/
+backend/cmd/anidog-desktop/build/*
+!backend/cmd/anidog-desktop/build/appicon.png
+!backend/cmd/anidog-desktop/build/appicon.svg
+!backend/cmd/anidog-desktop/build/darwin/
+backend/cmd/anidog-desktop/build/darwin/*
+!backend/cmd/anidog-desktop/build/darwin/Info.plist
+backend/cmd/anidog-desktop/build/bin/
+!backend/cmd/anidog-desktop/frontend/
+backend/cmd/anidog-desktop/frontend/*
+!backend/cmd/anidog-desktop/frontend/dist/
+backend/cmd/anidog-desktop/frontend/dist/*
+!backend/cmd/anidog-desktop/frontend/dist/.gitkeep
 
 # Static files
 static/

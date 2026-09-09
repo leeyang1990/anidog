@@ -51,6 +51,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { FolderOutline, ChevronDownOutline, ArrowUpOutline } from '@vicons/ionicons5'
 import { post } from '@/utils/api'
+import { isDesktopRuntime, selectDesktopDirectory } from '@/utils/desktop'
 import { useToast } from '../../composables/useToast'
 import { AcSpinner } from '../ac'
 import { useI18n } from 'vue-i18n'
@@ -79,7 +80,16 @@ function toRelativePath(path) {
   return path.replace(/^\/+/, '')
 }
 
-function toggle() {
+async function toggle() {
+  if (isDesktopRuntime()) {
+    try {
+      const selected = await selectDesktopDirectory(props.modelValue || rootPath.value)
+      if (selected) emit('update:modelValue', selected)
+    } catch (e) {
+      toast.error(e.message || t('common.readDirectoryFailed'))
+    }
+    return
+  }
   open.value = !open.value
   if (open.value) {
     const start = toRelativePath(props.modelValue)

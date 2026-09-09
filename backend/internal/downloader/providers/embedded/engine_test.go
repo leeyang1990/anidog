@@ -138,6 +138,21 @@ func TestEngineHTTPProxyCanBeUpdatedAtRuntime(t *testing.T) {
 	}
 }
 
+func TestEngineHealthTracksLifecycle(t *testing.T) {
+	engine := newTestEngine(t, filepath.Join(t.TempDir(), "state"), t.TempDir())
+	health := engine.Health(context.Background())
+	if !health.Online || health.Name != "AniDog Embedded BT" || health.ListenPort <= 0 {
+		t.Fatalf("unexpected live engine health: %#v", health)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	health = engine.Health(context.Background())
+	if health.Online {
+		t.Fatalf("closed engine still reported online: %#v", health)
+	}
+}
+
 func TestEngineCachesMagnetMetadataAfterDiscovery(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

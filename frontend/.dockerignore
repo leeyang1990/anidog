@@ -1,6 +1,8 @@
 # 依赖与构建产物（容器内会重新 npm install + build）
 node_modules
 dist
+package.json.md5
+src/wailsjs
 
 # IDE 与编辑器
 .vscode

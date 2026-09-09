@@ -1,0 +1,23 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "version": "2",
+  "name": "AniDog",
+  "build:tags": "desktop nosqlite",
+  "outputfilename": "AniDog",
+  "frontend:dir": "../../../frontend",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build -- --mode desktop",
+  "frontend:dev:build": "npm run build -- --mode desktop",
+  "assetdir": "frontend/dist",
+  "wailsjsdir": "../../../frontend/src",
+  "author": {
+    "name": "AniDog"
+  },
+  "info": {
+    "companyName": "AniDog",
+    "productName": "AniDog",
+    "productVersion": "0.3.0",
+    "copyright": "Copyright 2026 AniDog",
+    "comments": "本地运行的番剧自动下载管理器"
+  }
+}

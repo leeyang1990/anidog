@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="AniDog app icon">
+  <defs>
+    <linearGradient id="background" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A8D56A"/>
+      <stop offset="1" stop-color="#6FAE32"/>
+    </linearGradient>
+    <filter id="shadow" x="80" y="80" width="864" height="864" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="30" stdDeviation="30" flood-color="#31520F" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#background)"/>
+  <circle cx="512" cy="486" r="326" fill="#F9F5E9" filter="url(#shadow)"/>
+
+  <!-- Border collie silhouette, shared with the in-app AniDog mark. -->
+  <path d="M330 434
+           Q258 242 366 194
+           Q390 158 438 218
+           L498 350
+           Q546 326 594 350
+           L654 218
+           Q702 158 726 194
+           Q834 242 762 434
+           Q810 542 762 638
+           Q690 782 498 794
+           Q306 782 234 638
+           Q186 542 234 434 Z"
+        transform="translate(14 0) scale(.96)"
+        transform-origin="512 512"
+        fill="#1D1C1A"/>
+
+  <path d="M470 326
+           L458 446
+           Q392 506 422 626
+           Q470 722 512 734
+           Q554 722 602 626
+           Q632 506 566 446
+           L554 326
+           Q512 314 470 326 Z"
+        fill="#FFFFFF"/>
+
+  <ellipse cx="344" cy="494" rx="25" ry="29" fill="#FFFFFF"/>
+  <circle cx="347" cy="500" r="13" fill="#1D1C1A"/>
+  <ellipse cx="680" cy="494" rx="25" ry="29" fill="#FFFFFF"/>
+  <circle cx="677" cy="500" r="13" fill="#1D1C1A"/>
+  <ellipse cx="512" cy="590" rx="38" ry="28" fill="#1D1C1A"/>
+  <path d="M512 618V654M476 670Q512 694 548 670"
+        fill="none" stroke="#1D1C1A" stroke-width="13" stroke-linecap="round"/>
+
+  <!-- Small download badge communicates the desktop app's core action. -->
+  <circle cx="780" cy="786" r="112" fill="#F9B84A" stroke="#F9F5E9" stroke-width="24"/>
+  <path d="M780 724V824M738 790L780 832L822 790M724 854H836"
+        fill="none" stroke="#1D1C1A" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

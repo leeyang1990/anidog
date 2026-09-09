@@ -12,7 +12,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.26.2-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev) [![Vue](https://img.shields.io/badge/Vue-3-4FC08D?style=flat-square&logo=vuedotjs&logoColor=white)](https://vuejs.org) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org)
 
-[界面预览](#界面) · [主要功能](#主要功能) · [快速部署](#快速部署) · [使用方法](#使用方法) · [升级](#升级)
+[界面预览](#界面) · [主要功能](#主要功能) · [桌面版](#桌面版) · [快速部署](#快速部署) · [使用方法](#使用方法) · [升级](#升级)
 
 </div>
 
@@ -52,6 +52,22 @@ AniDog 是一个运行在家庭服务器或 NAS 上的番剧自动下载管理�
 - 按清晰度、字幕语言、字幕组、体积和种子健康度选择资源。
 - 自动重试失败候选，并在单集详情中保留诊断结果。
 - 下载完成后自动重命名、归档并发送通知。
+
+## 桌面版
+
+Wails 桌面版把 Vue 前端、Go API、SQLite 和内嵌 BT 引擎打包在同一个本地应用中，不需要 Docker、PostgreSQL 或 qBittorrent。桌面版与 Docker 版复用同一套业务服务；Docker 仍然适合 NAS / 家庭服务器常驻部署。
+
+macOS 本地构建：
+
+```bash
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+cd backend/cmd/anidog-desktop
+wails doctor
+wails build -clean -platform darwin/arm64
+open build/bin/AniDog.app
+```
+
+首次启动会自动创建本地账户数据库和随机密钥。默认数据目录为 `~/Library/Application Support/AniDog`，默认下载目录为 `~/Downloads/AniDog`；下载目录可以在「设置 → 下载偏好」中通过系统原生目录选择器修改。桌面版的 BT 监听端口默认自动分配，也可用 `ANIDOG_DESKTOP_BT_LISTEN_PORT` 固定。
 
 ## 快速部署
 

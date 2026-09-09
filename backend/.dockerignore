@@ -31,6 +31,9 @@ vendor/
 Dockerfile
 .dockerignore
 bin/
+tmp/
+anidog
+cmd/anidog-desktop/build/bin/
 
 # 构建产物（除了最终二进制）
 *.exe

@@ -21,15 +21,15 @@ RUN mkdir -p /tmp/previous-assets && \
 # ========================================
 # 阶段一：构建器
 # ========================================
-FROM node:18-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 # 复制依赖文件
 COPY package*.json ./
 
-# 安装依赖
-RUN npm install
+# 严格按锁文件安装，确保本地、CI 与远端构建一致
+RUN npm ci
 
 # 复制源代码
 COPY . .

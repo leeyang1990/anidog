@@ -1,5 +1,6 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { isDesktopRuntime } from '../utils/desktop'
 
 const routes = [
   {
@@ -95,7 +96,9 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  // Wails 的自定义协议不具备传统 Web 服务器的 history fallback，桌面版用 hash
+  // 路由；浏览器与 Docker 部署继续保持原有的干净 URL。
+  history: isDesktopRuntime() ? createWebHashHistory() : createWebHistory(),
   routes,
   scrollBehavior(to, from, savedPosition) {
     if (savedPosition) return savedPosition

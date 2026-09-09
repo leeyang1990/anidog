@@ -6,7 +6,6 @@ import (
 
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
@@ -52,7 +51,7 @@ func initSQLite(cfg *config.Config, gormLogger logger.Interface) *gorm.DB {
 		os.MkdirAll(dir, 0755)
 	}
 
-	db, err := gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=5000"), &gorm.Config{
+	db, err := openSQLite(dbPath+"?_busy_timeout=5000", &gorm.Config{
 		Logger: gormLogger,
 	})
 	if err != nil {

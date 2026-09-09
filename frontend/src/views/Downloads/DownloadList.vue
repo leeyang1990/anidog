@@ -203,6 +203,7 @@ import {
   ReloadOutline, RefreshOutline, FolderOpenOutline,
 } from '@vicons/ionicons5'
 import { get, post, del } from '@/utils/api'
+import { isDesktopRuntime, openDesktopPath } from '@/utils/desktop'
 import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
 import { AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea } from '../../components/ac'
 import { useI18n } from 'vue-i18n'
@@ -227,6 +228,8 @@ let ws = null
 let wsReconnectTimer = null
 
 function connectWs() {
+  // Wails AssetServer 不是 WebSocket 服务器；桌面版由下面的 5 秒轮询同步进度。
+  if (isDesktopRuntime()) return
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const clientId = 'downloads-' + Math.random().toString(36).slice(2, 10)
@@ -376,7 +379,18 @@ async function submitAddDownload() {
     await fetchTasks()
   } catch (e) { toast.error(e.message || t('pages.downloads.addFailed')) }
 }
-function openFolder() { toast.info(t('pages.downloads.desktopOnly')) }
+async function openFolder(task) {
+  if (!isDesktopRuntime()) {
+    toast.info(t('pages.downloads.desktopOnly'))
+    return
+  }
+  try {
+    const path = task?.content_path || task?.save_path || ''
+    await openDesktopPath(path)
+  } catch (e) {
+    toast.error(e.message || t('pages.downloads.operationFailed'))
+  }
+}
 
 async function handleCheckAllUpdates() {
   checkingAllUpdates.value = true

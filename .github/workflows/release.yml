@@ -143,9 +143,9 @@ jobs:
           done
           cp docker-compose.yml release/
           cp docs/desktop-install.md release/DESKTOP-INSTALL.md
-          sed "s/^TAG=.*/TAG=$RELEASE_TAG/" .env.example > release/.env.example
+          sed "s/^TAG=.*/TAG=$RELEASE_TAG/" .env.example > release/default.env.example
           cd release
-          sha256sum AniDog-* docker-compose.yml .env.example DESKTOP-INSTALL.md > SHA256SUMS
+          sha256sum AniDog-* docker-compose.yml default.env.example DESKTOP-INSTALL.md > SHA256SUMS
           sha256sum --check SHA256SUMS
       - name: Publish release with all assets
         uses: softprops/action-gh-release@v2
@@ -166,11 +166,11 @@ jobs:
             ## Docker（linux/amd64、linux/arm64）
             - `leeyang1990/anidog-backend:${{ env.RELEASE_TAG }}`
             - `leeyang1990/anidog-frontend:${{ env.RELEASE_TAG }}`
-            下载 `docker-compose.yml` 与 `.env.example`，复制后者为 `.env`，填写密码、密钥与下载目录，再运行 `docker compose up -d`。
+            下载 `docker-compose.yml` 与 `default.env.example`，复制后者为 `.env`，填写密码、密钥与下载目录，再运行 `docker compose up -d`。
             附件默认固定本次版本；`SHA256SUMS` 可用于校验全部附件。
           files: |
             release/AniDog-*
             release/docker-compose.yml
-            release/.env.example
+            release/default.env.example
             release/DESKTOP-INSTALL.md
             release/SHA256SUMS

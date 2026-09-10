@@ -1,11 +1,13 @@
 <template>
-  <div class="min-h-screen flex items-center justify-center bg-background ac-grass-pattern p-4 relative overflow-hidden">
-    <LocaleSwitcher class="absolute right-4 top-4 z-10" />
+  <div class="min-h-screen flex flex-col items-center gap-4 bg-background ac-grass-pattern p-4 relative overflow-hidden">
+    <div class="self-end shrink-0 z-10">
+      <LocaleSwitcher />
+    </div>
     <div class="ac-grove-decoration absolute -left-12 top-12 w-32 h-32 text-ac-grass-light opacity-50 animate-bounce-soft" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="currentColor" class="w-full h-full"><path d="M12 2 C 5 5, 4 14, 12 22 C 20 14, 19 5, 12 2 Z" /></svg>
     </div>
 
-    <AcCard padding="lg" rounded="3xl" shadow="lg" class="w-full max-w-sm bg-card border-2 border-ac-sand">
+    <AcCard padding="lg" rounded="3xl" shadow="lg" class="w-full max-w-sm my-auto shrink-0 bg-card border-2 border-ac-sand">
       <div class="text-center mb-7">
         <div class="inline-flex items-center justify-center size-16 rounded-3xl bg-ac-sun/30 border-2 border-ac-sun shadow-md mb-4">
           <img src="@/assets/logo.svg" alt="AniDog" class="size-12" />

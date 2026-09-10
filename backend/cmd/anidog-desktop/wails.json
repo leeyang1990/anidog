@@ -5,7 +5,7 @@
   "build:tags": "desktop nosqlite",
   "outputfilename": "AniDog",
   "frontend:dir": "../../../frontend",
-  "frontend:install": "npm install",
+  "frontend:install": "npm ci",
   "frontend:build": "npm run build -- --mode desktop",
   "frontend:dev:build": "npm run build -- --mode desktop",
   "assetdir": "frontend/dist",

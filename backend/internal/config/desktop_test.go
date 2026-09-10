@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -45,7 +46,8 @@ func TestConfigureDesktopUsesLocalPersistentPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	// Windows 通过用户配置目录的 ACL 控制访问，不提供 POSIX 权限位。
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("desktop secret permissions are too broad: %o", info.Mode().Perm())
 	}
 }

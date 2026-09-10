@@ -55,6 +55,8 @@ AniDog 是一个运行在家庭服务器或 NAS 上的番剧自动下载管理�
 
 ## 桌面版
 
+正式版本在 [GitHub Releases](https://github.com/leeyang1990/anidog/releases) 同时提供 macOS Apple Silicon / Intel、Windows x64、Linux x64 客户端压缩包，以及 Docker 部署配置和 SHA256 校验文件。参见[桌面安装说明](docs/desktop-install.md)。推送 `vX.Y.Z` 标签后，统一工作流会运行测试、构建四种桌面包和双架构 Docker 镜像，全部成功后才发布 Release。
+
 Wails 桌面版把 Vue 前端、Go API、SQLite 和内嵌 BT 引擎打包在同一个本地应用中，不需要 Docker、PostgreSQL 或 qBittorrent。桌面版与 Docker 版复用同一套业务服务；Docker 仍然适合 NAS / 家庭服务器常驻部署。
 
 macOS 本地构建：

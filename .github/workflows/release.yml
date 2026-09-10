@@ -1,72 +1,176 @@
-name: Create GitHub Release
+name: Release Docker and Desktop
 
-# 与 docker-release.yml 同样只在 push tag 时触发。
-# 生成一个 GitHub Release，附带：
-#   - docker-compose.yml（指向 Docker Hub 镜像，开箱即用）
-#   - .env.example（需要用户填的密码/密钥）
-# 让用户拿到 tag 就能 docker compose up。
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: '已存在的 tag 名（例如 v1.2.3）'
+        description: '已存在的正式版本 tag，例如 v0.3.0'
         required: true
         type: string
 
+concurrency:
+  group: anidog-release
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Publish GitHub Release
+  validate:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Check out
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Resolve tag
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Validate release tag
         id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ github.event.inputs.tag }}"
-          [ -z "$TAG" ] && TAG=${GITHUB_REF#refs/tags/}
-          echo "TAG=${TAG}" >> $GITHUB_ENV
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-
-      - name: Collect release assets
-        run: |
-          mkdir -p release
-          cp docker-compose.yml release/ 2>/dev/null || true
-          cp .env.example release/ 2>/dev/null || true
-          ls -la release/
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
         with:
-          tag_name: ${{ env.TAG }}
-          name: AniDog ${{ env.TAG }}
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Backend tests
+        working-directory: backend
+        run: go test ./internal/... ./cmd/anidog
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm ci && npm test
+
+  docker:
+    needs: validate
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      tag: ${{ needs.validate.outputs.tag }}
+    secrets: inherit
+
+  desktop:
+    needs: validate
+    name: Desktop ${{ matrix.os }} ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: darwin
+            arch: arm64
+            runner: macos-15
+            tags: desktop,nosqlite
+          - os: darwin
+            arch: amd64
+            runner: macos-15-intel
+            tags: desktop,nosqlite
+          - os: windows
+            arch: amd64
+            runner: windows-2022
+            tags: desktop,nosqlite
+          - os: linux
+            arch: amd64
+            runner: ubuntu-24.04
+            tags: desktop,nosqlite,webkit2_41
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      DESKTOP_OS: ${{ matrix.os }}
+      DESKTOP_ARCH: ${{ matrix.arch }}
+      DESKTOP_TAGS: ${{ matrix.tags }}
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+      - name: Test desktop adapters
+        working-directory: backend
+        run: go test -tags "$DESKTOP_TAGS" ./cmd/anidog-desktop ./internal/config
+      - name: Build and package desktop
+        run: bash scripts/package-desktop.sh "$RELEASE_TAG" "$DESKTOP_OS" "$DESKTOP_ARCH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}-${{ matrix.arch }}
+          path: release/AniDog-*
+          if-no-files-found: error
+
+  release:
+    name: Publish complete release
+    needs: [validate, docker, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release
+          merge-multiple: true
+      - name: Collect and verify assets
+        run: |
+          for target in macos-arm64.zip macos-amd64.zip windows-amd64.zip linux-amd64.tar.gz; do
+            test -s "release/AniDog-$RELEASE_TAG-$target"
+          done
+          cp docker-compose.yml release/
+          cp docs/desktop-install.md release/DESKTOP-INSTALL.md
+          sed "s/^TAG=.*/TAG=$RELEASE_TAG/" .env.example > release/.env.example
+          cd release
+          sha256sum AniDog-* docker-compose.yml .env.example DESKTOP-INSTALL.md > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Publish release with all assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: AniDog ${{ env.RELEASE_TAG }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           body: |
-            ## AniDog ${{ env.TAG }}
+            ## 桌面客户端
+            - Apple Silicon Mac：`macos-arm64.zip`
+            - Intel Mac：`macos-amd64.zip`
+            - Windows 10/11 x64：`windows-amd64.zip`（需要 WebView2）
+            - Linux x64：`linux-amd64.tar.gz`（Ubuntu 24.04 构建，需要 GTK3 / WebKitGTK 4.1）
+            内置 SQLite 与 BT 引擎，无需 Docker 或 qBittorrent。安装及流媒体依赖说明见 `DESKTOP-INSTALL.md`。
+            桌面包未进行商业代码签名；macOS 包为自签名、未公证。
 
-            ### Docker 镜像（多架构 amd64 / arm64）
-            - `${{ secrets.DOCKERHUB_USERNAME }}/anidog-backend:${{ env.TAG }}`
-            - `${{ secrets.DOCKERHUB_USERNAME }}/anidog-frontend:${{ env.TAG }}`
-
-            ### 快速部署
-            1. 下载本 Release 附带的 `docker-compose.yml` 与 `.env.example`
-            2. `cp .env.example .env`，填好 `SECRET_KEY` / `POSTGRES_PASSWORD` / `DOWNLOAD_ROOT` 等；如需指定版本，设 `TAG=${{ env.TAG }}`（缺省 latest）
-            3. `docker compose up -d`
-            4. 访问 `http://<host>:3002`
-
-            > 镜像由 push tag 自动构建发布。`:latest` 始终指向最新 tag。
+            ## Docker（linux/amd64、linux/arm64）
+            - `leeyang1990/anidog-backend:${{ env.RELEASE_TAG }}`
+            - `leeyang1990/anidog-frontend:${{ env.RELEASE_TAG }}`
+            下载 `docker-compose.yml` 与 `.env.example`，复制后者为 `.env`，填写密码、密钥与下载目录，再运行 `docker compose up -d`。
+            附件默认固定本次版本；`SHA256SUMS` 可用于校验全部附件。
           files: |
+            release/AniDog-*
             release/docker-compose.yml
             release/.env.example
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            release/DESKTOP-INSTALL.md
+            release/SHA256SUMS

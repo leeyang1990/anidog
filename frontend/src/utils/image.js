@@ -5,6 +5,12 @@
 //   resize:  https://lain.bgm.tv/r/400/pic/cover/l/xx.jpg
 
 /**
+ * Bangumi resize 接口的白名单宽度。
+ * 传白名单以外的值（例如 300）不会自动缩放，而是直接返回 400，所以海报取图只能从这里面挑。
+ */
+export const BANGUMI_IMAGE_WIDTHS = [100, 200, 400, 600, 800]
+
+/**
  * 规范化 Bangumi 图片 URL：
  *  - http -> https（避免 mixed content）
  *  - 封面/角色 小图/中图/grid -> 大图

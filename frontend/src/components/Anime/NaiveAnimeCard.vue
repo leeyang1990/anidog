@@ -15,11 +15,10 @@
 
     <!-- Cover -->
     <div class="relative aspect-[2/3] overflow-hidden bg-ac-sand/40">
-      <img
+      <AcPoster
         :src="anime.cover_url || anime.cover_image || ''"
         :alt="anime.title"
-        class="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
-        @error="($event.target).style.display='none'"
+        :sizes="posterSizes"
       />
 
       <!-- Rating -->
@@ -47,11 +46,15 @@
 <script setup>
 import { computed } from 'vue'
 import { TrashOutline } from '@vicons/ionicons5'
+import { AcPoster } from '@/components/ac'
 import { useConfirm } from '@/composables/useConfirm'
 
 const props = defineProps({ anime: { type: Object, required: true } })
 const emit = defineEmits(['click', 'delete'])
 const { confirm } = useConfirm()
+
+// 追番列表卡片比日历格大一些，取图宽度相应放宽
+const posterSizes = '(min-width: 1280px) 220px, (min-width: 768px) 180px, 45vw'
 
 const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 

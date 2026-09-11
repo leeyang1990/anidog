@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "npm run test:auth && npm run test:preload-recovery && npm run test:i18n && npm run test:skin && npm run test:desktop-appearance",
+    "test": "npm run test:auth && npm run test:preload-recovery && npm run test:i18n && npm run test:skin && npm run test:desktop-appearance && npm run test:poster",
     "test:desktop-appearance": "node tests/desktop-appearance.mjs",
+    "test:poster": "node tests/poster-loading.mjs",
     "test:auth": "node tests/auth-store.mjs",
     "test:preload-recovery": "node tests/preload-recovery.mjs",
     "test:i18n": "node tests/i18n.mjs",

@@ -11,6 +11,7 @@ import AcRadio from './AcRadio.vue'
 import AcSwitch from './AcSwitch.vue'
 import AcProgress from './AcProgress.vue'
 import AcSkeleton from './AcSkeleton.vue'
+import AcPoster from './AcPoster.vue'
 import AcEmpty from './AcEmpty.vue'
 import AcModal from './AcModal.vue'
 import AcDrawer from './AcDrawer.vue'
@@ -27,7 +28,7 @@ import AcLoadingBar from './AcLoadingBar.vue'
 export {
   AcIcon, AcSpinner, AcButton, AcCard, AcTag,
   AcInput, AcTextarea, AcCheckbox, AcRadio, AcSwitch,
-  AcProgress, AcSkeleton, AcEmpty,
+  AcProgress, AcSkeleton, AcPoster, AcEmpty,
   AcModal, AcDrawer, AcDropdown, AcSelect, AcTabs, AcCollapse, AcTable,
   AcPageHeader, AcToastContainer, AcConfirmHost, AcLoadingBar,
 }

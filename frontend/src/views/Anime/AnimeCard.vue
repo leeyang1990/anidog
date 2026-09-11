@@ -4,13 +4,11 @@
     @click="$emit('click', item)"
   >
     <div class="relative aspect-[2/3] overflow-hidden bg-ac-sand/40">
-      <img v-if="item.image" :src="toResizedImage(item.image, 600)" :alt="item.name_cn || item.name"
-        class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-        loading="lazy"
-        @error="($event.target).style.display='none'" />
-      <div v-else class="w-full h-full flex items-center justify-center text-ac-wood-dark">
-        <FilmOutline class="size-6" />
-      </div>
+      <AcPoster
+        :src="item.image || ''"
+        :alt="item.name_cn || item.name"
+        :sizes="posterSizes"
+      />
       <div class="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-ac-night/35 to-transparent" />
 
       <!-- 海报状态角标：统一使用高对比胶囊，不受海报底色影响 -->
@@ -55,11 +53,14 @@
 </template>
 
 <script setup>
-import { CheckmarkCircle, FilmOutline, Star } from '@vicons/ionicons5'
-import { toResizedImage } from '@/utils/image'
+import { CheckmarkCircle, Star } from '@vicons/ionicons5'
+import { AcPoster } from '@/components/ac'
 
 defineProps({ item: { type: Object, required: true } })
 defineEmits(['click', 'subscribe'])
+
+// 卡片网格：<640px 三列、sm/lg 四到六列、xl 八列；配合 AcPoster 的 srcset 让浏览器按 DPR 取最小够用的图
+const posterSizes = '(min-width: 1280px) 150px, (min-width: 1024px) 160px, (min-width: 768px) 145px, (min-width: 640px) 150px, 33vw'
 
 function formatRating(value) {
   const rating = Number(value)

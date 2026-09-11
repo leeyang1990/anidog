@@ -287,6 +287,49 @@
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'><circle cx='8' cy='12' r='1.4' fill='%237CB342' opacity='0.10'/><circle cx='28' cy='28' r='1.2' fill='%237CB342' opacity='0.08'/><circle cx='34' cy='8' r='1' fill='%23FFB74D' opacity='0.08'/></svg>");
     background-repeat: repeat;
   }
+
+  /* 海报加载特效：骨架扫光 + 图片淡入（日历 / 番剧库 / 追番列表共用）
+   * 扫光用 transform 位移实现，只走合成层，不触发重排，几十张海报同时加载也不掉帧。 */
+  .ac-poster-shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(255 255 255 / 0.42) 50%,
+      transparent 100%
+    );
+    animation: ac-poster-shimmer 1.4s ease-in-out infinite;
+  }
+
+  .ac-poster-img {
+    opacity: 0;
+    transition: opacity 0.32s ease;
+  }
+
+  .ac-poster-img[data-loaded='true'] {
+    opacity: 1;
+  }
+}
+
+@keyframes ac-poster-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* 减少动态偏好：只保留占位，不再扫光 / 淡入（data-reduce-motion 由桌面端原生偏好下发） */
+@media (prefers-reduced-motion: reduce) {
+  .ac-poster-shimmer::after {
+    animation: none;
+    opacity: 0;
+  }
+
+  .ac-poster-img {
+    transition: none;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

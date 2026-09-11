@@ -7,10 +7,10 @@
         role="dialog"
         aria-modal="true"
       >
-        <div class="absolute inset-0 bg-ac-night/40 backdrop-blur-sm" @click="onMaskClick" />
+        <div class="ui-mask absolute inset-0 bg-ac-night/40 backdrop-blur-sm" @click="onMaskClick" />
         <div
           ref="modalEl"
-          class="relative bg-card text-card-foreground border-2 border-ac-sand rounded-[32px] shadow-2xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+          class="ui-overlay relative bg-card text-card-foreground border-2 border-ac-sand rounded-[32px] shadow-2xl w-full max-h-[90vh] flex flex-col overflow-hidden"
           :style="{ maxWidth: maxWidth }"
         >
           <button
@@ -19,7 +19,7 @@
             @click="close"
             :aria-label="t('common.close')"
           >×</button>
-          <div v-if="title || $slots.header" class="px-6 pt-6 pb-3 border-b-2 border-dashed border-ac-sand">
+          <div v-if="title || $slots.header" class="ui-divider-bottom px-6 pt-6 pb-3 border-b-2 border-dashed border-ac-sand">
             <slot name="header">
               <h2 class="text-lg font-bold text-foreground pr-12">{{ title }}</h2>
               <p v-if="description" class="text-sm text-muted-foreground mt-1">{{ description }}</p>
@@ -28,7 +28,7 @@
           <div class="flex-1 overflow-y-auto px-6 py-5">
             <slot />
           </div>
-          <div v-if="$slots.footer" class="px-6 py-4 border-t-2 border-dashed border-ac-sand bg-ac-cream/30">
+          <div v-if="$slots.footer" class="ui-divider px-6 py-4 border-t-2 border-dashed border-ac-sand bg-ac-cream/30">
             <slot name="footer" />
           </div>
         </div>

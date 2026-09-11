@@ -6,17 +6,21 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import { AcToastContainer, AcConfirmHost, AcLoadingBar } from './components/ac'
 import { useLoadingBar } from './composables/useLoadingBar'
+import { installDesktopAppearance } from './utils/desktopAppearance'
 
 const authStore = useAuthStore()
 const router = useRouter()
 const loadingBar = useLoadingBar()
+let disposeAppearance
+onBeforeUnmount(() => disposeAppearance?.())
 
 onMounted(async () => {
+  disposeAppearance = installDesktopAppearance()
   loadingBar.start()
   if (authStore.isLoggedIn) {
     try {

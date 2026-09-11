@@ -1,0 +1,6 @@
+/* Build-time local assets, shared by Web and all desktop targets. Licenses: /font-licenses/. */
+@import '@fontsource/zcool-kuaile/400.css';
+@import '@fontsource/nunito/latin-400.css';
+@import '@fontsource/nunito/latin-600.css';
+@import '@fontsource/nunito/latin-700.css';
+@import '@fontsource/nunito/latin-800.css';

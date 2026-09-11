@@ -1,7 +1,7 @@
 <template>
   <div
     :class="[
-      'ac-card relative bg-card text-card-foreground border-2 border-ac-sand transition-all duration-200 ease-ac',
+      'ac-card ui-panel relative bg-card text-card-foreground border-2 border-ac-sand transition-all duration-200 ease-ac',
       paddingCls,
       roundedCls,
       hoverable ? 'hover:-translate-y-0.5 hover:shadow-lg' : '',
@@ -19,7 +19,7 @@
       <div class="shrink-0 flex items-center gap-2"><slot name="extra" /></div>
     </div>
     <slot />
-    <div v-if="$slots.footer" class="mt-4 pt-3 border-t-2 border-dashed border-ac-sand"><slot name="footer" /></div>
+    <div v-if="$slots.footer" class="ui-divider mt-4 pt-3 border-t-2 border-dashed border-ac-sand"><slot name="footer" /></div>
   </div>
 </template>
 

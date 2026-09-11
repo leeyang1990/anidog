@@ -1,5 +1,5 @@
 <template>
-  <div class="ac-table-wrap overflow-x-auto rounded-3xl border-2 border-ac-sand bg-card">
+  <div class="ac-table-wrap ui-table overflow-x-auto rounded-3xl border-2 border-ac-sand bg-card">
     <table class="w-full text-sm">
       <thead>
         <tr class="bg-ac-sand/50 text-left">

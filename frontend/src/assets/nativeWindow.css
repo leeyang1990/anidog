@@ -1,0 +1,8 @@
+/* Platform differences are tokens + native drag behaviour, never component copies. */
+:root:is([data-window-material="liquid"], [data-window-material="vibrancy"])[data-ui-material="frosted"] {
+  --material-navigation: hsl(var(--background) / .12);
+  --material-canvas: transparent;
+  --material-navigation-blur: none;
+}
+:root[data-platform="darwin"] .desktop-toolbar { --wails-draggable: drag; }
+:root[data-platform="darwin"] .desktop-toolbar :is(button, input, select, label, a) { --wails-draggable: no-drag; }

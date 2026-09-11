@@ -10,7 +10,7 @@
       :disabled="disabled"
       :readonly="readonly"
       :autocomplete="autocomplete"
-      class="ac-input w-full bg-card text-foreground border-2 border-ac-sand-dark rounded-2xl outline-none transition-all duration-150 placeholder:text-muted-foreground/70 disabled:bg-ac-sand/40 disabled:cursor-not-allowed focus:border-ac-grass focus:ring-4 focus:ring-ac-grass/20"
+      class="ac-input ui-control w-full bg-card text-foreground border-2 border-ac-sand-dark rounded-2xl outline-none transition-all duration-150 placeholder:text-muted-foreground/70 disabled:bg-ac-sand/40 disabled:cursor-not-allowed focus:border-ac-grass focus:ring-4 focus:ring-ac-grass/20"
       :class="[sizeCls, paddingCls]"
       v-bind="$attrs"
       @input="onInput"

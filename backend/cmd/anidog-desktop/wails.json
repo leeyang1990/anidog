@@ -16,7 +16,7 @@
   "info": {
     "companyName": "AniDog",
     "productName": "AniDog",
-    "productVersion": "0.3.0",
+    "productVersion": "0.4.0",
     "copyright": "Copyright 2026 AniDog",
     "comments": "本地运行的番剧自动下载管理器"
   }

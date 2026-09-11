@@ -59,6 +59,8 @@ AniDog 是一个运行在家庭服务器或 NAS 上的番剧自动下载管理�
 
 Wails 桌面版把 Vue 前端、Go API、SQLite 和内嵌 BT 引擎打包在同一个本地应用中，不需要 Docker、PostgreSQL 或 qBittorrent。桌面版与 Docker 版复用同一套业务服务；Docker 仍然适合 NAS / 家庭服务器常驻部署。
 
+macOS 客户端带独立的原生窗口材质层：macOS 26+ 使用系统 `NSGlassEffectView`（Liquid Glass），旧版回退到 `NSVisualEffectView`。前端面板、弹窗、抽屉与控件复用跨平台磨砂材质系统，Windows、Linux 与 Docker Web 使用 CSS 磨砂，能力不足或要求减少透明度时回退实底。平台差异不会进入业务页面，参见[UI 材质分层说明](docs/ui-materials.md)。
+
 macOS 本地构建：
 
 ```bash

@@ -1,0 +1,140 @@
+/* Shared surface system. Platform adapters only change the window underneath. */
+:root[data-ui-material] {
+  --material-workspace: hsl(var(--background) / .42);
+  --material-panel: hsl(var(--card) / .68);
+  --material-overlay: hsl(var(--card) / .86);
+  --material-control: hsl(var(--card) / .72);
+  --material-navigation: hsl(var(--background) / .48);
+  --material-line: hsl(var(--foreground) / .12);
+  --material-highlight: rgb(255 255 255 / .65);
+  --material-shadow: 0 8px 28px rgb(30 35 45 / .06);
+  --material-blur: blur(20px) saturate(125%);
+}
+:root.dark[data-ui-material] {
+  --material-workspace: hsl(var(--background) / .54);
+  --material-panel: hsl(var(--card) / .78);
+  --material-overlay: hsl(var(--card) / .92);
+  --material-control: hsl(var(--background) / .65);
+  --material-navigation: hsl(var(--background) / .52);
+  --material-line: hsl(var(--foreground) / .16);
+  --material-highlight: rgb(255 255 255 / .08);
+  --material-shadow: 0 8px 28px rgb(0 0 0 / .18);
+}
+:root[data-ui-material] body {
+  background: var(--material-canvas,
+    radial-gradient(ellipse at 0% 0%, hsl(var(--primary) / .13), transparent 60%),
+    radial-gradient(ellipse at 100% 100%, hsl(var(--ring) / .12), transparent 60%),
+    hsl(var(--background)));
+}
+:root[data-ui-material] :is(.desktop-shell, .desktop-auth) { background: transparent; }
+:root[data-ui-material] .ac-grove-decoration { display: none; }
+:root[data-ui-material] :is(.desktop-sidebar, .desktop-toolbar) {
+  background: var(--material-navigation);
+  border: 0;
+  backdrop-filter: var(--material-navigation-blur, var(--material-blur));
+  -webkit-backdrop-filter: var(--material-navigation-blur, var(--material-blur));
+}
+:root[data-ui-material] .desktop-sidebar { padding: 8px; }
+:root[data-ui-material] .desktop-sidebar > div { border: 0; }
+:root[data-ui-material] .desktop-sidebar nav a {
+  border: 0;
+  border-radius: 12px;
+  box-shadow: none;
+}
+:root[data-ui-material] .desktop-sidebar nav a.font-bold {
+  background: hsl(var(--primary) / .16);
+  color: hsl(var(--foreground));
+}
+:root[data-ui-material] .desktop-sidebar[data-collapsed="true"] > div,
+:root[data-ui-material] .desktop-sidebar[data-collapsed="true"] nav {
+  padding-left: 0;
+  padding-right: 0;
+  justify-content: center;
+}
+:root[data-ui-material] .desktop-sidebar[data-collapsed="true"] nav a { padding: 0; justify-content: center; }
+:root[data-ui-material] :is(.desktop-content, .ui-panel, .ui-overlay, .ui-popover, .ui-table, .ui-tabbar) {
+  border: 1px solid var(--material-line);
+}
+:root[data-ui-material] :is(.desktop-content, .ui-panel) {
+  border-radius: 20px;
+  box-shadow: inset 0 1px 0 var(--material-highlight), var(--material-shadow);
+}
+:root[data-ui-material] .desktop-content {
+  margin: 0 12px 12px 0;
+  min-height: 0;
+  background: var(--material-workspace);
+  backdrop-filter: var(--material-blur);
+  -webkit-backdrop-filter: var(--material-blur);
+}
+/* Blur the workspace once, not every card/row in long anime and download lists. */
+:root[data-ui-material] .ui-panel {
+  background: var(--material-panel);
+}
+:root[data-ui-material] :is(.ui-overlay, .ui-popover) {
+  background: var(--material-overlay);
+  box-shadow: inset 0 1px 0 var(--material-highlight), 0 20px 60px rgb(0 0 0 / .18);
+  backdrop-filter: var(--material-blur);
+  -webkit-backdrop-filter: var(--material-blur);
+}
+:root[data-ui-material] .ui-overlay { border-radius: 22px; }
+:root[data-ui-material] .ui-overlay > .ui-divider { background: hsl(var(--foreground) / .025); }
+:root[data-ui-material] .desktop-auth > .ui-panel {
+  background: var(--material-overlay);
+  border-radius: 24px;
+  backdrop-filter: var(--material-blur);
+  -webkit-backdrop-filter: var(--material-blur);
+}
+:root[data-ui-material] .ui-control {
+  background: var(--material-control);
+  border-width: 1px;
+  border-color: var(--material-line);
+  border-radius: 12px;
+}
+:root[data-ui-material] .ui-control:focus { border-color: hsl(var(--primary)); }
+:root[data-ui-material] .ui-control::placeholder { color: hsl(var(--muted-foreground)); opacity: 1; }
+:root[data-ui-material] .ui-table {
+  background: var(--material-overlay);
+  border-radius: 16px;
+}
+:root[data-ui-material] .ui-table tr { border-width: 1px; border-style: solid; border-color: var(--material-line); }
+:root[data-ui-material] .ui-table thead tr { background: hsl(var(--foreground) / .05); }
+/* Explicit semantic separators also cover Teleported modals and drawers. */
+:root[data-ui-material] :is(.ui-divider, .ui-divider-bottom) { border-style: solid; border-color: var(--material-line); }
+:root[data-ui-material] .ui-divider { border-top-width: 1px; }
+:root[data-ui-material] .ui-divider-bottom { border-bottom-width: 1px; }
+:root[data-ui-material] .ui-tabbar {
+  padding: 4px;
+  gap: 4px;
+  border-radius: 14px;
+  background: var(--material-control);
+}
+:root[data-ui-material] .ui-tabbar .ac-tab-btn { border: 0; border-radius: 10px; margin: 0; }
+:root[data-ui-material] .ui-tabbar .ac-tab-btn[aria-pressed="true"] {
+  background: var(--material-overlay); color: hsl(var(--foreground));
+  box-shadow: inset 0 1px 0 var(--material-highlight), 0 2px 6px rgb(0 0 0 / .08);
+}
+:root[data-ui-material] .ui-mask { background: rgb(0 0 0 / .28); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+:root[data-ui-material="solid"] {
+  --material-workspace: hsl(var(--background));
+  --material-panel: hsl(var(--card));
+  --material-overlay: hsl(var(--card));
+  --material-control: hsl(var(--card));
+  --material-navigation: hsl(var(--background));
+  --material-blur: none;
+}
+:root[data-ui-material="solid"] body,
+:root[data-ui-material="solid"] :is(.desktop-shell, .desktop-auth) { background: hsl(var(--background)); }
+:root[data-ui-material="solid"] .ui-mask { backdrop-filter: none; -webkit-backdrop-filter: none; }
+:root[data-reduce-motion="true"] *,
+:root[data-reduce-motion="true"] *::before,
+:root[data-reduce-motion="true"] *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+@media (max-width: 767px) {
+  :root[data-ui-material] .desktop-content { margin: 0 8px 8px; border-radius: 16px; }
+  :root[data-ui-material] .desktop-sidebar { background: var(--material-overlay); }
+}
+@media (forced-colors: active) {
+  :root[data-ui-material] :is(.ui-panel, .ui-overlay, .ui-popover, .ui-control, .ui-table, .desktop-content) {
+    background: Canvas; border-color: CanvasText; box-shadow: none;
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+}

@@ -1,5 +1,5 @@
 <template>
-  <div class="flex h-screen bg-background ac-grass-pattern">
+  <div class="desktop-shell flex h-screen bg-background ac-grass-pattern">
     <!-- Mobile overlay -->
     <div
       v-if="isMobile && !collapsed"
@@ -9,7 +9,8 @@
 
     <!-- Sidebar -->
     <aside
-      class="flex flex-col bg-sidebar shrink-0 z-50 transition-all duration-300 border-r-2 border-ac-sand"
+      class="desktop-sidebar flex flex-col bg-sidebar shrink-0 z-50 transition-all duration-300 border-r-2 border-ac-sand"
+      :data-collapsed="collapsed"
       :class="[
         collapsed ? 'w-16' : 'w-64',
         isMobile ? 'fixed inset-y-0 left-0' : ''
@@ -61,7 +62,7 @@
     <!-- Main area -->
     <div class="flex-1 flex flex-col min-w-0">
       <!-- Top bar -->
-      <header class="h-16 border-b-2 border-ac-sand bg-card/80 backdrop-blur-sm flex items-center gap-3 px-4 md:px-6 shrink-0">
+      <header class="desktop-toolbar h-16 border-b-2 border-ac-sand bg-card/80 backdrop-blur-sm flex items-center gap-3 px-4 md:px-6 shrink-0">
         <button
           class="size-9 rounded-2xl hover:bg-ac-sand/60 text-muted-foreground transition-colors flex items-center justify-center"
           @click="collapsed = !collapsed"
@@ -98,7 +99,7 @@
       </header>
 
       <!-- Content -->
-      <main class="flex-1 overflow-y-auto p-4 md:p-6">
+      <main class="desktop-content flex-1 overflow-y-auto p-4 md:p-6">
         <router-view v-slot="{ Component }">
           <transition name="ac-fade" mode="out-in">
             <component :is="Component" />

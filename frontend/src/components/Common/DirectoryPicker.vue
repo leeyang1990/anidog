@@ -3,7 +3,7 @@
     <!-- 触发器 -->
     <button
       type="button"
-      class="w-full flex items-center gap-2 h-10 px-3 rounded-2xl border-2 border-ac-sand bg-card text-sm text-left hover:border-ac-grass focus:outline-none focus:ring-4 focus:ring-ac-grass/20 transition-colors"
+      class="ui-control w-full flex items-center gap-2 h-10 px-3 rounded-2xl border-2 border-ac-sand bg-card text-sm text-left hover:border-ac-grass focus:outline-none focus:ring-4 focus:ring-ac-grass/20 transition-colors"
       @click="toggle"
     >
       <FolderOutline class="size-4 text-ac-wood-dark shrink-0" />
@@ -12,7 +12,7 @@
     </button>
 
     <!-- 下拉目录列表 -->
-    <div v-if="open" class="mt-2 rounded-2xl border-2 border-ac-sand bg-card shadow-lg overflow-hidden">
+    <div v-if="open" class="ui-popover mt-2 rounded-2xl border-2 border-ac-sand bg-card shadow-lg overflow-hidden">
       <!-- 顶栏：当前浏览路径 -->
       <div class="flex items-center gap-2 px-3 py-2 border-b-2 border-dashed border-ac-sand bg-ac-sand/30 text-xs">
         <span class="text-muted-foreground font-bold">{{ t('common.browse') }}</span>

@@ -8,7 +8,7 @@
         <div
           v-if="open"
           ref="menuEl"
-          class="ac-dropdown-menu fixed z-[1100] min-w-[160px] bg-card text-card-foreground border-2 border-ac-sand rounded-2xl shadow-lg py-1.5 origin-top"
+          class="ac-dropdown-menu ui-popover fixed z-[1100] min-w-[160px] bg-card text-card-foreground border-2 border-ac-sand rounded-2xl shadow-lg py-1.5 origin-top"
           :style="menuStyle"
         >
           <template v-for="(item, i) in options" :key="item.key ?? i">

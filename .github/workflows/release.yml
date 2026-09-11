@@ -111,6 +111,11 @@ jobs:
       - name: Test desktop adapters
         working-directory: backend
         run: go test -tags "$DESKTOP_TAGS" ./cmd/anidog-desktop ./internal/config
+      - name: Test native macOS materials
+        if: runner.os == 'macOS'
+        run: |
+          clang -fobjc-arc -framework Cocoa -framework WebKit backend/internal/desktopappearance/testdata/material_smoke.m -o "$RUNNER_TEMP/anidog-material-smoke"
+          "$RUNNER_TEMP/anidog-material-smoke"
       - name: Build and package desktop
         run: bash scripts/package-desktop.sh "$RELEASE_TAG" "$DESKTOP_OS" "$DESKTOP_ARCH"
       - uses: actions/upload-artifact@v4

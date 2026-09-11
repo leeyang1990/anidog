@@ -1,5 +1,5 @@
 <template>
-  <div class="min-h-screen flex flex-col items-center gap-4 bg-background ac-grass-pattern p-4 relative overflow-hidden">
+  <div class="desktop-auth min-h-screen flex flex-col items-center gap-4 bg-background ac-grass-pattern p-4 relative overflow-hidden">
     <div class="self-end shrink-0 z-10">
       <LocaleSwitcher />
     </div>

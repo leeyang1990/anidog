@@ -12,6 +12,7 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/anidog/anidog-go/internal/config"
+	"github.com/anidog/anidog-go/internal/desktopappearance"
 )
 
 type DesktopBridge struct {
@@ -41,6 +42,11 @@ func (b *DesktopBridge) Info() DesktopInfo {
 		MediaRoot: b.paths.MediaRoot,
 		BTState:   b.paths.BTState,
 	}
+}
+
+// ApplyAppearance runs only after the WebView is mounted; other platforms are no-ops.
+func (b *DesktopBridge) ApplyAppearance(dark bool) desktopappearance.State {
+	return desktopappearance.Apply(dark)
 }
 
 // SelectDirectory 使用系统原生目录选择器，替代浏览器版受媒体根目录限制的目录树。

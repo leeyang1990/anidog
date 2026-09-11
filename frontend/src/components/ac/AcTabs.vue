@@ -1,6 +1,6 @@
 <template>
   <div class="ac-tabs">
-    <div class="flex items-center gap-1.5 border-b-2 border-ac-sand pb-0 -mb-px overflow-x-auto" :class="centered ? 'justify-center' : ''">
+    <div class="ui-tabbar flex items-center gap-1.5 border-b-2 border-ac-sand pb-0 -mb-px overflow-x-auto" :class="centered ? 'justify-center' : ''">
       <button
         v-for="t in tabs"
         :key="t.key"
@@ -10,6 +10,7 @@
           ? 'bg-card text-ac-grass-dark border-ac-sand -mb-0.5 z-10 shadow-sm'
           : 'bg-transparent text-muted-foreground border-transparent hover:text-foreground hover:bg-ac-sand/40'"
         :disabled="t.disabled"
+        :aria-pressed="t.key === modelValue"
         @click="select(t)"
       >
         <component v-if="t.icon" :is="t.icon" class="inline-block w-4 h-4 mr-1 align-text-bottom" />

@@ -2,14 +2,14 @@
   <Teleport to="body">
     <transition name="ac-drawer">
       <div v-if="show" class="fixed inset-0 z-[1000] flex" :class="placement === 'right' ? 'justify-end' : 'justify-start'">
-        <div class="absolute inset-0 bg-ac-night/40 backdrop-blur-sm" @click="onMaskClick" />
+        <div class="ui-mask absolute inset-0 bg-ac-night/40 backdrop-blur-sm" @click="onMaskClick" />
         <div
           ref="drawerEl"
-          class="relative bg-card text-card-foreground border-2 border-ac-sand h-full flex flex-col overflow-hidden"
+          class="ui-overlay relative bg-card text-card-foreground border-2 border-ac-sand h-full flex flex-col overflow-hidden"
           :class="placement === 'right' ? 'rounded-l-[32px] border-r-0' : 'rounded-r-[32px] border-l-0'"
           :style="{ width: width, maxWidth: '92vw' }"
         >
-          <div v-if="title || $slots.header" class="px-6 py-4 border-b-2 border-dashed border-ac-sand flex items-center justify-between gap-3">
+          <div v-if="title || $slots.header" class="ui-divider-bottom px-6 py-4 border-b-2 border-dashed border-ac-sand flex items-center justify-between gap-3">
             <slot name="header">
               <h2 class="text-base font-bold text-foreground truncate">{{ title }}</h2>
             </slot>
@@ -23,7 +23,7 @@
           <div class="flex-1 overflow-y-auto px-6 py-5">
             <slot />
           </div>
-          <div v-if="$slots.footer" class="px-6 py-4 border-t-2 border-dashed border-ac-sand bg-ac-cream/30">
+          <div v-if="$slots.footer" class="ui-divider px-6 py-4 border-t-2 border-dashed border-ac-sand bg-ac-cream/30">
             <slot name="footer" />
           </div>
         </div>

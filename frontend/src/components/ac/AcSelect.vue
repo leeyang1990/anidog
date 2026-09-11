@@ -4,7 +4,7 @@
       ref="triggerEl"
       type="button"
       :disabled="disabled"
-      class="ac-select-trigger w-full flex items-center justify-between gap-2 bg-card text-foreground border-2 border-ac-sand-dark rounded-2xl outline-none transition-all focus:border-ac-grass focus:ring-4 focus:ring-ac-grass/20 disabled:bg-ac-sand/40 disabled:cursor-not-allowed"
+      class="ac-select-trigger ui-control w-full flex items-center justify-between gap-2 bg-card text-foreground border-2 border-ac-sand-dark rounded-2xl outline-none transition-all focus:border-ac-grass focus:ring-4 focus:ring-ac-grass/20 disabled:bg-ac-sand/40 disabled:cursor-not-allowed"
       :class="sizeCls"
       @click="toggle"
     >
@@ -20,7 +20,7 @@
         <div
           v-if="open"
           ref="menuEl"
-          class="ac-select-menu fixed z-[1100] bg-card text-card-foreground border-2 border-ac-sand rounded-2xl shadow-lg py-1.5 max-h-[280px] overflow-y-auto"
+          class="ac-select-menu ui-popover fixed z-[1100] bg-card text-card-foreground border-2 border-ac-sand rounded-2xl shadow-lg py-1.5 max-h-[280px] overflow-y-auto"
           :style="menuStyle"
         >
           <button

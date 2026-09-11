@@ -53,3 +53,18 @@ assert.match(emptySource, /v-if="skin !== 'classic'"/)
 assert.match(emptySource, /常规主题：中性收件箱/)
 
 console.log('skin tests passed')
+
+// Theme fonts must be available offline and must not be overridden by a platform.
+const html = await readFile(new URL('../index.html', import.meta.url), 'utf8')
+assert.doesNotMatch(html, /fonts\.googleapis|fonts\.gstatic/)
+const fontCSS = await readFile(new URL('../src/assets/fonts.css', import.meta.url), 'utf8')
+assert.match(fontCSS, /@fontsource\/zcool-kuaile\/400\.css/)
+for (const weight of [400, 600, 700, 800]) {
+  assert.ok(fontCSS.includes(`@fontsource/nunito/latin-${weight}.css`))
+}
+for (const family of ['zcool-kuaile', 'nunito']) {
+  const bundledLicense = await readFile(new URL(`../public/font-licenses/${family}.txt`, import.meta.url), 'utf8')
+  const sourceLicense = await readFile(new URL(`../node_modules/@fontsource/${family}/LICENSE`, import.meta.url), 'utf8')
+  assert.equal(bundledLicense, sourceLicense)
+}
+console.log('offline font imports and licenses passed')

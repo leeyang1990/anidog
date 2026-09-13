@@ -14,7 +14,7 @@
         </span>
       </div>
       <div class="flex items-center gap-2">
-        <AcButton variant="outline" size="sm" :loading="checkingAllUpdates" @click="handleCheckAllUpdates">
+        <AcButton variant="outline" size="sm" :loading="checkingAllUpdates" @click="runWithIris(handleCheckAllUpdates)">
           <template #icon><RefreshOutline class="size-3.5" /></template>
           {{ checkingAllUpdates ? t('pages.downloads.checking') : t('pages.downloads.checkUpdates') }}
         </AcButton>
@@ -86,7 +86,8 @@
 
         <div v-for="task in filteredTasks" :key="task.id"
           class="flex items-center gap-3 px-4 py-2.5 hover:bg-ac-cream/60 transition-colors"
-          :class="selectedIds.has(task.id) ? 'bg-ac-grass-light/20' : ''">
+          :class="selectedIds.has(task.id) ? 'bg-ac-grass-light/20' : ''"
+          @contextmenu.prevent="openRadial($event, task)">
           <div class="w-4 shrink-0">
             <input type="checkbox" class="accent-ac-grass cursor-pointer size-4" :checked="selectedIds.has(task.id)" @change="toggleSelect(task.id)" />
           </div>
@@ -155,7 +156,9 @@
 
           <div class="w-32 shrink-0 text-right text-xs text-muted-foreground font-num">
             <div v-if="task.status === 'completed' && task.completed_at">
-              <span :title="t('pages.downloads.completedAt', { time: formatAbsoluteTime(task.completed_at) })">✓ {{ formatRelativeTime(task.completed_at) }}</span>
+              <AcStamp :key="task.completed_at">
+                <span :title="t('pages.downloads.completedAt', { time: formatAbsoluteTime(task.completed_at) })">✓ {{ formatRelativeTime(task.completed_at) }}</span>
+              </AcStamp>
             </div>
             <div v-else-if="task.created_at">
               <span :title="t('pages.downloads.createdAt', { time: formatAbsoluteTime(task.created_at) })">{{ formatRelativeTime(task.created_at) }}</span>
@@ -207,6 +210,22 @@
         </div>
       </template>
     </AcModal>
+    <AcRadialMenu
+      v-model:open="radial.open"
+      :x="radial.x"
+      :y="radial.y"
+      :items="radialItems"
+      :label="t('pages.downloads.actions')"
+      @select="onRadialSelect"
+    />
+
+    <AcSettleBurst
+      v-model:show="settle.show"
+      :title="settle.title"
+      :items="settle.items"
+    />
+
+    <AcIrisWipe ref="irisRef" />
   </div>
 </template>
 
@@ -224,8 +243,12 @@ import {
 import { get, post, del } from '@/utils/api'
 import { isDesktopRuntime, openDesktopPath } from '@/utils/desktop'
 import { resolveDownloadStage } from '@/utils/downloadStage'
+import { useSound } from '@/composables/useSound'
 import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
-import { AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea, AcCountUp, AcStageTrack, AcFlipText } from '../../components/ac'
+import {
+  AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea,
+  AcCountUp, AcStageTrack, AcFlipText, AcStamp, AcRadialMenu, AcSettleBurst, AcIrisWipe,
+} from '../../components/ac'
 import { useI18n } from 'vue-i18n'
 
 const toast = useToast()
@@ -238,6 +261,68 @@ const globalUploadSpeed = ref(0)
 const searchKeyword = ref('')
 const activeFilter = ref('all')
 const selectedIds = ref(new Set())
+const { play } = useSound()
+const irisRef = ref(null)
+const radial = ref({ open: false, x: 0, y: 0, task: null })
+const settle = ref({ show: false, title: '', items: [] })
+
+// 环形菜单：把行上的高频动作摊在指针周围，不用去点那一列小图标
+const radialItems = computed(() => {
+  const task = radial.value.task
+  if (!task) return []
+  const active = task.status === 'downloading'
+  const finished = task.status === 'completed'
+  return [
+    { key: 'pause', label: t('pages.downloads.pause'), icon: PauseOutline, disabled: !active,
+      class: '' },
+    { key: 'resume', label: t('pages.downloads.resume'), icon: PlayOutline,
+      disabled: !(task.status === 'paused' || task.status === 'failed'), class: '' },
+    { key: 'retry', label: t('pages.downloads.retry'), icon: RefreshOutline,
+      disabled: finished, class: '' },
+    { key: 'open', label: t('pages.downloads.openLocation'), icon: FolderOpenOutline,
+      disabled: false, class: '' },
+    { key: 'delete', label: t('pages.downloads.delete'), icon: TrashOutline,
+      disabled: false, class: 'text-ac-heart-dark' },
+  ]
+})
+
+function openRadial(event, task) {
+  radial.value = { open: true, x: event.clientX, y: event.clientY, task }
+}
+
+async function onRadialSelect(key) {
+  const task = radial.value.task
+  if (!task) return
+  if (key === 'open') return openFolder(task)
+  if (key === 'delete') return deleteTask(task)
+  if (key === 'pause' || key === 'resume') return togglePause(task)
+  if (key === 'retry') return retryTask(task)
+}
+
+// 重操作走 iris 转场：深色圆合上 → 干活 → 收回，给一次"确实在做事"的交代
+async function runWithIris(task) {
+  if (irisRef.value?.run) return irisRef.value.run(task)
+  return task()
+}
+
+function showSettle(title, items) {
+  if (!items.length) return
+  settle.value = { show: true, title, items }
+}
+
+// 批量操作的结果交代：全部失败就直接报错，别弹一个"处理了 0 个"的空结算
+function reportBatch(actionLabel, ok, failed, items, isDelete = false) {
+  if (!ok) {
+    play('error')
+    toast.error(t('pages.downloads.operationFailed'))
+    return
+  }
+  play('done')
+  const title = isDelete
+    ? t('pages.downloads.settleDelete', { count: ok })
+    : t('pages.downloads.settleAction', { action: actionLabel, count: ok })
+  showSettle(failed ? `${title} · ${t('pages.downloads.settleFailed', { count: failed })}` : title, items)
+}
 const showAddModal = ref(false)
 const checkingAllUpdates = ref(false)
 const updateTimer = ref(null)
@@ -385,15 +470,27 @@ async function resumeAll() {
 }
 async function batchAction(action) {
   const ids = [...selectedIds.value]
-  await Promise.all(ids.map(id => post(`/downloads/${id}/${action}`).catch(() => null)))
+  const names = tasks.value.filter(t => ids.includes(t.id)).map(t => t.name)
+  const results = await Promise.all(ids.map(id => post(`/downloads/${id}/${action}`).then(() => true).catch(() => false)))
+  const succeeded = results.filter(Boolean).length
+  const failed = results.length - succeeded
   clearSelection(); await fetchTasks()
+  reportBatch(
+    action === 'pause' ? t('pages.downloads.pause') : t('pages.downloads.resume'),
+    succeeded,
+    failed,
+    names.filter((_, i) => results[i]).slice(0, 8),
+  )
 }
 async function batchDelete() {
   const ok = await confirm({ title: t('pages.downloads.batchDelete'), content: t('pages.downloads.batchDeleteConfirm', { count: selectedIds.value.size }), variant: 'danger', confirmText: t('common.delete') })
   if (!ok) return
   const ids = [...selectedIds.value]
-  await Promise.all(ids.map(id => del(`/downloads/${id}`).catch(() => null)))
+  const names = tasks.value.filter(t => ids.includes(t.id)).map(t => t.name)
+  const results = await Promise.all(ids.map(id => del(`/downloads/${id}`).then(() => true).catch(() => false)))
+  const succeeded = results.filter(Boolean).length
   clearSelection(); await fetchTasks()
+  reportBatch(t('pages.downloads.delete'), succeeded, results.length - succeeded, names.filter((_, i) => results[i]).slice(0, 8), true)
 }
 async function submitAddDownload() {
   if (!canSubmitAdd.value) return

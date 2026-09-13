@@ -27,13 +27,11 @@
           </span>
           <span v-else />
 
-          <span
-            v-if="item.is_subscribed"
-            class="ac-poster-badge ac-poster-badge--grass"
-            aria-label="已追番"
-          >
-            <CheckmarkCircle class="size-2.5" aria-hidden="true" />
-          </span>
+          <AcStamp v-if="item.is_subscribed">
+            <span class="ac-poster-badge ac-poster-badge--grass" aria-label="已追番">
+              <CheckmarkCircle class="size-2.5" aria-hidden="true" />
+            </span>
+          </AcStamp>
         </div>
 
         <!-- 追番按钮（悬浮） -->
@@ -71,7 +69,7 @@
 <script setup>
 import { ref } from 'vue'
 import { CheckmarkCircle, Star } from '@vicons/ionicons5'
-import { AcPoster, AcBurst } from '@/components/ac'
+import { AcPoster, AcBurst, AcStamp } from '@/components/ac'
 
 defineProps({ item: { type: Object, required: true } })
 const emit = defineEmits(['click', 'subscribe'])

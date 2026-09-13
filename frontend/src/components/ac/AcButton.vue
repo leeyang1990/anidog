@@ -18,6 +18,7 @@
 import { computed, ref } from 'vue'
 import AcSpinner from './AcSpinner.vue'
 import AcBurst from './AcBurst.vue'
+import { useSound } from '@/composables/useSound'
 
 const props = defineProps({
   variant: { type: String, default: 'primary' }, // primary | secondary | ghost | danger | sun | sky
@@ -34,9 +35,11 @@ const props = defineProps({
 
 const emit = defineEmits(['click'])
 const burstRef = ref(null)
+const { play } = useSound()
 
 function onClick(e) {
   if (props.loading || props.disabled) return
+  if (props.burst) play('confirm')
   burstRef.value?.play()
   emit('click', e)
 }

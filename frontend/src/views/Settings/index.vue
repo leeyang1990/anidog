@@ -26,6 +26,31 @@
           </div>
         </AcCard>
 
+        <AcCard padding="lg" rounded="2xl" class="mb-4">
+          <div class="flex gap-5">
+            <div class="size-11 shrink-0 rounded-2xl bg-ac-grass-light/40 flex items-center justify-center">
+              <span class="text-xl">🔔</span>
+            </div>
+            <div class="flex-1 space-y-4">
+              <div>
+                <h3 class="text-lg font-bold tracking-tight text-foreground">{{ t('settings.details.soundTitle') }}</h3>
+                <p class="text-sm text-muted-foreground">{{ t('settings.details.soundDesc') }}</p>
+              </div>
+              <div class="flex items-center justify-between gap-4">
+                <label class="text-sm font-bold text-foreground">{{ t('settings.details.soundEnable') }}</label>
+                <AcSwitch v-model="soundEnabled" />
+              </div>
+              <div v-if="soundEnabled" class="flex items-center justify-between gap-4">
+                <label class="text-sm font-bold text-foreground">{{ t('settings.details.soundLevel') }}</label>
+                <div class="w-40">
+                  <AcSelect v-model="soundLevel" :options="soundLevelOptions" size="sm" />
+                </div>
+              </div>
+              <p class="text-xs text-muted-foreground">{{ t('settings.details.soundNote') }}</p>
+            </div>
+          </div>
+        </AcCard>
+
         <AcCard padding="lg" rounded="2xl">
           <div class="flex gap-5">
             <div class="size-11 shrink-0 rounded-2xl bg-ac-sun/40 flex items-center justify-center">
@@ -343,6 +368,7 @@ import {
 } from '@vicons/ionicons5'
 import { AcPageHeader, AcTabs, AcCard, AcButton, AcInput, AcSelect, AcSwitch, AcProgress } from '../../components/ac'
 import { useSkin } from '../../composables/useSkin'
+import { useSound } from '../../composables/useSound'
 
 const { skin, setSkin, SKINS } = useSkin()
 const { t } = useI18n({ useScope: 'global' })
@@ -360,6 +386,17 @@ const toast = useToast()
 const authStore = useAuthStore()
 
 const activeTab = ref('download')
+
+// 音效：默认关闭，用户在这里开启。音量用档位而不是滑杆——不值得为此引入新的滑块组件
+const { enabled: soundEnabled, volume: soundVolume, play } = useSound()
+const SOUND_LEVELS = [0.25, 0.5, 0.75, 1]
+const soundLevel = computed({
+  get: () => soundVolume.value,
+  set: (value) => { soundVolume.value = value; play('tab') },
+})
+const soundLevelOptions = computed(() => (t('settings.details.soundLevels') || []).map((label, index) => ({
+  label, value: SOUND_LEVELS[index] ?? 0.5,
+})))
 
 const tabs = computed(() => [
   { key: 'download', label: t('settings.tabs.download') },

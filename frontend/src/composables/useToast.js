@@ -1,6 +1,7 @@
 // composables/useToast.js
 // 单例 toast：调用 useToast() 总是返回同一个 store；AcToastContainer 渲染列表
 import { reactive } from 'vue'
+import { useSound } from './useSound'
 
 const state = reactive({
   list: [],
@@ -8,6 +9,9 @@ const state = reactive({
 })
 
 function add(type, message, opts = {}) {
+  // 成功/失败各给一个音（默认静音，用户在设置里开了才响）
+  if (type === 'success') useSound().play('done')
+  else if (type === 'error') useSound().play('error')
   const id = ++state.seq
   const item = {
     id,

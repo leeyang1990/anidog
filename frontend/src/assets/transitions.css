@@ -1,0 +1,101 @@
+/* 转场类（enter/leave）不放在 tailwind.css 的 @layer components 里。
+ *
+ * 原因：Vue 的 <transition name="x"> 在运行时才拼出 `x-enter-active` 这类类名，
+ * Tailwind 扫描源码时看不到它们，会把对应的 @layer components 规则整段摇掉——
+ * 结果是样式写着却永远不生效（项目原有的 ac-fade 路由淡入就一直是这样被摇掉的）。
+ * 这个文件不经过 Tailwind，规则一定保留。
+ */
+
+/* ── 路由转场 ─────────────────────────────────────────────
+ * expand: 从点击位置扩满屏幕（详情页从卡片长出来）
+ * wave:   从底部升起的弧形遮罩（进入一条工作流）
+ * fade:   最朴素的渐入（设置、通知这类由工具栏触发的页面）
+ */
+.ac-route-expand-enter-active {
+  animation: ac-route-expand 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ac-route-wave-enter-active {
+  animation: ac-route-wave 440ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ac-route-fade-enter-active,
+.ac-route-fade-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.ac-route-fade-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.ac-route-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@keyframes ac-route-expand {
+  0% {
+    clip-path: circle(0% at var(--ac-route-x, 50%) var(--ac-route-y, 50%));
+    opacity: 0.85;
+  }
+  100% {
+    clip-path: circle(150% at var(--ac-route-x, 50%) var(--ac-route-y, 50%));
+    opacity: 1;
+  }
+}
+
+@keyframes ac-route-wave {
+  0% {
+    clip-path: ellipse(140% 0% at 50% 100%);
+    opacity: 0.9;
+  }
+  100% {
+    clip-path: ellipse(140% 160% at 50% 100%);
+    opacity: 1;
+  }
+}
+
+/* ── 结算层 ───────────────────────────────────────────── */
+.ac-settle-enter-active {
+  animation: ac-settle-in 280ms cubic-bezier(0.22, 1.4, 0.36, 1);
+}
+
+.ac-settle-leave-active {
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+
+.ac-settle-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 10px);
+}
+
+@keyframes ac-settle-in {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 14px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+/* ── 环形菜单蒙层 ─────────────────────────────────────── */
+.ac-radial-enter-active,
+.ac-radial-leave-active {
+  transition: opacity 0.18s ease;
+}
+
+.ac-radial-enter-from,
+.ac-radial-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-route-expand-enter-active,
+  .ac-route-wave-enter-active,
+  .ac-settle-enter-active {
+    animation: none;
+  }
+}

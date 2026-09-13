@@ -19,8 +19,8 @@
 | 4 | 进度拟物化（机场信息屏式：翻牌 + 逐灯点亮） | 下载队列天生适合，比进度条有意思得多 | 中 | **P1** ✅ `b3a8761` |
 | 5 | loading 有内容（场景化等待） | 我们的 spinner 是纯转圈；BT 聚合搜索等待时间长 | 中 | **P1** ✅ `fe2f465` |
 | 6 | 弹窗气泡式入场 | `AcModal`/`AcDrawer` 一次改造全站生效 | 中 | **P1** ✅ `dabdc0b` |
-| 7 | 状态横幅 + 图章（任务/订阅/规则命中） | 日历、RSS、下载页都用得上 | 中 | **P1** ⬜ 待做 |
-| 8 | 音效层（默认静音，设置里开） | 质感提升最明显，但必须默认关 | 中 | **P2** ⬜ 待做 |
+| 7 | 状态图章（已追 / 已完成） | 日历、RSS、下载页都用得上 | 中 | **P1** ✅ 见下方记录 |
+| 8 | 音效层（默认静音，设置里开） | 质感提升最明显，但必须默认关 | 中 | **P2** ✅ 见下方记录 |
 
 ---
 
@@ -341,3 +341,28 @@
 AniDog 站内的搜索（资源搜索 / 番剧库）走的是 **Bangumi + BT 索引器**，只能搜到番剧条目与种子，**搜不到游戏 UI 参考**——所以这份清单的资料是靠外部检索拿到的。
 
 如果你想要的是"把这份清单变成站内可搜索的页面"（比如设置里加一个「设计参考」页，支持按分类/关键词过滤、带示例动图），说一声我就照第 7 节的 P1/P2 方式做进 `frontend/src/views/`，数据直接引用这份 Markdown 的内容。
+
+
+---
+
+## 9. 实施记录（本轮全部落地）
+
+| 条目 | 落点 | 备注 |
+|---|---|---|
+| 1.3 按钮物理下沉 | `components/ac/AcButton.vue` | 已有 `active:translate-y-[3px]` + 阴影收缩，补到海报卡与星期条 |
+| 1.4 确认放射反馈 | `components/ac/AcBurst.vue` + `.ac-burst` | 8 根速度线，270ms；**追番按钮要留 220ms 演出窗口**，否则按钮先被 `v-if` 移除，动画白做 |
+| 1.6 数字滚动 | `composables/useCountUp.js` + `components/ac/AcCountUp.vue` | 从当前显示值继续滚、值没变不重启、减少动态直接落位 |
+| 3.2 进度拟物化 | `components/ac/AcStageTrack.vue` + `utils/downloadStage.js` | 阶段推导是纯函数，只认后端真实字段（`metadata_probe_started_at` / `stalled_since` / `seeking_alternative`） |
+| 3.1 场景化等待 | `components/ac/AcSceneLoader.vue` | 没有照搬小飞机/小岛（世界观不同），改成"扫描 + 站点依次点亮"；不含 `progressbar` 语义，不假装确定性进度 |
+| 2.1 气泡式弹窗 | `AcModal` / `AcDrawer` | 光晕必须挂在蒙层上，挂面板会被 `overflow-hidden` 裁掉 |
+| 3.3 状态图章 | `components/ac/AcStamp.vue` | 徽章用"盖章"而不是淡入；下载完成时间戳也走它 |
+| 3.4 完成结算 | `components/ac/AcSettleBurst.vue` | 只列真正成功的项；全部失败就直接报错，不弹"处理了 0 个"的空结算 |
+| 2.4 iris 转场 | `components/ac/AcIrisWipe.vue` | `await iris.run(fn)`；重操作用（检查追番更新） |
+| 2.6 环形快捷菜单 | `components/ac/AcRadialMenu.vue` | 下载行右键唤出，Esc 关闭，不可用动作真禁用 |
+| 2.2 三档路由转场 | `composables/useRouteTransition.js` + `assets/transitions.css` | 点击位置记在 `--ac-route-x/y`，详情页 expand / 工作流 wave / 其余 fade |
+| 5 音效层 | `composables/useSound.js` + 设置页 | 全部 Web Audio 现场合成，**默认关闭**，开启后落盘 |
+
+### 两个值得记下的坑
+
+1. **动态类名不能写在 Tailwind 的 `@layer components` 里**。Vue 的 `<transition name="x">` 在运行时才拼出 `x-enter-active`，Tailwind 扫不到就把整段规则摇掉——项目原有的 `ac-fade` 路由淡入一直是这样静默失效的。现在转场类统一放 `assets/transitions.css`（不经 Tailwind），测试里加了"不许放回 @layer"的断言。
+2. **"静止时持续形变"在网页里不划算**。动森弹窗静止时仍在缓慢呼吸，但整块弹窗持续缩放会让文字发虚、且一直占着合成层；而且 Vue 在入场结束时会移除 `enter-active` 类，常驻动画压根不会生效。所以只保留一次有始有终的回弹。

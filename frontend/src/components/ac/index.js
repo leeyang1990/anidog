@@ -17,6 +17,10 @@ import AcBurst from './AcBurst.vue'
 import AcStageTrack from './AcStageTrack.vue'
 import AcFlipText from './AcFlipText.vue'
 import AcSceneLoader from './AcSceneLoader.vue'
+import AcStamp from './AcStamp.vue'
+import AcIrisWipe from './AcIrisWipe.vue'
+import AcRadialMenu from './AcRadialMenu.vue'
+import AcSettleBurst from './AcSettleBurst.vue'
 import AcEmpty from './AcEmpty.vue'
 import AcModal from './AcModal.vue'
 import AcDrawer from './AcDrawer.vue'
@@ -34,7 +38,8 @@ export {
   AcIcon, AcSpinner, AcButton, AcCard, AcTag,
   AcInput, AcTextarea, AcCheckbox, AcRadio, AcSwitch,
   AcProgress, AcSkeleton, AcPoster, AcCountUp, AcBurst,
-  AcStageTrack, AcFlipText, AcSceneLoader, AcEmpty,
+  AcStageTrack, AcFlipText, AcSceneLoader,
+  AcStamp, AcIrisWipe, AcRadialMenu, AcSettleBurst, AcEmpty,
   AcModal, AcDrawer, AcDropdown, AcSelect, AcTabs, AcCollapse, AcTable,
   AcPageHeader, AcToastContainer, AcConfirmHost, AcLoadingBar,
 }

@@ -100,8 +100,8 @@
 
       <!-- Content -->
       <main class="desktop-content flex-1 overflow-y-auto p-4 md:p-6">
-        <router-view v-slot="{ Component }">
-          <transition name="ac-fade" mode="out-in">
+        <router-view v-slot="{ Component, route }">
+          <transition :name="routeTransitionName(route)" mode="out-in">
             <component :is="Component" />
           </transition>
         </router-view>
@@ -124,6 +124,7 @@ import {
 import { AcInput, AcDropdown } from '../../components/ac'
 import LocaleSwitcher from '../../components/Common/LocaleSwitcher.vue'
 import { useI18n } from 'vue-i18n'
+import { installRouteTransitionOrigin, routeTransitionName } from '@/composables/useRouteTransition'
 
 const router = useRouter()
 const route = useRoute()
@@ -201,7 +202,9 @@ function handleUserSelect(key) {
   }
 }
 
+let disposeTransitionOrigin = null
 onMounted(() => {
+  disposeTransitionOrigin = installRouteTransitionOrigin()
   document.documentElement.classList.toggle('dark', isDark.value)
   if (isMobile.value) collapsed.value = true
 })

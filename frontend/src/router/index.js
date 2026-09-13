@@ -23,11 +23,14 @@ const routes = [
         name: 'AnimeDetail',
         component: () => import('../views/Anime/AnimeDetail.vue'),
         props: true,
+        // 从卡片长出来的页面用扩大式转场（见 useRouteTransition）
+        meta: { transition: 'expand' },
       },
       {
         path: 'rss',
         name: 'RSSList',
         component: () => import('../views/RSS/RSSManagement.vue'),
+        meta: { transition: 'wave' },
       },
       {
         path: 'downloads',
@@ -48,10 +51,12 @@ const routes = [
         path: 'anime-library',
         name: 'AnimeLibrary',
         component: () => import('../views/Anime/AnimeLibrary.vue'),
+        meta: { transition: 'wave' },
       },
       {
         path: 'anime-library/:id',
         name: 'BangumiDetail',
+        meta: { transition: 'expand' },
         component: () => import('../views/Anime/AnimeDetail.vue'),
         props: true,
       },
@@ -59,6 +64,7 @@ const routes = [
         path: 'stream-rules',
         name: 'StreamRules',
         component: () => import('../views/StreamRules/index.vue'),
+        meta: { transition: 'wave' },
       },
       {
         path: 'notifications',

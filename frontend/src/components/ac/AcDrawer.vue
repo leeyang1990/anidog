@@ -36,6 +36,7 @@
 import { ref, watch, onBeforeUnmount } from 'vue'
 import { useFocusTrap } from '../../composables/useFocusTrap'
 import { useI18n } from 'vue-i18n'
+import { useSound } from '@/composables/useSound'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -47,6 +48,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:show', 'close'])
 const { t } = useI18n({ useScope: 'global' })
+const { play } = useSound()
 
 const drawerEl = ref(null)
 let prevOverflow = ''
@@ -57,6 +59,7 @@ useFocusTrap(drawerEl, {
 })
 
 watch(() => props.show, (v) => {
+  play(v ? 'open' : 'close')
   if (v) {
     prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'

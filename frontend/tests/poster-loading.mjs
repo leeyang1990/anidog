@@ -61,7 +61,7 @@ assert.match(materials, /data-reduce-motion="true"[\s\S]*?animation: none !impor
 const animeCard = await read('../src/views/Anime/AnimeCard.vue')
 const naiveCard = await read('../src/components/Anime/NaiveAnimeCard.vue')
 for (const [name, source] of [['AnimeCard', animeCard], ['NaiveAnimeCard', naiveCard]]) {
-  assert.match(source, /import \{ AcPoster \} from '@\/components\/ac'/, `${name} 应使用 AcPoster`)
+  assert.match(source, /import \{[^}]*\bAcPoster\b[^}]*\} from '@\/components\/ac'/, `${name} 应使用 AcPoster`)
   assert.match(source, /<AcPoster/, `${name} 应渲染 AcPoster`)
   assert.match(source, /:sizes="posterSizes"/, `${name} 应传入与实际格子匹配的 sizes`)
   assert.doesNotMatch(source, /toResizedImage\(/, `${name} 不应再自行拼图片地址`)

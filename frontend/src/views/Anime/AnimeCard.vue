@@ -1,6 +1,6 @@
 <template>
   <article
-    class="ac-anime-card group relative flex cursor-pointer flex-col overflow-hidden rounded-xl border border-border/70 bg-card shadow-[0_1px_2px_rgb(0_0_0/0.05)] transition-[transform,box-shadow,border-color] duration-200 ease-out hover:-translate-y-1 hover:border-primary/40 hover:shadow-[0_14px_30px_-14px_rgb(0_0_0/0.35)]"
+    class="ac-anime-card group relative flex cursor-pointer flex-col overflow-hidden rounded-xl border border-border/70 bg-card shadow-[0_1px_2px_rgb(0_0_0/0.05)] transition-[transform,box-shadow,border-color] duration-200 ease-out hover:-translate-y-1 hover:border-primary/40 hover:shadow-[0_14px_30px_-14px_rgb(0_0_0/0.35)] active:translate-y-0 active:duration-75"
     @click="$emit('click', item)"
   >
     <!-- 相框式海报：内缩一圈 + 独立圆角。外圆角 24px − 内距 6px = 内圆角 18px，两层正好同心 -->
@@ -43,10 +43,11 @@
         >
           <button
             type="button"
-            class="h-6 w-full rounded-lg bg-ac-grass/95 text-[10.5px] font-bold text-white shadow-sm transition-colors hover:bg-ac-grass-dark"
-            @click.stop="$emit('subscribe', item)"
+            class="relative h-6 w-full rounded-lg bg-ac-grass/95 text-[10.5px] font-bold text-white shadow-sm transition-colors hover:bg-ac-grass-dark active:translate-y-px"
+            @click.stop="onSubscribe(item)"
           >
             + 追番
+            <AcBurst ref="burstRef" :spokes="8" />
           </button>
         </div>
       </div>
@@ -68,11 +69,29 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import { CheckmarkCircle, Star } from '@vicons/ionicons5'
-import { AcPoster } from '@/components/ac'
+import { AcPoster, AcBurst } from '@/components/ac'
 
 defineProps({ item: { type: Object, required: true } })
-defineEmits(['click', 'subscribe'])
+const emit = defineEmits(['click', 'subscribe'])
+
+const burstRef = ref(null)
+
+// 追番是有分量的确认动作：先炸一下放疗线，再落状态。
+// 这里必须留一个"演出节拍"——订阅成功后按钮会被 v-if 移除，
+// 立刻抛事件的话放射动画还没画完就被卸载，等于白做。
+const SUBSCRIBE_BEAT = 220
+
+function onSubscribe(item) {
+  const played = burstRef.value?.play()
+  if (!played) {
+    // 减少动态偏好：不演出，直接落状态
+    emit('subscribe', item)
+    return
+  }
+  setTimeout(() => emit('subscribe', item), SUBSCRIBE_BEAT)
+}
 
 // 卡片网格：<640px 两列、sm 三列、md 三列（此时侧栏展开、内容反而更窄）、lg 四列、
 // xl 五列、2xl 六列；1440 视口下约 210px/张，圆角比例不再失衡。

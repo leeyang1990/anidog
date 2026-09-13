@@ -10,12 +10,14 @@
     <span v-if="loading" class="inline-flex items-center justify-center"><AcSpinner :size="iconSize" :color="loaderColor" /></span>
     <slot v-else name="icon" />
     <span v-if="$slots.default" :class="{ 'opacity-70': loading }"><slot /></span>
+    <AcBurst v-if="burst" ref="burstRef" />
   </component>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import AcSpinner from './AcSpinner.vue'
+import AcBurst from './AcBurst.vue'
 
 const props = defineProps({
   variant: { type: String, default: 'primary' }, // primary | secondary | ghost | danger | sun | sky
@@ -26,12 +28,16 @@ const props = defineProps({
   round: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
+  // 确认反馈：给"确认 / 成功 / 破坏性"这类有分量的按钮开
+  burst: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['click'])
+const burstRef = ref(null)
 
 function onClick(e) {
   if (props.loading || props.disabled) return
+  burstRef.value?.play()
   emit('click', e)
 }
 

@@ -16,14 +16,18 @@
       <nav class="flex gap-2 mb-6 overflow-x-auto pb-2">
         <button v-for="day in calendarData" :key="day.weekday"
           type="button"
-          class="flex flex-col items-center px-5 py-3 rounded-2xl text-sm font-bold whitespace-nowrap transition-all shrink-0 min-w-[80px] border-2"
+          class="flex flex-col items-center px-5 py-3 rounded-2xl text-sm font-bold whitespace-nowrap transition-all duration-150 shrink-0 min-w-[80px] border-2 active:translate-y-[2px]"
           :class="activeDay === day.weekday
             ? 'bg-ac-grass text-white border-ac-grass-dark shadow-sm'
             : 'bg-card border-ac-sand text-muted-foreground hover:border-ac-grass'"
           @click="selectDay(day.weekday)">
           <span>{{ weekdayName(day.weekday) }}</span>
           <span v-if="day.isToday" class="text-[10px] mt-0.5 px-1.5 rounded-full bg-ac-sun text-ac-night">{{ t('pages.calendar.today') }}</span>
-          <span class="text-xs mt-1 opacity-70 font-num">{{ t('pages.calendar.itemCount', { count: day.items.length }) }}</span>
+          <span class="text-xs mt-1 opacity-70 font-num">
+            <i18n-t keypath="pages.calendar.itemCount" scope="global">
+              <template #count><AcCountUp :value="day.items.length" :duration="420" from-zero /></template>
+            </i18n-t>
+          </span>
         </button>
       </nav>
 
@@ -48,7 +52,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { get, post } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
 import { RefreshOutline } from '@vicons/ionicons5'
-import { AcPageHeader, AcButton, AcSpinner, AcEmpty } from '@/components/ac'
+import { AcPageHeader, AcButton, AcSpinner, AcEmpty, AcCountUp } from '@/components/ac'
 import AnimeCard from '../Anime/AnimeCard.vue'
 import { useI18n } from 'vue-i18n'
 

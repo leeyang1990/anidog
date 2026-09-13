@@ -30,7 +30,7 @@
             </div>
             <span class="text-sm font-bold text-muted-foreground">{{ stat.label }}</span>
           </div>
-          <div class="text-3xl font-bold tracking-tight font-num text-foreground">{{ stat.value }}</div>
+          <div class="text-3xl font-bold tracking-tight font-num text-foreground"><AcCountUp :value="stat.value" from-zero /></div>
           <div v-if="stat.sub" class="text-xs text-muted-foreground mt-1">{{ stat.sub }}</div>
         </AcCard>
       </div>
@@ -107,7 +107,7 @@ import {
 } from 'chart.js'
 import dayjs from 'dayjs'
 import { get } from '@/utils/api'
-import { AcPageHeader, AcCard, AcButton, AcSpinner, AcTag, AcEmpty } from '../components/ac'
+import { AcPageHeader, AcCard, AcButton, AcSpinner, AcTag, AcEmpty, AcCountUp } from '../components/ac'
 import { useI18n } from 'vue-i18n'
 import { useSkin } from '@/composables/useSkin'
 

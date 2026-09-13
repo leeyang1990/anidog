@@ -6,11 +6,11 @@
         <span class="text-muted-foreground">{{ t('pages.downloads.total', { count: tasks.length }) }}</span>
         <span class="text-muted-foreground">·</span>
         <span class="text-ac-grass-dark inline-flex items-center gap-1 font-num font-bold">
-          <ArrowDownOutline class="size-3.5" />{{ formatSpeed(globalDownloadSpeed) }}
+          <ArrowDownOutline class="size-3.5" /><AcCountUp :value="globalDownloadSpeed" :format="formatSpeed" />
         </span>
         <span v-if="globalUploadSpeed > 0" class="text-muted-foreground">·</span>
         <span v-if="globalUploadSpeed > 0" class="text-ac-leaf-dark inline-flex items-center gap-1 font-num font-bold">
-          <ArrowUpOutline class="size-3.5" />{{ formatSpeed(globalUploadSpeed) }}
+          <ArrowUpOutline class="size-3.5" /><AcCountUp :value="globalUploadSpeed" :format="formatSpeed" />
         </span>
       </div>
       <div class="flex items-center gap-2">
@@ -18,7 +18,7 @@
           <template #icon><RefreshOutline class="size-3.5" /></template>
           {{ checkingAllUpdates ? t('pages.downloads.checking') : t('pages.downloads.checkUpdates') }}
         </AcButton>
-        <AcButton variant="primary" size="sm" @click="showAddModal = true">
+        <AcButton variant="primary" size="sm" burst @click="showAddModal = true">
           <template #icon><AddOutline class="size-3.5" /></template>
           {{ t('pages.downloads.add') }}
         </AcButton>
@@ -205,7 +205,7 @@ import {
 import { get, post, del } from '@/utils/api'
 import { isDesktopRuntime, openDesktopPath } from '@/utils/desktop'
 import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
-import { AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea } from '../../components/ac'
+import { AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea, AcCountUp } from '../../components/ac'
 import { useI18n } from 'vue-i18n'
 
 const toast = useToast()

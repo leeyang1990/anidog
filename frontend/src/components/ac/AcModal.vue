@@ -87,21 +87,50 @@ function onMaskClick() {
 </script>
 
 <style scoped>
+/* 气泡式入场：小 → 胀大 → 回弹 → 轻微横向晃动后安定。
+ * 动森的弹窗静止时还会持续形变，但网页里整块弹窗持续缩放着会让文字发虚、还要一直合成，
+ * 所以只做一次有始有终的演出，不保留常驻形变。 */
 .ac-modal-enter-active,
 .ac-modal-leave-active {
   transition: opacity 0.22s ease;
 }
-.ac-modal-enter-active > div:last-child,
+.ac-modal-enter-active > div:last-child {
+  animation: ac-bubble-in 420ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
 .ac-modal-leave-active > div:last-child {
-  transition: transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease;
+  transition: transform 0.24s cubic-bezier(0.4, 0, 1, 1), opacity 0.2s ease;
 }
 .ac-modal-enter-from,
 .ac-modal-leave-to {
   opacity: 0;
 }
-.ac-modal-enter-from > div:last-child,
-.ac-modal-leave-to > div:last-child {
-  transform: scale(0.94) translateY(8px);
+.ac-modal-enter-from > div:last-child {
+  transform: scale(0.82) translateY(14px);
   opacity: 0;
+}
+.ac-modal-leave-to > div:last-child {
+  transform: scale(0.96) translateY(6px);
+  opacity: 0;
+}
+
+/* 气泡炸开：从面板中心向外扩一圈光晕（放在蒙层上，不会被面板的 overflow 裁掉） */
+.ac-modal-enter-active > .ui-mask::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 140px;
+  height: 140px;
+  margin: -70px 0 0 -70px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, hsl(var(--card) / 0.75) 0%, transparent 70%);
+  animation: ac-bubble-burst 460ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-modal-enter-active > div:last-child,
+  .ac-modal-enter-active > .ui-mask::after {
+    animation: none;
+  }
 }
 </style>

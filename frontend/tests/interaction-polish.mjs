@@ -72,4 +72,23 @@ assert.match(animeCard, /function onSubscribe\(item\) \{\s*const played = burstR
 assert.match(animeCard, /setTimeout\(\(\) => emit\('subscribe', item\), SUBSCRIBE_BEAT\)/)
 assert.match(animeCard, /const SUBSCRIBE_BEAT = 220/)
 
+// 5. 气泡式弹窗入场
+const modal = await read('../src/components/ac/AcModal.vue')
+assert.match(modal, /animation: ac-bubble-in 420ms cubic-bezier\(0\.34, 1\.56, 0\.64, 1\)/, '弹窗入场要弹性')
+assert.match(modal, /\.ac-modal-enter-active > \.ui-mask::after/, '炸开光晕放在蒙层上，否则会被面板的 overflow 裁掉')
+assert.match(modal, /@media \(prefers-reduced-motion: reduce\)/, '必须有减少动态兜底')
+// 常驻的"呼吸形变"是刻意不做的：整块弹窗持续缩放会让文字发虚且一直合成
+assert.doesNotMatch(modal, /ac-bubble-breathe/)
+assert.doesNotMatch(await read('../src/assets/tailwind.css'), /ac-bubble-breathe/)
+
+const drawer = await read('../src/components/ac/AcDrawer.vue')
+assert.match(drawer, /animation: ac-drawer-in 380ms/)
+assert.match(drawer, /ac-drawer-enter-active > \.ui-mask::after/)
+
+const motionCSS = await read('../src/assets/tailwind.css')
+assert.match(motionCSS, /@keyframes ac-bubble-in/)
+assert.match(motionCSS, /transform: scale\(1\.018\) translateY\(-3px\)/, '要有过冲帧，否则只是普通放大')
+assert.match(motionCSS, /@keyframes ac-bubble-burst/)
+assert.match(motionCSS, /@keyframes ac-drawer-in/)
+
 console.log('interaction polish tests passed')

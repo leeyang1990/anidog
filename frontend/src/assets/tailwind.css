@@ -469,6 +469,50 @@
   }
 }
 
+/* 气泡式弹窗入场（AcModal / AcDrawer 共用）：
+ * 胀大 → 回弹 → 轻微横向晃动后安定。
+ * （动森的弹窗静止时也在缓慢形变，但那套放在有文字的网页里会让文字发虚，故不保留常驻形变。） */
+@keyframes ac-bubble-in {
+  0% {
+    transform: scale(0.82) translateY(14px);
+    opacity: 0;
+  }
+  55% {
+    transform: scale(1.018) translateY(-3px);
+    opacity: 1;
+  }
+  74% {
+    transform: scale(0.994, 1.006) translateY(1px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* 气泡炸开：从面板中心扩出去的一圈光晕 */
+@keyframes ac-bubble-burst {
+  0% {
+    transform: scale(0.25);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(4.2);
+    opacity: 0;
+  }
+}
+
+@keyframes ac-drawer-in {
+  0% {
+    transform: translateX(100%);
+  }
+  78% {
+    transform: translateX(-1.2%);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
 @keyframes ac-burst-spark {
   0% {
     opacity: 0.95;

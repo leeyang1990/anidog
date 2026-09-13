@@ -80,13 +80,16 @@ function onMaskClick() {
 </script>
 
 <style scoped>
+/* 抽屉沿用滑入，收尾带一点回弹；并复用弹窗那圈"气泡炸开"的光晕，保持全家桶一致。 */
 .ac-drawer-enter-active,
 .ac-drawer-leave-active {
   transition: opacity 0.22s ease;
 }
-.ac-drawer-enter-active > div:last-child,
+.ac-drawer-enter-active > div:last-child {
+  animation: ac-drawer-in 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 .ac-drawer-leave-active > div:last-child {
-  transition: transform 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: transform 0.26s cubic-bezier(0.4, 0, 1, 1);
 }
 .ac-drawer-enter-from,
 .ac-drawer-leave-to {
@@ -95,5 +98,24 @@ function onMaskClick() {
 .ac-drawer-enter-from > div:last-child,
 .ac-drawer-leave-to > div:last-child {
   transform: translateX(100%);
+}
+.ac-drawer-enter-active > .ui-mask::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border-radius: 9999px;
+  background: radial-gradient(circle, hsl(var(--card) / 0.6) 0%, transparent 70%);
+  animation: ac-bubble-burst 420ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-drawer-enter-active > div:last-child,
+  .ac-drawer-enter-active > .ui-mask::after {
+    animation: none;
+  }
 }
 </style>

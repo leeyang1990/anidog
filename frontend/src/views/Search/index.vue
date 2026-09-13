@@ -28,7 +28,12 @@
         </div>
       </div>
 
-      <div v-if="searching" class="flex justify-center py-12"><AcSpinner :size="48" /></div>
+      <div v-if="searching" class="py-12">
+        <AcSceneLoader
+          :items="selectedIndexerLabels"
+          :label="t('pages.search.probing', { count: selectedIndexers.length })"
+        />
+      </div>
       <div v-else-if="results.length" class="space-y-2 max-w-5xl mx-auto">
         <AcCard v-for="(item, idx) in results" :key="item.info_hash || idx" hoverable padding="sm" rounded="2xl">
           <div class="flex items-start gap-3">
@@ -82,7 +87,12 @@
         </p>
       </div>
 
-      <div v-if="streamSearching" class="flex justify-center py-12"><AcSpinner :size="48" /></div>
+      <div v-if="streamSearching" class="py-12">
+        <AcSceneLoader
+          :items="streamProbeItems"
+          :label="t('pages.search.streamProbing')"
+        />
+      </div>
       <div v-else-if="streamResults.length" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-5xl mx-auto">
         <AcCard v-for="(item, idx) in streamResults" :key="streamKey(item) + '|' + idx" hoverable padding="md" rounded="2xl">
           <div class="text-sm font-bold line-clamp-2 mb-2" :title="item.name">{{ item.name }}</div>
@@ -105,7 +115,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useToast } from '../../composables/useToast'
 import { get, post } from '@/utils/api'
 import { SearchOutline } from '@vicons/ionicons5'
-import { AcPageHeader, AcInput, AcButton, AcSpinner, AcCard, AcTag, AcEmpty, AcSelect, AcTabs } from '../../components/ac'
+import { AcPageHeader, AcInput, AcButton, AcCard, AcTag, AcEmpty, AcSelect, AcTabs, AcSceneLoader } from '../../components/ac'
 import { useI18n } from 'vue-i18n'
 
 const route = useRoute()
@@ -125,6 +135,16 @@ const searched = ref(false)
 const results = ref([])
 const actingHash = ref(null)
 const selectedIndexers = ref(['mikan', 'dmhy', 'bangumimoe'])
+
+// 场景化等待要展示"正在问哪几个站"
+const selectedIndexerLabels = computed(() =>
+  indexerOptions.filter((ix) => selectedIndexers.value.includes(ix.value)).map((ix) => ix.label),
+)
+
+const streamProbeItems = computed(() => {
+  const rule = streamRules.value.find((r) => String(r.id) === String(selectedRule.value))
+  return rule ? [rule.name || rule.road_name || t('pages.search.streamTab')] : [t('pages.search.streamTab')]
+})
 
 const indexerOptions = [
   { label: 'Mikan', value: 'mikan' },

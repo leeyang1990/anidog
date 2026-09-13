@@ -91,4 +91,26 @@ assert.match(motionCSS, /transform: scale\(1\.018\) translateY\(-3px\)/, '要有
 assert.match(motionCSS, /@keyframes ac-bubble-burst/)
 assert.match(motionCSS, /@keyframes ac-drawer-in/)
 
+// 6. 场景化等待（多源并发探测）
+const loader = await read('../src/components/ac/AcSceneLoader.vue')
+assert.match(loader, /role="status"/, '等待态要让读屏软件能感知')
+assert.match(loader, /:aria-label="label"/)
+assert.match(loader, /'--ac-scan-index': index/)
+// 后端是一次性聚合返回，没有逐站进度，所以这里不能装成确定性进度条
+assert.doesNotMatch(loader, /role="progressbar"|aria-valuenow|%/)
+// 只看模板：注释里解释"不显示已完成几个"是允许的，界面里不能真出现
+const loaderTemplate = loader.slice(loader.indexOf('<template>'), loader.indexOf('</template>'))
+assert.doesNotMatch(loaderTemplate, /已完成|completed/)
+
+const scanCSS = await read('../src/assets/tailwind.css')
+assert.match(scanCSS, /@keyframes ac-scan-sweep/)
+assert.match(scanCSS, /@keyframes ac-scan-light/)
+assert.match(scanCSS, /\.ac-scene-loader__chip \{[\s\S]*?animation-delay: calc\(var\(--ac-scan-index, 0\) \* 200ms\)/)
+assert.match(scanCSS, /@media \(prefers-reduced-motion: reduce\) \{\s*\.ac-scene-loader__pulse,[\s\S]*?animation: none;/)
+
+const search = await read('../src/views/Search/index.vue')
+assert.match(search, /<AcSceneLoader/)
+assert.match(search, /selectedIndexerLabels/, '要把"正在问哪几个站"显示出来')
+assert.doesNotMatch(search, /AcSpinner :size="48"/, '搜索等待不该再用干转圈')
+
 console.log('interaction polish tests passed')

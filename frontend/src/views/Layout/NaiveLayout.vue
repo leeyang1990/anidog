@@ -26,13 +26,16 @@
       </div>
 
       <!-- Navigation -->
-      <nav class="flex-1 py-3 overflow-y-auto px-2 space-y-1">
+      <nav ref="navEl" class="relative flex-1 py-3 overflow-y-auto px-2 space-y-1">
+        <!-- 激活项的背景块在条目之间滑动，而不是硬切（动森里选中框也是滑过去的） -->
+        <span class="ac-nav-marker" :style="markerStyle" aria-hidden="true" />
         <a
           v-for="item in menuItems"
           :key="item.key"
-          class="flex items-center gap-3 h-11 px-3 rounded-2xl text-sm cursor-pointer transition-all duration-150 group"
+          :ref="(el) => setNavItemRef(item.key, el)"
+          class="relative z-10 flex items-center gap-3 h-11 px-3 rounded-2xl text-sm cursor-pointer transition-colors duration-150 group"
           :class="activeKey === item.key
-            ? 'bg-ac-grass text-white font-bold shadow-sm border-b-[3px] border-ac-grass-dark'
+            ? 'text-white font-bold'
             : 'text-sidebar-foreground/80 hover:text-ac-grass-dark hover:bg-ac-grass-light/30'"
           @click="navigateTo(item.route)"
         >
@@ -111,7 +114,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useResponsive } from '../../composables/useResponsive'
@@ -202,9 +205,48 @@ function handleUserSelect(key) {
   }
 }
 
+const markerStyle = computed(() => ({
+  transform: `translateY(${marker.value.top}px)`,
+  height: `${marker.value.height}px`,
+  opacity: marker.value.visible ? 1 : 0,
+}))
+
+const navEl = ref(null)
+const navItemEls = new Map()
+const marker = ref({ top: 0, height: 0, visible: false })
+
+function setNavItemRef(key, el) {
+  if (el) navItemEls.set(key, el)
+  else navItemEls.delete(key)
+}
+
+// 指示器直接读条目的 offsetTop/offsetHeight（相对滚动容器），
+// 折叠展开展开、窗口缩放、导航滚动都只需重算一次位置，不参与布局动画。
+function syncMarker() {
+  const el = navItemEls.get(activeKey.value)
+  if (!el) {
+    marker.value = { ...marker.value, visible: false }
+    return
+  }
+  marker.value = { top: el.offsetTop, height: el.offsetHeight, visible: true }
+}
+
+watch([activeKey, collapsed], async () => {
+  await nextTick()
+  syncMarker()
+})
+
+let navResizeObserver = null
+
 let disposeTransitionOrigin = null
-onMounted(() => {
+onMounted(async () => {
   disposeTransitionOrigin = installRouteTransitionOrigin()
+  await nextTick()
+  syncMarker()
+  if (typeof ResizeObserver !== 'undefined' && navEl.value) {
+    navResizeObserver = new ResizeObserver(() => syncMarker())
+    navResizeObserver.observe(navEl.value)
+  }
   document.documentElement.classList.toggle('dark', isDark.value)
   if (isMobile.value) collapsed.value = true
 })

@@ -6,7 +6,7 @@
           v-for="t in state.list"
           :key="t.id"
           class="ac-toast pointer-events-auto bg-card text-card-foreground border-2 rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 w-full"
-          :class="variantCls(t.type)"
+          :class="[variantCls(t.type), t.type === 'error' ? 'ac-toast--shake' : '']"
         >
           <span class="shrink-0 w-6 h-6 flex items-center justify-center rounded-full" :class="iconBgCls(t.type)">
             <svg v-if="t.type === 'success'" viewBox="0 0 24 24" class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7" /></svg>
@@ -63,6 +63,25 @@ function iconBgCls(type) {
 .ac-toast-enter-from {
   opacity: 0;
   transform: translateY(-12px) scale(0.96);
+}
+/* 列表重排时平滑让位（transition-group 的 -move） */
+.ac-toast-move {
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 出错的提示抖一下：不是装饰，是提醒"这次没成" */
+.ac-toast--shake {
+  animation: ac-toast-shake 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+@keyframes ac-toast-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-5px); }
+  30% { transform: translateX(4px); }
+  45% { transform: translateX(-3px); }
+  60% { transform: translateX(2px); }
+  80% { transform: translateX(-1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ac-toast--shake { animation: none; }
 }
 .ac-toast-leave-to {
   opacity: 0;

@@ -15,6 +15,8 @@
       <slot name="fallback"><FilmOutline class="size-6" /></slot>
     </div>
 
+    <span v-if="zoom" class="ac-poster-sheen" aria-hidden="true" />
+
     <img
       v-if="showImage"
       :src="primarySrc"

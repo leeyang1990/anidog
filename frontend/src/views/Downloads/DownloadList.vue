@@ -43,7 +43,8 @@
         </AcInput>
       </div>
 
-      <div v-if="selectedIds.size > 0" class="flex items-center gap-2 ml-auto">
+      <Transition name="ac-batch" mode="out-in">
+      <div v-if="selectedIds.size > 0" key="batch" class="flex items-center gap-2 ml-auto">
         <span class="text-xs text-muted-foreground">{{ t('pages.downloads.selected', { count: selectedIds.size }) }}</span>
         <AcButton variant="ghost" size="sm" :disabled="!canBatchPause" @click="batchAction('pause')">
           <template #icon><PauseOutline class="size-3" /></template>{{ t('pages.downloads.pause') }}
@@ -56,7 +57,7 @@
         </AcButton>
       </div>
 
-      <div v-else class="flex items-center gap-2 ml-auto">
+      <div v-else key="all" class="flex items-center gap-2 ml-auto">
         <AcButton variant="ghost" size="sm" :disabled="!hasActive" @click="pauseAll">
           <template #icon><PauseOutline class="size-3" /></template>{{ t('pages.downloads.pauseAll') }}
         </AcButton>
@@ -64,6 +65,7 @@
           <template #icon><PlayOutline class="size-3" /></template>{{ t('pages.downloads.resumeAll') }}
         </AcButton>
       </div>
+      </Transition>
     </div>
 
     <!-- 任务列表 -->
@@ -84,9 +86,10 @@
           <div class="w-20 shrink-0 text-right">{{ t('pages.downloads.actions') }}</div>
         </div>
 
-        <div v-for="task in filteredTasks" :key="task.id"
-          class="flex items-center gap-3 px-4 py-2.5 hover:bg-ac-cream/60 transition-colors"
-          :class="selectedIds.has(task.id) ? 'bg-ac-grass-light/20' : ''"
+        <div v-for="(task, index) in filteredTasks" :key="task.id"
+          class="ac-list-row relative flex items-center gap-3 px-4 py-2.5 hover:bg-ac-cream/60 transition-colors"
+          :class="selectedIds.has(task.id) ? 'ac-list-row--selected bg-ac-grass-light/20' : ''"
+          :style="{ '--ac-row-index': Math.min(index, 10) }"
           @contextmenu.prevent="openRadial($event, task)">
           <div class="w-4 shrink-0">
             <input type="checkbox" class="accent-ac-grass cursor-pointer size-4" :checked="selectedIds.has(task.id)" @change="toggleSelect(task.id)" />

@@ -422,6 +422,87 @@
     transition: none;
   }
 
+  /* 侧栏激活块：在条目之间滑动（动森里选中框也是滑过去的，不是硬切） */
+  .ac-nav-marker {
+    position: absolute;
+    left: 0.5rem;
+    right: 0.5rem;
+    top: 0;
+    z-index: 0;
+    border-radius: 1rem;
+    background: hsl(var(--primary));
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+    pointer-events: none;
+    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+      height 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.2s ease;
+  }
+
+  /* 标签页下划线：同样滑过去 */
+  .ac-tab-marker {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    border-radius: 9999px;
+    background: hsl(var(--primary));
+    pointer-events: none;
+    transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1), width 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.18s ease;
+  }
+
+  /* 空状态的装饰件缓慢浮动：这类纯装饰元素上做"呼吸"不会伤到文字，
+   * 也正是动森那种"东西都是柔软的"质感该出现的地方。 */
+  .ac-float {
+    animation: ac-float 5.2s ease-in-out infinite;
+    transform-origin: 50% 80%;
+  }
+
+  /* 海报 hover 光泽扫过 */
+  .ac-poster-sheen {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    transform: translateX(-130%) skewX(-14deg);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(255 255 255 / 0.28) 45%,
+      rgb(255 255 255 / 0.42) 50%,
+      rgb(255 255 255 / 0.28) 55%,
+      transparent 100%
+    );
+    opacity: 0;
+  }
+
+  .group:hover .ac-poster-sheen {
+    animation: ac-poster-sheen 620ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  /* 列表行：选中色条 + 初次加载错峰入场 */
+  .ac-list-row::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    width: 3px;
+    height: 0;
+    border-radius: 9999px;
+    background: hsl(var(--primary));
+    transform: translateY(-50%);
+    transition: height 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  .ac-list-row--selected::before {
+    height: 60%;
+  }
+
+  .ac-list-row {
+    animation: ac-row-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(var(--ac-row-index, 0) * 26ms);
+  }
+
   /* 状态图章：徽章是"盖"上去的，不是淡入的（动森达成里程碑的盖章动作） */
   .ac-stamp {
     display: inline-flex;
@@ -671,6 +752,38 @@
   }
 }
 
+@keyframes ac-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1.5deg);
+  }
+  50% {
+    transform: translateY(-7px) rotate(1.5deg);
+  }
+}
+
+@keyframes ac-poster-sheen {
+  0% {
+    opacity: 1;
+    transform: translateX(-130%) skewX(-14deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(130%) skewX(-14deg);
+  }
+}
+
+@keyframes ac-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes ac-stamp-in {
   0% {
     transform: scale(1.85) rotate(-14deg);
@@ -789,6 +902,11 @@
   .ac-stamp,
   .ac-radial__item,
   .ac-settle__row,
+  .ac-float,
+  .ac-list-row,
+  .ac-poster-sheen,
+  .ac-nav-marker,
+  .ac-tab-marker,
   .ac-iris {
     animation: none;
   }

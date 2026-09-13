@@ -1,6 +1,6 @@
 <template>
   <div class="ac-empty flex flex-col items-center justify-center text-center py-12 px-4">
-    <div class="ac-empty-art mb-4 text-ac-grass-light" aria-hidden="true">
+    <div class="ac-empty-art ac-float mb-4 text-ac-grass-light" aria-hidden="true">
       <slot name="art">
         <!-- 动森主题：叶片 -->
         <svg v-if="skin !== 'classic'" width="92" height="92" viewBox="0 0 24 24" fill="currentColor" class="opacity-80">

@@ -174,4 +174,50 @@ assert.match(downloads, /<AcSettleBurst/)
 assert.match(downloads, /irisRef\.value\.run\(task\)/, '重操作应走 iris')
 assert.match(downloads, /showSettle\(/)
 
+// 7. 第二批动效：滑动指示器、Toast 堆叠、装饰浮动、海报扫光、多选反馈
+const navLayout = await read('../src/views/Layout/NaiveLayout.vue')
+assert.match(navLayout, /class="ac-nav-marker"/, '侧栏要有滑动指示器')
+assert.match(navLayout, /el\.offsetTop/, '指示器位置要读条目的 offsetTop，不要靠猜')
+assert.match(navLayout, /ResizeObserver/, '折叠/缩放后要重算指示器位置')
+assert.match(navLayout, /watch\(\[activeKey, collapsed\]/, '切页与折叠都要触发重算')
+// 激活项本身只改文字颜色，背景交给滑动的指示器
+assert.match(navLayout, /activeKey === item\.key\s*\n?\s*\? 'text-white font-bold'/)
+
+const tabsC = await read('../src/components/ac/AcTabs.vue')
+assert.match(tabsC, /class="ac-tab-marker"/)
+assert.match(tabsC, /el\.offsetLeft/)
+assert.match(tabsC, /syncMarker/)
+
+const toastC = await read('../src/components/ac/AcToastContainer.vue')
+assert.match(toastC, /\.ac-toast-move/, 'transition-group 重排要让位，否则堆叠会瞬移')
+assert.match(toastC, /ac-toast-shake/, '出错提示要抖一下')
+assert.match(toastC, /@keyframes ac-toast-shake/)
+assert.match(toastC, /@media \(prefers-reduced-motion: reduce\) \{\s*\.ac-toast--shake/)
+
+const emptyC = await read('../src/components/ac/AcEmpty.vue')
+assert.match(emptyC, /ac-empty-art ac-float/, '装饰件可以缓慢浮动（这里不会伤到文字）')
+
+const posterC = await read('../src/components/ac/AcPoster.vue')
+assert.match(posterC, /class="ac-poster-sheen"/)
+
+const dlList = await read('../src/views/Downloads/DownloadList.vue')
+assert.match(dlList, /ac-list-row/, '行要有选中色条与错峰入场')
+assert.match(dlList, /--ac-row-index/, '错峰延迟按行号给')
+assert.match(dlList, /<Transition name="ac-batch"/, '批量操作条要弹出来而不是硬切')
+
+const motionCSS = await read('../src/assets/tailwind.css')
+for (const keyframe of ['ac-float', 'ac-poster-sheen', 'ac-row-in']) {
+  assert.match(motionCSS, new RegExp(`@keyframes ${keyframe}`), `缺少关键帧 ${keyframe}`)
+}
+for (const cls of ['.ac-nav-marker', '.ac-tab-marker', '.ac-list-row--selected', '.ac-poster-sheen']) {
+  assert.ok(motionCSS.includes(cls), `tailwind.css 缺少 ${cls}`)
+}
+assert.match(motionCSS, /\.ac-float \{[\s\S]*?animation: ac-float 5\.2s/)
+// 新动效都要能被"减少动态"关掉
+assert.match(motionCSS, /prefers-reduced-motion: reduce\) \{[\s\S]*?\.ac-float,[\s\S]*?\.ac-list-row,/)
+
+const transitionsCSS = await read('../src/assets/transitions.css')
+assert.match(transitionsCSS, /\.ac-batch-enter-active/)
+assert.match(transitionsCSS, /@keyframes ac-batch-in/)
+
 console.log('animations and sound tests passed')

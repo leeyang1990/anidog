@@ -92,7 +92,33 @@
   opacity: 0;
 }
 
+/* ── 批量操作条：从工具栏"弹"出来 ─────────────────────── */
+.ac-batch-enter-active {
+  animation: ac-batch-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ac-batch-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.ac-batch-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.96);
+}
+
+@keyframes ac-batch-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .ac-batch-enter-active,
   .ac-route-expand-enter-active,
   .ac-route-wave-enter-active,
   .ac-settle-enter-active {

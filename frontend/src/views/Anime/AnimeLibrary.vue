@@ -72,7 +72,7 @@
 
     <!-- 结果列表 -->
     <div v-if="loading" class="flex justify-center py-12"><AcSpinner :size="48" /></div>
-    <div v-else-if="results.length" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
+    <div v-else-if="results.length" class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
       <AnimeCard v-for="item in results" :key="item.id" :item="item"
         @click="goToDetail(item)" @subscribe="subscribeBangumi(item)" />
     </div>

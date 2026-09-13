@@ -28,7 +28,7 @@
       </nav>
 
       <!-- 当天番剧列表 -->
-      <div v-if="currentDay && currentDay.items.length" class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
+      <div v-if="currentDay && currentDay.items.length" class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
         <AnimeCard
           v-for="item in currentDay.items"
           :key="item.id"

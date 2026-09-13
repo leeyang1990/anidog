@@ -3,13 +3,13 @@
     <!-- 骨架微光：图片解码完成前占住版面，避免大白块 + 大图同时闪现 -->
     <div
       v-if="showSkeleton"
-      class="ac-poster-shimmer absolute inset-0 bg-ac-sand/50"
+      class="ac-poster-shimmer absolute inset-0 bg-muted/60"
       aria-hidden="true"
     />
 
     <div
       v-if="showFallback"
-      class="absolute inset-0 flex items-center justify-center text-ac-wood-dark"
+      class="absolute inset-0 flex items-center justify-center text-muted-foreground/45"
       aria-hidden="true"
     >
       <slot name="fallback"><FilmOutline class="size-6" /></slot>

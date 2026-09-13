@@ -29,7 +29,7 @@ assert.equal(toResizedImage(foreign, 600), foreign)
 
 // 2. 占位与淡入：骨架在解码完成前顶住版面，图片加载完成后才显示
 assert.match(poster, /class="ac-poster absolute inset-0 overflow-hidden"/)
-assert.match(poster, /ac-poster-shimmer absolute inset-0 bg-ac-sand\/50/)
+assert.match(poster, /ac-poster-shimmer absolute inset-0 bg-muted\/60/)
 assert.match(poster, /:data-loaded="status === 'loaded' \? 'true' : 'false'"/)
 assert.match(poster, /:class="zoom \? 'group-hover:scale-105' : ''"/)
 assert.match(poster, /decoding="async"/)
@@ -67,9 +67,17 @@ for (const [name, source] of [['AnimeCard', animeCard], ['NaiveAnimeCard', naive
   assert.doesNotMatch(source, /toResizedImage\(/, `${name} 不应再自行拼图片地址`)
   assert.doesNotMatch(source, /<img\s/, `${name} 不应再手写海报 <img>`)
 }
-// 日历与番剧库共用同一套 3/4/5/6/8 列网格，取图宽度要跟着列数收敛
+// 日历与番剧库必须共用同一套网格，否则 AnimeCard 里的 sizes 会对不上实际格子宽度
 const calendar = await read('../src/views/Calendar/index.vue')
-assert.match(calendar, /xl:grid-cols-8/)
-assert.match(animeCard, /33vw/)
+const library = await read('../src/views/Anime/AnimeLibrary.vue')
+const gridOf = (source) => /grid-cols-2 gap-4 sm:grid-cols-3[^"]*/.exec(source)?.[0]
+assert.ok(gridOf(calendar), '日历应有网格类')
+assert.equal(gridOf(calendar), gridOf(library), '日历与番剧库的网格类必须一致')
+// 卡片不能再退回到 8 列小图（150px 宽时 24px 圆角会显得比例失调）
+assert.match(calendar, /xl:grid-cols-5/)
+assert.doesNotMatch(calendar, /xl:grid-cols-8/)
+// sizes 要跟着网格走：xl ~195px，移动端两列约 50vw
+assert.match(animeCard, /\(min-width: 1280px\) 185px/)
+assert.match(animeCard, /50vw/)
 
 console.log('poster loading tests passed')

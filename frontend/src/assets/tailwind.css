@@ -359,6 +359,114 @@
     transform: rotate(var(--ac-burst-angle)) translateY(-9px) scaleY(0.5);
     animation: ac-burst-spark 260ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
   }
+
+  /* 阶段轨道：抽象流程画成逐个点亮的圆点（动森机场信息牌下方的指示灯） */
+  .ac-stage-track {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    width: 100%;
+  }
+
+  .ac-stage-track__link {
+    position: relative;
+    flex: 1 1 auto;
+    height: 2px;
+    border-radius: 9999px;
+    background: hsl(var(--foreground) / 0.14);
+    overflow: hidden;
+  }
+
+  .ac-stage-track__link[data-filled='true'] {
+    background: hsl(var(--primary) / 0.35);
+  }
+
+  .ac-stage-track__fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 9999px;
+    background: hsl(var(--primary));
+    transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .ac-stage-track__dot {
+    position: relative;
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    background: hsl(var(--foreground) / 0.16);
+  }
+
+  .ac-stage-track__dot[data-status='done'],
+  .ac-stage-track__dot[data-status='active'] {
+    background: hsl(var(--primary));
+  }
+
+  .ac-stage-track__dot[data-status='stalled'] {
+    background: hsl(var(--accent));
+  }
+
+  .ac-stage-track__dot[data-status='failed'] {
+    background: hsl(var(--destructive));
+  }
+
+  .ac-stage-track__dot[data-status='paused'] {
+    background: hsl(var(--muted-foreground));
+  }
+
+  /* 当前节点用缩放的光环呼吸，避免动画 box-shadow 触发重绘 */
+  .ac-stage-track__dot[data-status='active']::after,
+  .ac-stage-track__dot[data-status='stalled']::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 9999px;
+    background: currentColor;
+    opacity: 0.35;
+    animation: ac-stage-halo 1.6s ease-out infinite;
+  }
+
+  .ac-stage-track__dot[data-status='stalled']::after {
+    animation-duration: 1s;
+  }
+
+  .ac-stage-track[data-state='paused'] .ac-stage-track__fill {
+    transition: none;
+  }
+
+  /* 翻牌文字：内容变化时像机场信息屏那样翻一下 */
+  .ac-flip-text {
+    display: inline-block;
+    perspective: 200px;
+  }
+
+  .ac-flip-text__face {
+    display: inline-block;
+    animation: ac-flip-in 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@keyframes ac-stage-halo {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+@keyframes ac-flip-in {
+  from {
+    transform: rotateX(-90deg);
+    opacity: 0.2;
+  }
+  to {
+    transform: rotateX(0);
+    opacity: 1;
+  }
 }
 
 @keyframes ac-burst-spark {

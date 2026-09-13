@@ -119,10 +119,30 @@
             <span v-else class="text-muted-foreground">—</span>
           </div>
 
-          <div class="w-32 shrink-0">
-            <div v-if="task.status === 'downloading' || task.status === 'paused'">
+          <div class="w-40 shrink-0">
+            <!-- BT / RSS：阶段轨道（找源 → 取元数据 → 下载 → 完成），异常态直接在轨道上体现 -->
+            <template v-if="stageOf(task)">
+              <AcStageTrack
+                :stages="stageOf(task).stages"
+                :index="stageOf(task).index"
+                :state="stageOf(task).state"
+                :progress="stageOf(task).fill"
+                class="mb-1"
+              />
+              <div class="flex items-center justify-between gap-1 text-[11px] font-num">
+                <AcFlipText :text="stageOf(task).label" :class="stageOf(task).labelClass" />
+                <span class="text-muted-foreground">
+                  <AcCountUp :value="task.progress || 0" :duration="450" />%
+                </span>
+              </div>
+            </template>
+
+            <!-- 流媒体任务没有 BT 那套阶段，保留普通进度条，不硬套 -->
+            <div v-else-if="task.status === 'downloading' || task.status === 'paused'">
               <div class="flex items-center justify-between text-xs mb-0.5 font-num">
-                <span class="text-muted-foreground">{{ (task.progress || 0).toFixed(1) }}%</span>
+                <span class="text-muted-foreground">
+                  <AcCountUp :value="task.progress || 0" :duration="450" />%
+                </span>
                 <span v-if="task.eta && task.status === 'downloading'" class="text-muted-foreground">{{ task.eta }}</span>
               </div>
               <AcProgress :value="task.progress || 0" :height="4" :variant="task.status === 'paused' ? 'wood' : 'grass'" />
@@ -130,7 +150,6 @@
             <div v-else-if="task.status === 'completed'">
               <AcProgress :value="100" :height="4" variant="leaf" />
             </div>
-            <div v-else-if="task.status === 'queued'" class="text-xs text-muted-foreground">{{ t('status.queued') }}</div>
             <div v-else class="text-xs text-muted-foreground">—</div>
           </div>
 
@@ -204,8 +223,9 @@ import {
 } from '@vicons/ionicons5'
 import { get, post, del } from '@/utils/api'
 import { isDesktopRuntime, openDesktopPath } from '@/utils/desktop'
+import { resolveDownloadStage } from '@/utils/downloadStage'
 import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
-import { AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea, AcCountUp } from '../../components/ac'
+import { AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea, AcCountUp, AcStageTrack, AcFlipText } from '../../components/ac'
 import { useI18n } from 'vue-i18n'
 
 const toast = useToast()
@@ -266,6 +286,11 @@ const filters = computed(() => [
   { key: 'failed', label: t('pages.downloads.failed'), count: statusCount(['failed']) },
 ])
 function statusCount(statuses) { return tasks.value.filter(t => statuses.includes(t.status)).length }
+
+// 阶段推导抽到 utils/downloadStage.js（纯函数，可单测）
+function stageOf(task) {
+  return resolveDownloadStage(task, t, t)
+}
 
 const filteredTasks = computed(() => {
   let list = tasks.value

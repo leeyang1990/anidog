@@ -18,7 +18,7 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-const desktopVersion = "0.4.0"
+const desktopVersion = "0.4.1"
 
 func main() {
 	// 发布构建仍可通过 -ldflags 覆盖；本地 Wails 构建至少与应用包版本一致。

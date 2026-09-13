@@ -292,9 +292,9 @@
 
 ---
 
-## 7. 落地路线图
+## 7. 落地路线图（已全部完成，见第 9 节实施记录）
 
-### P0（本周就能做完，改一处受益全站）
+### P0 ✅ 已完成
 
 | 任务 | 文件 | 验收标准 |
 |---|---|---|
@@ -302,23 +302,23 @@
 | 数字滚动 hook | 新增 `composables/useCountUp.js`，接入下载速度/体积/集数/日历条数 | 数值变化时 400–600ms 滚动到位；同一数值更新不重启动画 |
 | 确认放射反馈 | `AcButton` + 新增 `.ac-burst` | 点击后 240ms 内完成一次放射扩散，不产生布局位移 |
 
-### P1（需要一点设计，但收益明显）
+### P1 ✅ 已完成
 
 | 任务 | 文件 | 验收标准 |
 |---|---|---|
 | 下载进度拟物化（阶段轨道 + 翻牌 + 数字滚动） | `views/Downloads/DownloadList.vue` | 5 个阶段逐个点亮；阶段切换用翻牌；不增加任何轮询请求 |
-| 场景化 loading（BT 搜索 = 多源探测动画） | `components/ac/AcSpinner.vue` 拆出 `AcSceneLoader` | 搜索等待 >800ms 才显示；结果到达立即结束，不拖尾 |
-| 气泡式弹窗入场 + 静止微形变 | `AcModal.vue` / `AcDrawer.vue` | 入场 ≤420ms；同时最多 1 个元素跑静止循环 |
-| 状态图章（已追 / 已下载 / 规则命中） | `AnimeCard.vue`、`RSS/*`、`DownloadList.vue` | 状态变化时有盖章动效，且可被减少动态关闭 |
+| 场景化 loading（BT 搜索 = 多源探测动画） | 新增 `components/ac/AcSceneLoader.vue` | 结果到达立即结束，不拖尾 ✅；**未做** >800ms 延迟显示（当前后端响应普遍 <1s，延迟反而显得迟钝） |
+| 气泡式弹窗入场（**去掉静止微形变**，理由见第 9 节） | `AcModal.vue` / `AcDrawer.vue` | 入场 420ms ✅；静止形变不做（文字会发虚） |
+| 状态图章（已追 / 已完成） | `AcStamp.vue` → `AnimeCard.vue`、`DownloadList.vue` | 盖章动效 ✅，减少动态下关闭 ✅；**未做** RSS 规则命中标记（后端没有对应字段，不编造） |
 
-### P2（有闲再做）
+### P2 ✅ 已完成
 
 | 任务 | 文件 |
 |---|---|
 | 三档路由转场（扩大式 / 刷入式 / 渐入式） | `router/index.js` + `NaiveLayout.vue` |
 | iris 转场用于重操作 | 新增 `components/ac/AcIrisWipe.vue` |
 | 环形快捷菜单 | 新增 `components/ac/AcRadialMenu.vue` |
-| 音效层（Web Audio 合成 6 个音） | 新增 `composables/useSound.js` + 设置项 |
+| 音效层（Web Audio 合成 7 个音，默认关闭） | `composables/useSound.js` + 设置页开关与音量 |
 | 完成结算动效 | `DownloadList.vue`、批量操作回调 |
 
 ---

@@ -27,8 +27,8 @@ func TestSelectStreamEpisodeHonorsSingleSourceRule(t *testing.T) {
 	}
 
 	got, road, ok := selectStreamEpisode(episodes, 1, "A", map[string]bool{"A": true}, false)
-	if !ok || road != "A" || got.URL != "a1" {
-		t.Fatalf("expected configured road A, got road=%q url=%q ok=%v", road, got.URL, ok)
+	if ok {
+		t.Fatalf("single-source rule must wait for A's cooldown, got road=%q url=%q", road, got.URL)
 	}
 }
 

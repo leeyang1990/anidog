@@ -168,11 +168,10 @@ func New(cfg *config.Config) (*Runtime, error) {
 	// 剧集元数据同步（每 6h）：拉 Bangumi /v0/episodes 更新 air_date
 	sched.Register(episodeSvc, 6*time.Hour, true)
 	// 失败重试（每 5min）：扫 transient 失败行，到点触发对应 anime 的 orchestrator 重排
-	retryConductor := scheduler.RetryConductor(&orchRetryAdapter{orch: orch})
-	retryPrefLoader := func(ctx context.Context) interface{} {
-		return orchestrator.LoadGlobal(ctx, settingSvc)
+	retryConductor := func(ctx context.Context, anime *model.Anime) {
+		orch.CheckAnime(ctx, anime, orchestrator.LoadGlobal(ctx, settingSvc))
 	}
-	sched.Register(scheduler.NewRetryFailedJob(db, retryConductor, retryPrefLoader), 5*time.Minute, false)
+	sched.Register(scheduler.NewRetryFailedJob(db, retryConductor), 5*time.Minute, false)
 	// 死种黑名单 TTL 清理（每 6h 一次，14 天过期）
 	sched.Register(scheduler.NewAbandonedTorrentTTLJob(db, 14*24*time.Hour), 6*time.Hour, true)
 	// 竞速历史维护：只清理 90 天前已 superseded 的候选，保留完成和失败记录。
@@ -434,26 +433,6 @@ func restoreTorrentDownloads(ctx context.Context, db *gorm.DB, engine downloader
 	if restored > 0 {
 		zap.L().Info("BT 任务恢复完成", zap.Int("count", restored), zap.String("engine", engine.Name()))
 	}
-}
-
-// orchRetryAdapter 把 *orchestrator.Orchestrator.CheckAnime（接受 typed
-// orchestrator.Preference）适配到 scheduler.RetryConductor 的 interface{} 形参，
-// 避免 scheduler 包反向 import orchestrator 造成循环依赖。
-type orchRetryAdapter struct {
-	orch *orchestrator.Orchestrator
-}
-
-func (a *orchRetryAdapter) CheckAnime(ctx context.Context, anime *model.Anime, prefAny interface{}) {
-	pref, ok := prefAny.(orchestrator.Preference)
-	if !ok {
-		// 兜底：让 orchestrator 自己 reload（性能不会差，5min 一次）
-		// nil 也走 reload，毕竟我们没法在调用前看出"准确的 pref"是啥
-		// 由 orchestrator 内部 LoadGlobal 解决
-		zap.L().Debug("retry: 未提供 Preference，orchestrator 内部 reload")
-		// CheckAnime 本身要 Preference 类型，无法传 nil；用 Defaults 兜底
-		pref = orchestrator.Defaults()
-	}
-	a.orch.CheckAnime(ctx, anime, pref)
 }
 
 func InitLogger(cfg *config.Config) {

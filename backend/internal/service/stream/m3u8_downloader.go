@@ -110,12 +110,11 @@ func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputP
 	}
 
 	if err := cmd.Wait(); err != nil {
+		diagnostic := ffmpegFailure(err, lastLines)
 		zap.L().Error("ffmpeg 下载失败",
-			zap.String("url", videoURL),
 			zap.String("output", outputPath),
-			zap.Strings("stderr_tail", lastLines),
-			zap.Error(err))
-		return "", fmt.Errorf("ffmpeg 退出: %w", err)
+			zap.Error(diagnostic))
+		return "", diagnostic
 	}
 
 	// 下载成功后校验编码和时长。只检查“存在视频流”会把广告、反盗链占位片

@@ -35,7 +35,7 @@ const (
 type Orchestrator struct {
 	db             *gorm.DB
 	dlSvc          *dlservice.Service
-	streamMgr      *stream.StreamManager
+	streamMgr      streamCatalog
 	settingSvc     *setting.Service
 	indexers       map[string]indexer.Indexer // Name() -> instance
 	mikanRSS       *indexer.MikanRSSFetcher   // Mikan RSS（按 mikan_bangumi_id 推送，召回率远超关键词搜索）
@@ -86,13 +86,16 @@ func New(
 	o := &Orchestrator{
 		db:          db,
 		dlSvc:       dlSvc,
-		streamMgr:   streamMgr,
 		settingSvc:  settingSvc,
 		indexers:    indexers,
 		mikanRSS:    indexer.NewMikanRSSFetcher(),
 		mediaRoot:   mediaRoot,
 		indexerHTTP: indexerHTTP,
 		candidates:  make(map[string]candidateCacheEntry),
+	}
+	// Avoid a typed nil inside the catalog interface when streaming is disabled.
+	if streamMgr != nil {
+		o.streamMgr = streamMgr
 	}
 	if indexerHTTP != nil {
 		o.mikanRSS.Client = indexerHTTP
@@ -310,6 +313,9 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 	lock := o.animeLock(anime.ID)
 	lock.Lock()
 	defer lock.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 	if anime.MediaManagementState == MediaStateArchived {
 		return
 	}
@@ -645,127 +651,6 @@ func containsExtraEpisode(title string) bool {
 
 // ---- Stream 源适配 ----
 
-func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, retryCount int) (ok bool, resultCount int, reason string) {
-	if o.streamMgr == nil {
-		return false, 0, "stream manager 未就绪"
-	}
-	// 去重 / 失败冷却（避免每 30min 重复创建同一个失败的 stream 任务）
-	if o.isDuplicate(ctx, anime.ID, ep, SourceStream) {
-		return false, 0, "该集已有 stream 记录或在失败冷却期内，跳过"
-	}
-
-	rule, detailURL, episodes, switched, err := o.resolveStreamSource(ctx, anime, ep)
-	if err != nil {
-		return false, 0, err.Error()
-	}
-
-	preferredRoad := ""
-	if anime.StreamRoadName != nil {
-		preferredRoad = *anime.StreamRoadName
-	}
-	if switched {
-		preferredRoad = ""
-	}
-	failedRoads := o.failedStreamRoads(ctx, anime.ID, ep)
-	epInfo, roadName, found := selectStreamEpisode(episodes, ep, preferredRoad, failedRoads, rule.MultiSources)
-	if !found {
-		return false, len(episodes), fmt.Sprintf("所有播放线路均无第 %d 集", ep)
-	}
-
-	// 入队
-	epCopy := ep
-	task := &dlservice.Task{
-		Name:            fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
-		URL:             epInfo.URL,
-		DownloadType:    model.DownloadTypeStream,
-		Source:          SourceStream,
-		AnimeName:       anime.Title,
-		AnimeID:         &anime.ID,
-		EpisodeNumber:   &epCopy,
-		StreamRuleID:    &rule.ID,
-		StreamRule:      rule,
-		StreamDetailURL: detailURL,
-		StreamRoadName:  roadName,
-		RetryCount:      retryCount,
-	}
-	if _, err := o.dlSvc.Create(ctx, task); err != nil {
-		return false, len(episodes), "创建下载任务失败: " + err.Error()
-	}
-	return true, len(episodes), fmt.Sprintf("已从线路 %s 入队: %s", roadName, epInfo.Name)
-}
-
-// resolveStreamSource 优先使用当前健康源；当前规则 broken、页面解析失败或缺少目标集时，
-// 自动在其他启用且未熔断的规则中重新搜索，并将成功候选持久化为番剧的新源。
-func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Anime, ep int) (*model.StreamRule, string, []stream.EpisodeInfo, bool, error) {
-	if anime.StreamRuleID != nil && anime.StreamDetailURL != nil && *anime.StreamDetailURL != "" {
-		var current model.StreamRule
-		if err := o.db.WithContext(ctx).First(&current, *anime.StreamRuleID).Error; err == nil &&
-			!isRuleBroken(&current) && !o.hasStreamRuleFailure(ctx, anime.ID, ep, current.ID) {
-			episodes, parseErr := o.streamMgr.GetEpisodes(ctx, &current, *anime.StreamDetailURL)
-			if parseErr == nil && hasEpisode(episodes, ep) {
-				return &current, *anime.StreamDetailURL, episodes, false, nil
-			}
-		}
-	}
-
-	var rules []model.StreamRule
-	q := o.db.WithContext(ctx).Where("enabled = ?", true)
-	if anime.StreamRuleID != nil {
-		q = q.Where("id <> ?", *anime.StreamRuleID)
-	}
-	if err := q.Find(&rules).Error; err != nil {
-		return nil, "", nil, false, fmt.Errorf("查询备用 stream 规则失败: %w", err)
-	}
-	sort.SliceStable(rules, func(i, j int) bool { return streamRuleHealthScore(&rules[i]) > streamRuleHealthScore(&rules[j]) })
-	for i := range rules {
-		rule := &rules[i]
-		if isRuleBroken(rule) {
-			continue
-		}
-		searchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		results, searchErr := o.streamMgr.SearchAnime(searchCtx, rule, anime.Title)
-		cancel()
-		if searchErr != nil || len(results) == 0 {
-			continue
-		}
-		best := stream.PickBestMatch(anime.Title, results)
-		if best == nil {
-			continue
-		}
-		parseCtx, parseCancel := context.WithTimeout(ctx, 30*time.Second)
-		episodes, parseErr := o.streamMgr.GetEpisodes(parseCtx, rule, best.URL)
-		parseCancel()
-		if parseErr != nil || !hasEpisode(episodes, ep) {
-			continue
-		}
-		road := firstRoadWithEpisode(episodes, ep)
-		updates := map[string]interface{}{
-			"stream_rule_id": rule.ID, "stream_rule_name": rule.Name,
-			"stream_detail_url": best.URL, "stream_road_name": road,
-			"source_health_status": "", "source_health_note": "", "source_health_at": nil,
-		}
-		if err := o.db.WithContext(ctx).Model(anime).Updates(updates).Error; err != nil {
-			continue
-		}
-		anime.StreamRuleID, anime.StreamRuleName = &rule.ID, &rule.Name
-		anime.StreamDetailURL, anime.StreamRoadName = &best.URL, &road
-		zap.L().Info("orchestrator: 自动切换 stream 规则", zap.String("anime", anime.Title), zap.String("rule", rule.Name), zap.String("candidate", best.Name))
-		return rule, best.URL, episodes, true, nil
-	}
-	return nil, "", nil, false, fmt.Errorf("当前 stream 规则不可用，所有健康备用规则均未找到第 %d 集", ep)
-}
-
-// hasStreamRuleFailure 防止同一集在规则整体仍 healthy 时反复撞同一个坏播放页。
-// 只要该集在该规则有失败记录，本轮就换其他规则；源恢复由长周期 half-open 负责。
-func (o *Orchestrator) hasStreamRuleFailure(ctx context.Context, animeID uint, ep int, ruleID uint) bool {
-	var count int64
-	o.db.WithContext(ctx).Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND stream_rule_id = ? AND download_type = ? AND status = ?",
-			animeID, ep, ruleID, model.DownloadTypeStream, model.DownloadStatusFailed).
-		Count(&count)
-	return count > 0
-}
-
 func isRuleBroken(rule *model.StreamRule) bool {
 	if rule.HealthStatus == nil || *rule.HealthStatus != "broken" {
 		return false
@@ -1074,45 +959,25 @@ func (o *Orchestrator) currentMediaRoot(ctx context.Context) string {
 
 // ---- 辅助 ----
 
-// retryCountForEpisode 返回同一番剧/集数失败链已经消耗的最大重试次数。
-// RetryFailedJob 会先递增到期旧记录，再调用 Orchestrator；新任务继承这个值，
-// 因而即使发生 BT/Stream 换源，也不会重新从第 0 次开始计算退避。
+// retryCountForEpisode calculates the next actual attempt number. Discovery
+// without enqueueing does not consume budget. Rejected candidates carry the
+// existing budget but do not consume another attempt by themselves.
 func (o *Orchestrator) retryCountForEpisode(ctx context.Context, animeID uint, ep int) int {
-	var retryCount int
-	o.db.WithContext(ctx).
-		Model(&model.Download{}).
+	var count int
+	o.db.WithContext(ctx).Model(&model.Download{}).
 		Where("anime_id = ? AND episode_number = ? AND status = ?", animeID, ep, model.DownloadStatusFailed).
-		Where("failure_kind IN ?", []string{
-			model.FailureKindTransient,
-			model.FailureKindExhausted,
-		}).
-		Select("COALESCE(MAX(retry_count), 0)").
-		Scan(&retryCount)
-	return retryCount
-}
-
-// failedStreamRoads 返回该集已经失败过的线路。换源时优先选择从未失败的线路，
-// 所有线路都失败过时再回到首选线路，交给全局退避上限收敛。
-func (o *Orchestrator) failedStreamRoads(ctx context.Context, animeID uint, ep int) map[string]bool {
-	var roads []string
-	o.db.WithContext(ctx).
-		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND download_type = ? AND status = ?",
-			animeID, ep, model.DownloadTypeStream, model.DownloadStatusFailed).
-		Where("stream_road_name IS NOT NULL AND stream_road_name <> ''").
-		Distinct("stream_road_name").
-		Pluck("stream_road_name", &roads)
-	out := make(map[string]bool, len(roads))
-	for _, road := range roads {
-		out[road] = true
+		Where("failure_kind IN ?", []string{model.FailureKindTransient, model.FailureKindExhausted}).
+		Select("COALESCE(MAX(retry_count + 1), 0)").Scan(&count)
+	if count > 3 {
+		return 3
 	}
-	return out
+	return count
 }
 
 // selectStreamEpisode 按线路组织扁平剧集列表，并选择指定集。
-// 顺序：未失败的首选线路 → 未失败的其他线路 → 已失败线路。
+// 首选线路 → 其他线路；冷却中的线路绝不兜回，等待下一次探测。
 func selectStreamEpisode(episodes []stream.EpisodeInfo, ep int, preferred string, failed map[string]bool, multi bool) (stream.EpisodeInfo, string, bool) {
-	if ep <= 0 {
+	if ep <= 0 || failed["*"] {
 		return stream.EpisodeInfo{}, "", false
 	}
 	byRoad := make(map[string][]stream.EpisodeInfo)
@@ -1138,15 +1003,12 @@ func selectStreamEpisode(episodes []stream.EpisodeInfo, ep int, preferred string
 	if !multi && len(order) > 1 {
 		order = order[:1]
 	}
-	candidates := append([]string{}, order...)
-	for _, allowFailed := range []bool{false, true} {
-		for _, road := range candidates {
-			if failed[road] != allowFailed {
-				continue
-			}
-			if item, ok := findEpisode(byRoad[road], ep); ok {
-				return item, road, true
-			}
+	for _, road := range order {
+		if failed[road] {
+			continue
+		}
+		if item, ok := findEpisode(byRoad[road], ep); ok {
+			return item, road, true
 		}
 	}
 	return stream.EpisodeInfo{}, "", false
@@ -1273,18 +1135,19 @@ func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map
 	}
 	o.db.WithContext(ctx).
 		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number IS NOT NULL", animeID).
+		Where("anime_id = ?", animeID).
 		Where("status IN ?", []string{
 			model.DownloadStatusCompleted,
 			model.DownloadStatusDownloading,
 			model.DownloadStatusPending,
+			model.DownloadStatusPaused,
 		}).
 		Select("episode_number, scope, episode_start, episode_end, status, media_missing, seeking_alternative").
 		Scan(&rows)
 
 	out := make(map[int]bool, len(rows))
 	for _, r := range rows {
-		if r.MediaMissing || r.SeekingAlternative {
+		if r.MediaMissing || (r.SeekingAlternative && r.Status != model.DownloadStatusPaused) {
 			continue
 		}
 		// 下载中的合集暂时覆盖整个范围，防止它下载时又启动逐集任务。
@@ -1325,69 +1188,45 @@ func (o *Orchestrator) episodeAirDates(ctx context.Context, animeID uint) map[in
 	return out
 }
 
-// isDuplicate 判断 (anime_id, ep, source_type) 是否应该跳过本轮入队。
-// 跳过条件：
-//  1. 已存在 downloading/completed/pending 记录（同集同源）
-//  2. 累计 failed 次数 ≥ 3 —— 该源对该集多次失败，永久跳过
-//  3. 最近 6 小时内有 failed 记录 —— 短期冷却
-//
-// transient 例外（见 download.classifyError）：
-//
-//	只有 permanent 失败才计入条件 2/3。failure_kind='transient' 的失败由
-//	RetryFailedJob 按退避节奏负责重投，orchestrator 不参与节流 —— 否则
-//	transient 失败也被 6h 冷却锁住会跟自动重试打架。
+// isDuplicate protects active/paused work and applies source-level cooldown.
+// Only the latest failed attempt controls that cooldown; historical failures
+// retain candidate diagnostics but must not extend a newer attempt's backoff.
 func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, sourceType string) bool {
 	sources := []string{sourceType}
 	if sourceType == SourceStream {
-		// 历史 AutoDownloader 用 bangumi 表示触发来源；本质仍是 stream。
 		sources = append(sources, dlservice.SourceBangumi)
 	}
 	var count int64
-	o.db.WithContext(ctx).
-		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
-		Where("status IN ? OR (status = ? AND media_missing = ?)", []string{
-			model.DownloadStatusDownloading, model.DownloadStatusPending,
-		}, model.DownloadStatusCompleted, false).
-		Where("seeking_alternative = ? OR status = ?", false, model.DownloadStatusCompleted).
-		Count(&count)
+	base := func() *gorm.DB {
+		return o.db.WithContext(ctx).Model(&model.Download{}).
+			Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources)
+	}
+	if err := base().
+		Where("status IN ? OR (status = ? AND media_missing = ?)",
+			[]string{model.DownloadStatusDownloading, model.DownloadStatusPending, model.DownloadStatusPaused},
+			model.DownloadStatusCompleted, false).
+		Where("seeking_alternative = ? OR status IN ?", false,
+			[]string{model.DownloadStatusCompleted, model.DownloadStatusPaused}).Count(&count).Error; err != nil {
+		return true // Fail closed on DB errors; the next scan can try again.
+	}
 	if count > 0 {
 		return true
 	}
-	// 尚未到退避时间的 transient 失败必须阻止常规 30min 扫描提前重投。
-	var coolingTransient int64
-	o.db.WithContext(ctx).
-		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
-		Where("status = ? AND failure_kind = ?", model.DownloadStatusFailed, model.FailureKindTransient).
-		Where("next_retry_at IS NOT NULL AND next_retry_at > ?", time.Now()).
-		Count(&coolingTransient)
-	if coolingTransient > 0 {
-		return true
+	var failure model.Download
+	err := base().Where("status = ?", model.DownloadStatusFailed).Order("id DESC").Take(&failure).Error
+	if err != nil {
+		return err != gorm.ErrRecordNotFound
 	}
-	// 累计 permanent 失败 ≥ 3 次：永久放弃该源
-	var totalPermFailed int64
-	o.db.WithContext(ctx).
-		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
-		Where("status = ?", model.DownloadStatusFailed).
-		Where("failure_kind = ? OR failure_kind = ''", model.FailureKindPermanent).
-		Count(&totalPermFailed)
-	if totalPermFailed >= 3 {
-		return true
+	switch failure.FailureKind {
+	case model.FailureKindTransient:
+		return failure.NextRetryAt != nil && time.Now().Before(*failure.NextRetryAt)
+	case model.FailureKindPermanent, "":
+		return time.Since(failure.UpdatedAt) < 6*time.Hour
+	case model.FailureKindExhausted:
+		return time.Since(failure.UpdatedAt) < time.Hour
+	default:
+		return false // Rejected candidates are filtered individually, not by source.
 	}
-	// permanent 配置/IO 错冷却 6 小时；快速预算耗尽的外部源错误 1 小时后
-	// half-open 探测。这样无需人工介入，也不会持续轰击故障站点。
-	var recentPermFailed int64
-	o.db.WithContext(ctx).
-		Model(&model.Download{}).
-		Where("anime_id = ? AND episode_number = ? AND source IN ?", animeID, ep, sources).
-		Where("status = ?", model.DownloadStatusFailed).
-		Where("((failure_kind = ? OR failure_kind = '') AND updated_at > ?) OR (failure_kind = ? AND updated_at > ?)",
-			model.FailureKindPermanent, time.Now().Add(-6*time.Hour),
-			model.FailureKindExhausted, time.Now().Add(-time.Hour)).
-		Count(&recentPermFailed)
-	return recentPermFailed > 0
 }
 
 // isDuplicateInfoHash 判断同一 anime + InfoHash 是否已存在记录（任何状态）。

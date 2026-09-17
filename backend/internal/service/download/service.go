@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,6 +33,7 @@ type Service struct {
 	executors             map[string]Executor
 	notifSvc              *notification.Service // 可空：未注入时不发通知
 	rejectedStreamHandler func(context.Context, uint, int)
+	completionMu          sync.Mutex // SQLite ignores FOR UPDATE; serialize local finalization as well.
 }
 
 // NewService creates a new unified download service.
@@ -237,7 +239,9 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		return
 	}
 
-	s.updateStatus(dlID, model.DownloadStatusDownloading, nil)
+	if !s.updateStatus(dlID, model.DownloadStatusDownloading, nil) {
+		return
+	}
 
 	progressCB := func(progress float64, downloadedBytes, totalBytes int64) {
 		updates := map[string]interface{}{}
@@ -251,7 +255,10 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 			updates["total_bytes"] = totalBytes
 		}
 		if len(updates) > 0 {
-			s.db.Model(&model.Download{}).Where("id = ?", dlID).Updates(updates)
+			result := s.db.Model(&model.Download{}).Where("id = ? AND status = ?", dlID, model.DownloadStatusDownloading).Updates(updates)
+			if result.Error != nil || result.RowsAffected == 0 {
+				return
+			}
 		}
 
 		if s.hub != nil && progress >= 0 {
@@ -287,7 +294,9 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 			// permanent / 已用尽重试次数 → 清空 next_retry_at
 			extra["next_retry_at"] = nil
 		}
-		s.updateStatus(dlID, model.DownloadStatusFailed, extra)
+		if !s.updateStatus(dlID, model.DownloadStatusFailed, extra) {
+			return
+		}
 		if kind == model.FailureKindRejected {
 			s.triggerRejectedStreamRecovery(task)
 		}
@@ -333,11 +342,13 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		if err := s.validateStreamDurationConsistency(ctx, task, stagingPath); err != nil {
 			_ = removeStagingFile(stagingPath)
 			candidateErr := fmt.Errorf("流媒体候选无效：%w", err)
-			s.updateStatus(dlID, model.DownloadStatusFailed, map[string]interface{}{
+			if !s.updateStatus(dlID, model.DownloadStatusFailed, map[string]interface{}{
 				"failure_kind":  model.FailureKindRejected,
 				"last_error":    truncateError(candidateErr),
 				"next_retry_at": nil,
-			})
+			}) {
+				return
+			}
 			s.triggerRejectedStreamRecovery(task)
 			zap.L().Warn("流媒体候选未通过同番时长校验",
 				zap.Uint("id", dlID), zap.String("name", task.Name), zap.Error(candidateErr))
@@ -367,12 +378,19 @@ func (s *Service) triggerRejectedStreamRecovery(task *Task) {
 // anime episode. Stream candidates are promoted from a unique staging path
 // only after winning; losing candidates never overwrite the media file.
 func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPath, finalPath string) bool {
+	s.completionMu.Lock()
+	defer s.completionMu.Unlock()
 	var candidate model.Download
 	if err := s.db.WithContext(ctx).First(&candidate, dlID).Error; err != nil {
-		_ = removeStagingFile(stagingPath)
+		// A canceled context or unavailable DB is not evidence of a deleted task.
+		if err == gorm.ErrRecordNotFound && stagingPath != finalPath {
+			_ = removeStagingFile(stagingPath)
+		}
 		return false
 	}
 	won := false
+	alreadyCompleted := false
+	discard := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if candidate.AnimeID != nil {
 			var anime model.Anime
@@ -381,15 +399,30 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 				return err
 			}
 		}
+		// Reload under the same anime lock used to elect the winner. Late
+		// executor callbacks must not resurrect paused, failed or superseded work.
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&candidate, dlID).Error; err != nil {
+			return err
+		}
+		if candidate.Status == model.DownloadStatusCompleted {
+			alreadyCompleted = !candidate.MediaMissing
+			return nil
+		}
+		if candidate.Status != model.DownloadStatusDownloading && candidate.Status != model.DownloadStatusPending {
+			discard = candidate.Status == model.DownloadStatusSuperseded
+			return nil
+		}
 		if candidate.AnimeID != nil && candidate.EpisodeNumber != nil {
 			var completedCount int64
 			if err := tx.Model(&model.Download{}).
-				Where("id <> ? AND anime_id = ? AND episode_number = ? AND status = ?",
-					candidate.ID, *candidate.AnimeID, *candidate.EpisodeNumber, model.DownloadStatusCompleted).
+				Scopes(AvailableMedia).
+				Where("id <> ? AND anime_id = ? AND episode_number = ?",
+					candidate.ID, *candidate.AnimeID, *candidate.EpisodeNumber).
 				Count(&completedCount).Error; err != nil {
 				return err
 			}
 			if completedCount > 0 {
+				discard = true
 				return tx.Model(&model.Download{}).Where("id = ?", candidate.ID).
 					Updates(map[string]interface{}{
 						"status":              model.DownloadStatusSuperseded,
@@ -428,6 +461,8 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 			"last_error":          "",
 			"next_retry_at":       nil,
 			"seeking_alternative": false,
+			"media_missing":       false,
+			"media_missing_at":    nil,
 		}
 		if finalPath != "" {
 			updates["file_path"] = finalPath
@@ -444,9 +479,20 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		return false
 	}
 	if !won {
-		_ = removeStagingFile(stagingPath)
-		if exec := s.executors[candidate.DownloadType]; exec != nil {
-			_ = exec.Remove(executorTaskID(&candidate), false)
+		if discard {
+			if stagingPath != finalPath {
+				_ = removeStagingFile(stagingPath)
+			}
+			if exec := s.executors[candidate.DownloadType]; exec != nil {
+				_ = exec.Remove(executorTaskID(&candidate), false)
+			}
+		}
+		if alreadyCompleted {
+			// Also recover a crash after the completion commit but before episode
+			// projection/failed-attempt cleanup; do not notify or delete again.
+			s.updateAnimeProgress(dlID)
+			s.resolvePriorFailures(dlID)
+			s.settleEpisodeRace(ctx, &candidate)
 		}
 		return false
 	}
@@ -1070,7 +1116,7 @@ func (s *Service) migrateStreamRoadName(ctx context.Context) {
 	}
 }
 
-func (s *Service) updateStatus(dlID uint, status string, extra map[string]interface{}) {
+func (s *Service) updateStatus(dlID uint, status string, extra map[string]interface{}) bool {
 	// 在 UPDATE 之前先读旧状态：只有"原本不是 completed"翻成"现在是 completed"
 	// 才发通知（防止重复推送）。读失败不影响主流程。
 	var prev model.Download
@@ -1084,12 +1130,20 @@ func (s *Service) updateStatus(dlID uint, status string, extra map[string]interf
 	for k, v := range extra {
 		updates[k] = v
 	}
-	if err := s.db.Model(&model.Download{}).Where("id = ?", dlID).Updates(updates).Error; err != nil {
+	q := s.db.Model(&model.Download{}).Where("id = ?", dlID)
+	if status == model.DownloadStatusFailed || status == model.DownloadStatusDownloading {
+		q = q.Where("status IN ?", []string{model.DownloadStatusPending, model.DownloadStatusDownloading})
+	}
+	result := q.Updates(updates)
+	if result.Error != nil {
 		zap.L().Error("更新下载状态失败",
 			zap.Uint("id", dlID),
 			zap.String("status", status),
-			zap.Error(err))
-		return
+			zap.Error(result.Error))
+		return false
+	}
+	if result.RowsAffected == 0 {
+		return false
 	}
 
 	// stream 下载完成时，更新 anime 的 current_episode 为最大集数
@@ -1102,13 +1156,14 @@ func (s *Service) updateStatus(dlID uint, status string, extra map[string]interf
 			s.notifyCompletion(dlID)
 		}
 	}
+	return true
 }
 
 // resolvePriorFailures 将已被同集后续成功任务解决的失败尝试收口为 superseded。
 // 记录仍保留用于审计，但默认下载列表和自动重试不再把它视为当前故障。
 func (s *Service) resolvePriorFailures(completedID uint) {
 	var completed model.Download
-	if err := s.db.First(&completed, completedID).Error; err != nil || completed.AnimeID == nil || completed.EpisodeNumber == nil {
+	if err := s.db.Scopes(AvailableMedia).First(&completed, completedID).Error; err != nil || completed.AnimeID == nil || completed.EpisodeNumber == nil {
 		return
 	}
 	s.db.Model(&model.Download{}).
@@ -1128,7 +1183,7 @@ func (s *Service) resolveHistoricalFailures(ctx context.Context) {
 			SELECT 1 FROM download AS done
 			WHERE done.anime_id = failed.anime_id
 			  AND done.episode_number = failed.episode_number
-			  AND done.status = ?
+			  AND done.status = ? AND done.media_missing = false
 		  )`, model.DownloadStatusSuperseded, model.DownloadStatusFailed, model.DownloadStatusCompleted)
 	if result.Error != nil {
 		zap.L().Warn("收口历史失败任务失败", zap.Error(result.Error))
@@ -1150,8 +1205,8 @@ func (s *Service) resolveHistoricalFailures(ctx context.Context) {
 func (s *Service) reconcileCompletedEpisodeStates(ctx context.Context) {
 	var completed []model.Download
 	if err := s.db.WithContext(ctx).
-		Where("status = ? AND media_missing = ? AND anime_id IS NOT NULL AND episode_number IS NOT NULL",
-			model.DownloadStatusCompleted, false).
+		Scopes(AvailableMedia).
+		Where("anime_id IS NOT NULL AND episode_number IS NOT NULL").
 		Order("anime_id ASC, episode_number ASC, completed_at ASC, id ASC").
 		Find(&completed).Error; err != nil {
 		zap.L().Warn("查询历史完成剧集失败", zap.Error(err))
@@ -1213,7 +1268,7 @@ func (s *Service) reconcileCompletedEpisodeStates(ctx context.Context) {
 }
 
 func (s *Service) syncCompletedEpisodeState(ctx context.Context, dl *model.Download) error {
-	if dl == nil || dl.AnimeID == nil || dl.EpisodeNumber == nil || *dl.EpisodeNumber <= 0 {
+	if dl == nil || dl.Status != model.DownloadStatusCompleted || dl.MediaMissing || dl.AnimeID == nil || dl.EpisodeNumber == nil || *dl.EpisodeNumber <= 0 {
 		return nil
 	}
 	now := time.Now()
@@ -1264,7 +1319,8 @@ func (s *Service) updateAnimeProgress(dlID uint) {
 	var maxEpisode int
 	err := s.db.Model(&model.Download{}).
 		Select("COALESCE(MAX(episode_number), 0)").
-		Where("anime_id = ? AND status = ?", *dl.AnimeID, model.DownloadStatusCompleted).
+		Scopes(AvailableMedia).
+		Where("anime_id = ?", *dl.AnimeID).
 		Scan(&maxEpisode).Error
 	if err != nil {
 		zap.L().Error("查询 anime 进度失败", zap.Uint("anime_id", *dl.AnimeID), zap.Error(err))

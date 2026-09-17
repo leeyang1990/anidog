@@ -1,31 +1,10 @@
-// Package scheduler · 重试调度 Job
-//
-// RetryFailedJob 每 5 分钟扫一次 download 表，把符合条件的 failed 记录"复活"
-// 重新交给 Orchestrator 跑一遍 CheckAnime，让多源补救机制再有一次机会。
-//
-// 触发条件（全部满足）：
-//  1. status = 'failed'
-//  2. failure_kind = 'transient' （permanent 不重试）
-//  3. retry_count < 3
-//  4. next_retry_at IS NOT NULL AND next_retry_at <= now（到点）
-//  5. 有关联 anime_id + episode_number（手动下载未绑番的不重试）
-//
-// 重试动作（按 anime_id 聚合，多集失败只触发一次 orchestrator）：
-//
-//	a. 把所有到点行 retry_count++、next_retry_at=NULL —— 防止下一轮 5min 后重复触发
-//	b. 调用 RetryConductor.CheckAnime(anime) —— 让 orchestrator 对所有缺失集
-//	   重新挑源。CheckAnime 自己已经避开了正在 downloading/completed/pending
-//	   的集，所以幂等。失败行的 status 仍是 'failed'，isDuplicate 因为
-//	   failure_kind='transient' 不会把它当作"6h 冷却中"，于是新一轮可以正常排
-//
-// 这个 Job 与 orchestrator 主轮询（30min）是叠加关系：
-//   - 主轮询：扫所有番剧、关心新的一集播出
-//   - RetryFailedJob：只盯失败行、节奏更密（5min），专门救火
+// Package scheduler schedules recovery searches independently of download attempts.
 package scheduler
 
 import (
 	"context"
 	"sort"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -34,99 +13,91 @@ import (
 	"github.com/anidog/anidog-go/internal/model"
 )
 
-// RetryConductor 是 RetryFailedJob 依赖的最小化 orchestrator 接口。
-// 实际由 *orchestrator.Orchestrator 实现（main.go 装配时直接传）。
-// pref 用 interface{} 是为了避免 scheduler → orchestrator 的 import 反向依赖；
-// 调用 CheckAnime 的 orchestrator 实现内部会做类型断言。
-type RetryConductor interface {
-	CheckAnime(ctx context.Context, anime *model.Anime, prefAny interface{})
-}
+// RetryConductor re-evaluates an anime using current preferences. A search is
+// not a download attempt: RetryCount belongs to newly created download tasks.
+type RetryConductor func(context.Context, *model.Anime)
 
-// GlobalPrefLoader 在每轮 Run 之前拉一次"全局下载偏好"快照。
-// 同样用 interface{} 解耦 ——main.go 直接 wrap orchestrator.LoadGlobal 即可。
-type GlobalPrefLoader func(ctx context.Context) interface{}
+const recoverySearchInterval = 30 * time.Minute
 
-// RetryFailedJob 周期性扫 failed/transient 行并触发对应 anime 的重排。
 type RetryFailedJob struct {
 	db          *gorm.DB
 	conductor   RetryConductor
-	loadPref    GlobalPrefLoader
-	maxPerRound int // 单次最多处理多少个 anime（防雪崩）
+	maxPerRound int
+	mu          sync.Mutex
 }
 
-func NewRetryFailedJob(db *gorm.DB, conductor RetryConductor, loadPref GlobalPrefLoader) *RetryFailedJob {
-	return &RetryFailedJob{
-		db:          db,
-		conductor:   conductor,
-		loadPref:    loadPref,
-		maxPerRound: 50,
-	}
+func NewRetryFailedJob(db *gorm.DB, conductor RetryConductor) *RetryFailedJob {
+	return &RetryFailedJob{db: db, conductor: conductor, maxPerRound: 50}
 }
 
 func (j *RetryFailedJob) Name() string { return "retry_failed" }
 
 func (j *RetryFailedJob) Run(ctx context.Context) {
-	if j.conductor == nil {
+	if j.conductor == nil || !j.mu.TryLock() {
 		return
 	}
-	now := time.Now()
+	defer j.mu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 
-	// 第一步：拉所有"到点"的 transient failed 行
+	// Only the latest failure of an episode drives recovery. Older attempts
+	// remain available to candidate selection for cooldown and diagnostics.
+	// NULL picks up legacy rows stranded by the former dispatch logic.
 	var rows []model.Download
-	if err := j.db.WithContext(ctx).
-		Where("status = ?", model.DownloadStatusFailed).
-		Where("failure_kind = ?", model.FailureKindTransient).
-		Where("retry_count < ?", 3).
-		Where("next_retry_at IS NOT NULL").
-		Where("next_retry_at <= ?", now).
-		Where("anime_id IS NOT NULL").
-		Where("episode_number IS NOT NULL").
-		Find(&rows).Error; err != nil {
-		zap.L().Warn("retry_failed: 查询失败行失败", zap.Error(err))
+	err := j.db.WithContext(ctx).
+		Where("status = ? AND failure_kind = ? AND retry_count < ?", model.DownloadStatusFailed, model.FailureKindTransient, 3).
+		Where("next_retry_at IS NULL OR next_retry_at <= ?", time.Now()).
+		Where("anime_id IS NOT NULL AND episode_number IS NOT NULL").
+		Where(`NOT EXISTS (SELECT 1 FROM download newer WHERE newer.anime_id = download.anime_id
+    AND newer.episode_number = download.episode_number AND newer.status = ? AND newer.id > download.id)`, model.DownloadStatusFailed).
+		Find(&rows).Error
+	if err != nil {
+		zap.L().Warn("retry_failed: 查询失败", zap.Error(err))
 		return
 	}
-	if len(rows) == 0 {
-		return
-	}
-
-	// 第二步：按 anime_id 去重 + 限流 —— 同一个 anime 多集失败只重排一次
 	animeIDs, rowIDs := selectRetryBatch(rows, j.maxPerRound)
-
-	// 第三步：更新所有行的 retry_count++ 并清掉 next_retry_at
-	//   清空 next_retry_at 是关键 —— 下一轮 RetryFailedJob 不会再选它，
-	//   除非新一次失败发生（execute() 失败时会重新计算下次重试时间）
-	if err := j.db.WithContext(ctx).
-		Model(&model.Download{}).
-		Where("id IN ?", rowIDs).
-		Updates(map[string]interface{}{
-			"retry_count":   gorm.Expr("retry_count + 1"),
-			"next_retry_at": nil,
-		}).Error; err != nil {
-		zap.L().Warn("retry_failed: 标记 retry 失败", zap.Error(err))
-		// 不 return —— 即便标记失败，让 orchestrator 跑一次也无害
+	selected := make(map[uint]bool, len(rowIDs))
+	for _, id := range rowIDs {
+		selected[id] = true
 	}
-
-	zap.L().Info("retry_failed: 开始重新调度",
-		zap.Int("failed_rows", len(rows)),
-		zap.Int("anime_to_retry", len(animeIDs)))
-
-	// 第四步：拿全局偏好 + 依次跑 CheckAnime
-	var pref interface{}
-	if j.loadPref != nil {
-		pref = j.loadPref(ctx)
-	}
-
 	for _, aid := range animeIDs {
-		var anime model.Anime
-		if err := j.db.WithContext(ctx).First(&anime, aid).Error; err != nil {
-			zap.L().Warn("retry_failed: 读 anime 失败", zap.Uint("anime_id", aid), zap.Error(err))
-			continue
+		if ctx.Err() != nil {
+			return
 		}
-		if !anime.IsSubscribed {
-			continue
+		var ids []uint
+		for _, row := range rows {
+			if selected[row.ID] && *row.AnimeID == aid {
+				ids = append(ids, row.ID)
+			}
 		}
-		j.conductor.CheckAnime(ctx, &anime, pref)
+		j.recheck(ctx, aid, ids)
 	}
+}
+
+func (j *RetryFailedJob) recheck(ctx context.Context, animeID uint, rowIDs []uint) {
+	// Rearm even if no source exists, storage is unavailable, or the context is
+	// canceled while checking. UpdateColumn preserves the actual failure time,
+	// which candidate cooldown uses. Unprocessed batches are left untouched.
+	defer func() {
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := j.db.WithContext(persistCtx).Model(&model.Download{}).
+			Where("id IN ? AND status = ?", rowIDs, model.DownloadStatusFailed).
+			UpdateColumn("next_retry_at", time.Now().Add(recoverySearchInterval)).Error; err != nil {
+			zap.L().Warn("retry_failed: 保存下次搜索时间失败", zap.Error(err))
+		}
+	}()
+	var anime model.Anime
+	if err := j.db.WithContext(ctx).First(&anime, animeID).Error; err != nil {
+		zap.L().Warn("retry_failed: 读取番剧失败", zap.Uint("anime_id", animeID), zap.Error(err))
+		return
+	}
+	if !anime.IsSubscribed || anime.MediaManagementState == "archived" {
+		return
+	}
+	zap.L().Info("retry_failed: 重新搜索缺集来源", zap.Uint("anime_id", animeID))
+	j.conductor(ctx, &anime)
 }
 
 func selectRetryBatch(rows []model.Download, maxAnime int) ([]uint, []uint) {

@@ -2,8 +2,10 @@ package download
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anidog/anidog-go/internal/model"
 )
@@ -25,6 +27,22 @@ func TestClassifyErrorBackoffAndFinalAttempt(t *testing.T) {
 		if kind != tc.kind || delay != tc.delay {
 			t.Fatalf("retry=%d: got %s/%s, want %s/%s", tc.retryCount, kind, delay, tc.kind, tc.delay)
 		}
+	}
+}
+
+func TestLocalFailureIsNotRemoteExhaustion(t *testing.T) {
+	for _, cause := range []string{"no space left on device", "permission denied", "read-only file system"} {
+		kind, delay := classifyError(errors.New(cause), 3)
+		if kind != model.FailureKindPermanent || delay != 0 {
+			t.Fatalf("%s: %s/%s", cause, kind, delay)
+		}
+	}
+}
+
+func TestTruncateErrorKeepsUTF8(t *testing.T) {
+	got := truncateError(errors.New(strings.Repeat("下载错误", 300)))
+	if !utf8.ValidString(got) || len(got) > 1040 {
+		t.Fatal("invalid or unbounded diagnostic")
 	}
 }
 

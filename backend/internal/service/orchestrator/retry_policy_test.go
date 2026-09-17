@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -31,8 +32,66 @@ func TestRetryCountForEpisodeIgnoresRejectedCandidate(t *testing.T) {
 	}
 
 	o := &Orchestrator{db: db}
-	if got := o.retryCountForEpisode(context.Background(), animeID, episode); got != 1 {
-		t.Fatalf("got retry count %d, want 1", got)
+	if got := o.retryCountForEpisode(context.Background(), animeID, episode); got != 2 {
+		t.Fatalf("got next attempt count %d, want 2", got)
+	}
+}
+
+func TestRecoveryBudgetIsConsumedOnlyByNewAttempts(t *testing.T) {
+	db := testutil.InitTestDB()
+	o := &Orchestrator{db: db}
+	aid, ep := uint(1), 1
+	ctx := context.Background()
+	if got := o.retryCountForEpisode(ctx, aid, ep); got != 0 {
+		t.Fatal("initial attempt must be zero")
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		row := model.Download{TorrentID: fmt.Sprintf("attempt-%d", attempt), Name: "attempt", URL: "attempt", AnimeID: &aid, EpisodeNumber: &ep,
+			Status: model.DownloadStatusFailed, FailureKind: model.FailureKindTransient, RetryCount: attempt}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		want := min(attempt+1, 3)
+		for i := 0; i < 2; i++ {
+			if got := o.retryCountForEpisode(ctx, aid, ep); got != want {
+				t.Fatalf("got=%d want=%d", got, want)
+			}
+		}
+	}
+}
+
+func TestOldSearchScheduleDoesNotOverrideNewerFailure(t *testing.T) {
+	db := testutil.InitTestDB()
+	aid, ep := uint(1), 1
+	future, due := time.Now().Add(time.Hour), time.Now().Add(-time.Minute)
+	for i, next := range []*time.Time{&future, &due} {
+		row := model.Download{TorrentID: fmt.Sprintf("failed-%d", i), Name: "failed", URL: "failed", AnimeID: &aid, EpisodeNumber: &ep,
+			Source: SourceStream, Status: model.DownloadStatusFailed, FailureKind: model.FailureKindTransient, NextRetryAt: next}
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := &Orchestrator{db: db}
+	if o.isDuplicate(context.Background(), aid, ep, SourceStream) {
+		t.Fatal("older polling schedule blocked newer due attempt")
+	}
+}
+
+func TestPausedSeasonPackPreservesEpisodeCoverage(t *testing.T) {
+	db := testutil.InitTestDB()
+	aid, start, end := uint(1), 1, 12
+	pack := model.Download{TorrentID: "pack", Name: "pack", URL: "pack", AnimeID: &aid,
+		Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end,
+		Status: model.DownloadStatusPaused, SeekingAlternative: true}
+	if err := db.Create(&pack).Error; err != nil {
+		t.Fatal(err)
+	}
+	o := &Orchestrator{db: db}
+	covered := o.downloadedEpisodes(context.Background(), aid)
+	for ep := start; ep <= end; ep++ {
+		if !covered[ep] {
+			t.Fatalf("paused pack released episode %d", ep)
+		}
 	}
 }
 

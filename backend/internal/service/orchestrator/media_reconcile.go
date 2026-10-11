@@ -64,7 +64,11 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 			zap.Uint("anime_id", anime.ID), zap.Error(err))
 		return MediaAuditResult{}
 	}
-	present, mediaFileCount, scanErr := scanEpisodeFiles(seasonDir, season)
+	files, mediaFileCount, scanErr := scanEpisodeFileDetails(seasonDir, season)
+	present := make(map[int]bool, len(files))
+	for ep := range files {
+		present[ep] = true
+	}
 	if scanErr != nil && !os.IsNotExist(scanErr) {
 		zap.L().Warn("媒体自愈：扫描当前季目录失败，不推进水位",
 			zap.Uint("anime_id", anime.ID), zap.String("season_dir", seasonDir), zap.Error(scanErr))
@@ -104,10 +108,11 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 	// also adopts files placed there outside AniDog and prevents duplicates on
 	// first subscription.
 	for ep := range present {
-		row := model.AnimeEpisode{AnimeID: anime.ID, EpisodeNumber: ep, Downloaded: true}
+		file := files[ep]
+		row := model.AnimeEpisode{AnimeID: anime.ID, EpisodeNumber: ep, Downloaded: true, FilePath: &file.path, FileSize: &file.size}
 		_ = o.db.WithContext(ctx).Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "anime_id"}, {Name: "episode_number"}},
-			DoUpdates: clause.Assignments(map[string]interface{}{"downloaded": true}),
+			DoUpdates: clause.Assignments(map[string]interface{}{"downloaded": true, "file_path": file.path, "file_size": file.size}),
 		}).Create(&row).Error
 		_ = o.db.WithContext(ctx).Model(&model.Download{}).
 			Where("anime_id = ? AND episode_number = ? AND media_missing = ?", anime.ID, ep, true).
@@ -289,22 +294,52 @@ func (o *Orchestrator) RetryEpisodeAfterCandidateFailure(ctx context.Context, an
 }
 
 func scanEpisodeFiles(seasonDir string, expectedSeason int) (map[int]bool, int, error) {
+	files, count, err := scanEpisodeFileDetails(seasonDir, expectedSeason)
 	present := make(map[int]bool)
+	for ep := range files {
+		present[ep] = true
+	}
+	return present, count, err
+}
+
+type diskEpisodeFile struct {
+	path string
+	size int64
+}
+
+func scanEpisodeFileDetails(seasonDir string, expectedSeason int) (map[int]diskEpisodeFile, int, error) {
+	present := make(map[int]diskEpisodeFile)
 	mediaFileCount := 0
 	err := filepath.WalkDir(seasonDir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() || !mediaExtensions[strings.ToLower(filepath.Ext(entry.Name()))] {
+		name := entry.Name()
+		lower := strings.ToLower(name)
+		if entry.IsDir() {
+			if path != seasonDir && (strings.HasPrefix(name, ".") || strings.EqualFold(name, "Extras")) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
+		// A transfer or rejection never promotes a staging file to library media.
+		if strings.HasPrefix(name, ".") || strings.Contains(lower, ".anidog-") || strings.Contains(lower, ".part.") || !mediaExtensions[strings.ToLower(filepath.Ext(name))] {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Size() <= 0 {
+			return nil
+		}
+		file := diskEpisodeFile{path: path, size: info.Size()}
 		mediaFileCount++
-		name := entry.Name()
 		if match := standardEpisodeFile.FindStringSubmatch(name); len(match) == 3 {
 			season := parsePositiveInt(match[1])
 			episode := parsePositiveInt(match[2])
 			if episode > 0 && (season == 0 || season == expectedSeason) {
-				present[episode] = true
+				present[episode] = file
 			}
 			return nil
 		}
@@ -313,7 +348,7 @@ func scanEpisodeFiles(seasonDir string, expectedSeason int) (map[int]bool, int, 
 			return nil
 		}
 		if parsed.EpisodeNum != nil && *parsed.EpisodeNum > 0 {
-			present[*parsed.EpisodeNum] = true
+			present[*parsed.EpisodeNum] = file
 		}
 		return nil
 	})

@@ -351,11 +351,12 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	}
 	if task.DownloadType == model.DownloadTypeStream && stagingPath != "" {
 		if err := s.validateStreamDurationConsistency(ctx, task, stagingPath); err != nil {
-			_ = removeStagingFile(stagingPath)
 			candidateErr := fmt.Errorf("流媒体候选无效：%w", err)
 			if !s.updateStatus(dlID, model.DownloadStatusFailed, map[string]interface{}{
 				"failure_kind":  model.FailureKindRejected,
 				"last_error":    truncateError(candidateErr),
+				"quality_note":  truncateError(candidateErr),
+				"file_path":     stagingPath,
 				"next_retry_at": nil,
 			}) {
 				return
@@ -404,7 +405,9 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		if candidate.EpisodeNumber != nil {
 			ep = *candidate.EpisodeNumber
 		}
-		if err := s.validateCompletedMedia(ctx, &candidate, ep, existingCompletionPath(stagingPath, finalPath)); err != nil {
+		validationPath := existingCompletionPath(stagingPath, finalPath)
+		if err := s.validateCompletedMedia(ctx, &candidate, ep, validationPath); err != nil {
+			candidate.FilePath = &validationPath
 			s.rejectMediaCandidate(ctx, &candidate, err)
 			return false
 		}

@@ -153,7 +153,11 @@ func (s *Service) rejectMediaCandidate(ctx context.Context, dl *model.Download, 
 		s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dl.ID).Updates(map[string]interface{}{"last_error": message, "quality_note": message})
 		return
 	}
-	if !s.updateStatus(dl.ID, model.DownloadStatusFailed, map[string]interface{}{"failure_kind": model.FailureKindRejected, "last_error": message, "quality_note": message, "next_retry_at": nil, "seeking_alternative": false}) {
+	updates := map[string]interface{}{"failure_kind": model.FailureKindRejected, "last_error": message, "quality_note": message, "next_retry_at": nil, "seeking_alternative": false}
+	if dl.FilePath != nil {
+		updates["file_path"] = *dl.FilePath
+	}
+	if !s.updateStatus(dl.ID, model.DownloadStatusFailed, updates) {
 		return
 	}
 	if executor := s.executors[dl.DownloadType]; executor != nil {

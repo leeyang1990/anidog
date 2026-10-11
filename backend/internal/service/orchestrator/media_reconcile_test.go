@@ -39,3 +39,24 @@ func TestLatestAiredEpisode(t *testing.T) {
 		t.Fatalf("latest aired = %d, want 2", got)
 	}
 }
+
+func TestScanIgnoresStagingRejectedExtrasAndEmptyMedia(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"Anime S01E01.anidog-stream_123.part.mp4",
+		"Anime S01E02.part.mp4",
+		".anidog-rejected/Anime S01E03.mp4",
+		"Extras/Anime S01E04.mkv",
+		".anidog-race/Anime S01E05.mkv",
+		"Anime S01E06.mkv",
+	} {
+		p := filepath.Join(dir, name)
+		os.MkdirAll(filepath.Dir(p), 0755)
+		os.WriteFile(p, []byte("untrusted"), 0600)
+	}
+	os.WriteFile(filepath.Join(dir, "Anime S01E07.mp4"), nil, 0600)
+	present, count, err := scanEpisodeFiles(dir, 1)
+	if err != nil || count != 1 || len(present) != 1 || !present[6] {
+		t.Fatalf("temporary media counted as complete: %v count=%d err=%v", present, count, err)
+	}
+}

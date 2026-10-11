@@ -90,3 +90,33 @@ func TestCompletedPackCannotInventEpisodeOne(t *testing.T) {
 		t.Fatalf("invented coverage: %v", covered)
 	}
 }
+
+func TestRejectedStreamStagingIsNeverAdoptedAsLibraryMedia(t *testing.T) {
+	db := testutil.InitTestDB()
+	root := t.TempDir()
+	total := 1
+	a := model.Anime{Title: "Staging", IsSubscribed: true, EpisodeCount: &total, MediaManagementState: MediaStateFinalizing}
+	db.Create(&a)
+	dir := dl.BuildAnimeSavePath(root, &a)
+	os.MkdirAll(dir, 0755)
+	staging := filepath.Join(dir, "Staging S01E01.anidog-stream_123.part.mp4")
+	os.WriteFile(staging, []byte("rejected video"), 0600)
+	date := "2020-01-01"
+	e := model.AnimeEpisode{AnimeID: a.ID, EpisodeNumber: 1, AirDate: &date}
+	db.Create(&e)
+	ep := 1
+	db.Create(&model.Download{TorrentID: "stream_123", Name: "candidate", URL: "candidate", AnimeID: &a.ID, EpisodeNumber: &ep, Status: model.DownloadStatusFailed, FailureKind: model.FailureKindRejected, FilePath: &staging})
+	o := New(db, nil, nil, nil, map[string]indexer.Indexer{}, root)
+	o.CheckAnime(context.Background(), &a, Preference{})
+	db.First(&e, e.ID)
+	if e.Downloaded || a.MediaManagementState == MediaStateArchived {
+		t.Fatal("rejected staging bypassed the completion guard through disk adoption")
+	}
+	final := filepath.Join(dir, "Staging S01E01.mp4")
+	os.WriteFile(final, []byte("actual archive"), 0600)
+	o.CheckAnime(context.Background(), &a, Preference{})
+	db.First(&e, e.ID)
+	if !e.Downloaded || e.FilePath == nil || *e.FilePath != final || e.FileSize == nil || *e.FileSize != int64(len("actual archive")) {
+		t.Fatalf("disk adoption did not preserve actual file evidence: %+v", e)
+	}
+}

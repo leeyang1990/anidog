@@ -83,6 +83,7 @@ import {
 } from '@vicons/ionicons5'
 import { get, post } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
+import { groupEpisodeDownloads } from '@/utils/episodeDownloads'
 import { AcButton } from '@/components/ac'
 import EpisodeDetailDrawer from './EpisodeDetailDrawer.vue'
 import ManualSearchDialog from './ManualSearchDialog.vue'
@@ -108,15 +109,7 @@ const manualSearchEp = ref(0)
 
 let pollTimer = null
 
-const downloadsByEp = computed(() => {
-  const map = {}
-  for (const d of downloads.value) {
-    if (!d.episode_number) continue
-    if (!map[d.episode_number]) map[d.episode_number] = []
-    map[d.episode_number].push(d)
-  }
-  return map
-})
+const downloadsByEp = computed(() => groupEpisodeDownloads(downloads.value, episodeStatus.value))
 
 const diagnosisByEp = computed(() => {
   const map = {}
@@ -160,7 +153,7 @@ function cellClass(ep) {
 }
 
 function sourceBadge(ep) {
-  const map = { bt: 'BT', stream: 'Str', rss: 'RSS', bangumi: 'Str', manual: '手' }
+  const map = { bt: 'BT', mikan: 'BT', stream: 'Str', rss: 'RSS', bangumi: 'Str', manual: '手' }
   return map[ep.source] || ''
 }
 
@@ -187,7 +180,7 @@ function tooltipText(ep) {
 }
 
 function sourceName(src) {
-  return { bt: 'BT 种子', stream: '流媒体', rss: 'RSS', bangumi: '流媒体', manual: '手动' }[src] || src || '—'
+  return { bt: 'BT 种子', mikan: '蜜柑 BT', stream: '流媒体', rss: 'RSS', bangumi: '流媒体', manual: '手动' }[src] || src || '—'
 }
 
 function openDetail(n) {

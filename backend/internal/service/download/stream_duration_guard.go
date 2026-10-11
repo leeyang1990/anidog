@@ -46,6 +46,10 @@ func (s *Service) validateStreamDurationConsistency(ctx context.Context, task *T
 		return fmt.Errorf("无法复核流媒体成片时长: %w", err)
 	}
 
+	var reference model.AnimeEpisode
+	if err := s.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ?", *task.AnimeID, *task.EpisodeNumber).First(&reference).Error; err == nil && reference.DurationSeconds > 0 {
+		return ValidateReferenceDuration(candidateDuration, reference.DurationSeconds)
+	}
 	var peers []peerMediaPath
 	if err := s.db.WithContext(ctx).Model(&model.Download{}).
 		Select("file_path").
@@ -83,11 +87,15 @@ func validateDurationAgainstPeers(candidateDuration float64, peerDurations []flo
 	if len(valid)%2 == 0 {
 		median = (valid[len(valid)/2-1] + median) / 2
 	}
-	minimum := median * minStreamPeerDurationRatio
+	ratio := minStreamPeerDurationRatio
+	if median >= 600 {
+		ratio = 0.8
+	}
+	minimum := median * ratio
 	if candidateDuration+streamDurationTolerance < minimum {
 		return fmt.Errorf(
 			"视频时长明显短于同番剧集: 成片 %.2f 秒，同番中位数 %.2f 秒，低于 %.0f%%",
-			candidateDuration, median, minStreamPeerDurationRatio*100,
+			candidateDuration, median, ratio*100,
 		)
 	}
 	return nil
@@ -109,4 +117,13 @@ func ProbeMediaDuration(path string) (float64, error) {
 		return 0, fmt.Errorf("无效时长 %q", parsed.Format.Duration)
 	}
 	return duration, nil
+}
+
+// Reference metadata is independent of downloaded candidates. A library full
+// of short captures must not teach the validator to accept more short captures.
+func ValidateReferenceDuration(actual float64, expected int) error {
+	if expected > 0 && actual+5 < float64(expected)*0.85 {
+		return fmt.Errorf("成片时长不足：%.2f 秒，剧集参考 %d 秒，低于 85%%", actual, expected)
+	}
+	return nil
 }

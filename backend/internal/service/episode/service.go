@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -47,6 +49,7 @@ func (s *Service) Sync(ctx context.Context, anime *model.Anime) error {
 	}
 
 	now := time.Now()
+	maxEpisode := 0
 	for _, e := range eps {
 		// 优先用 ep（正片集号）；缺则用 sort 取整
 		epNum := e.Ep
@@ -57,10 +60,14 @@ func (s *Service) Sync(ctx context.Context, anime *model.Anime) error {
 			continue
 		}
 
+		if epNum > maxEpisode {
+			maxEpisode = epNum
+		}
 		row := model.AnimeEpisode{
-			AnimeID:       anime.ID,
-			EpisodeNumber: epNum,
-			UpdatedAt:     now,
+			AnimeID:         anime.ID,
+			EpisodeNumber:   epNum,
+			UpdatedAt:       now,
+			DurationSeconds: parseDuration(e.Duration),
 		}
 		// 标题：优先 name_cn，回落 name
 		if e.NameCN != "" {
@@ -80,7 +87,7 @@ func (s *Service) Sync(ctx context.Context, anime *model.Anime) error {
 		err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "anime_id"}, {Name: "episode_number"}},
 			DoUpdates: clause.AssignmentColumns([]string{
-				"title", "name_cn", "air_date", "updated_at",
+				"title", "name_cn", "air_date", "duration_seconds", "updated_at",
 			}),
 		}).Create(&row).Error
 		if err != nil {
@@ -88,6 +95,24 @@ func (s *Service) Sync(ctx context.Context, anime *model.Anime) error {
 				zap.Uint("anime_id", anime.ID),
 				zap.Int("ep", epNum),
 				zap.Error(err))
+		}
+	}
+
+	// Refresh the declared main-story count as well; old versions used the
+	// count of all chapter types. Do not shrink across actual downloaded media.
+	if detail, err := s.bgm.GetAnimeDetail(ctx, *anime.BangumiID); err == nil {
+		count := detail.EpsCount
+		if count <= 0 && (anime.EpisodeCount == nil || *anime.EpisodeCount <= 0) {
+			count = maxEpisode
+		}
+		if count > 0 && count >= maxEpisode {
+			var beyond int64
+			if err := s.db.WithContext(ctx).Model(&model.AnimeEpisode{}).Where("anime_id = ? AND downloaded = ? AND episode_number > ?", anime.ID, true, count).Count(&beyond).Error; err == nil && beyond == 0 {
+				if err := s.db.WithContext(ctx).Model(anime).Update("episode_count", count).Error; err != nil {
+					return err
+				}
+				anime.EpisodeCount = &count
+			}
 		}
 	}
 
@@ -164,3 +189,22 @@ func IsAired(airDate string, now time.Time) bool {
 
 // ErrNoBangumiID 触发同步时 anime 没有 bangumi_id
 var ErrNoBangumiID = errors.New("番剧缺少 bangumi_id，无法同步集表")
+
+func parseDuration(value string) int {
+	parts := strings.Split(strings.TrimSpace(value), ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	total := 0
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 || (i > 0 && n >= 60) {
+			return 0
+		}
+		total = total*60 + n
+	}
+	if total > 6*60*60 {
+		return 0
+	}
+	return total
+}

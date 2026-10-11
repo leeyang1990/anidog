@@ -477,20 +477,12 @@ func (s *BangumiService) GetAnimeDetail(ctx context.Context, bangumiID int) (*Ba
 	if airDate == "" {
 		airDate = item.Date
 	}
-	// Bangumi subject 详情有 3 个集数相关字段，含义不同：
-	//   - total_episodes：计划总集数（24 集番这里就是 24）
-	//   - eps_count：       同上，但很多番这个字段是 0，不可靠
-	//   - eps：             已发布集数（24 集番只播了 8 集时这里就是 8）
-	//
-	// 我们要存的是"这一季总共多少集"，所以优先级 total_episodes > eps_count > eps。
-	// 历史代码只看 eps_count → 0 时回退到 eps，导致正在更新的番剧 episode_count
-	// 被写成"已播集数"，追番列表显示 8/8 实际却有 24 集。
-	eps := item.TotalEpisodes
-	if eps == 0 {
+	// eps is the wiki episode count; total_episodes counts database chapters,
+	// including non-main-story entries. Never use it as the planned TV count.
+	// https://github.com/bangumi/api/blob/master/open-api/v0.yaml (Subject)
+	eps := item.Eps
+	if eps <= 0 {
 		eps = item.EpsCount
-	}
-	if eps == 0 {
-		eps = item.Eps
 	}
 	img := item.Images.Large
 	if img == "" {

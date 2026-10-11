@@ -323,6 +323,12 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 						packFiles, mediaRoot, err := s.resolveTorrentSeasonCompletion(&dl, qt)
 						if err != nil {
 							completionBlocked = true
+							updates["last_error"] = err.Error()
+							updates["quality_note"] = err.Error()
+							if strings.Contains(err.Error(), "越过隔离目录") {
+								s.raceService.rejectMediaCandidate(ctx, &dl, candidateMediaError{err})
+								continue
+							}
 							zap.L().Warn("BT 合集已完成但无法安全映射剧集",
 								zap.Uint("id", dl.ID), zap.Error(err))
 						} else {
@@ -334,6 +340,12 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 						stagingPath, finalPath, err := s.resolveTorrentRaceCompletion(ctx, &dl, qt)
 						if err != nil {
 							completionBlocked = true
+							updates["last_error"] = err.Error()
+							updates["quality_note"] = err.Error()
+							if strings.Contains(err.Error(), "越过隔离目录") {
+								s.raceService.rejectMediaCandidate(ctx, &dl, candidateMediaError{err})
+								continue
+							}
 							zap.L().Warn("BT 竞速候选已完成但暂时无法归档",
 								zap.Uint("id", dl.ID), zap.Error(err))
 						} else {

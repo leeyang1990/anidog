@@ -20,11 +20,12 @@ import (
 // Preference 下载调度偏好（全局 + per-anime 合并后的有效值）。
 type Preference struct {
 	// 质量偏好
-	Quality   string   // "720p" / "1080p" / "2160p" / ""
-	Groups    []string // 字幕组白名单
-	Languages []string // ["simplified","traditional","japanese","english"]
-	MinSizeMB int
-	MaxSizeMB int
+	AllowPreferenceFallback bool
+	Quality                 string   // "720p" / "1080p" / "2160p" / ""
+	Groups                  []string // 字幕组白名单
+	Languages               []string // ["simplified","traditional","japanese","english"]
+	MinSizeMB               int
+	MaxSizeMB               int
 
 	// 源启用
 	StreamEnabled    bool
@@ -60,11 +61,12 @@ func (p Preference) IsSourceDisabled(srcType string) bool {
 // ToIndexerPref 转换为 indexer 包用的偏好结构
 func (p Preference) ToIndexerPref() indexer.DownloadPreference {
 	return indexer.DownloadPreference{
-		Quality:   p.Quality,
-		Groups:    append([]string{}, p.Groups...),
-		Languages: append([]string{}, p.Languages...),
-		MinSizeMB: p.MinSizeMB,
-		MaxSizeMB: p.MaxSizeMB,
+		Quality:               p.Quality,
+		StrictQualityLanguage: !p.AllowPreferenceFallback,
+		Groups:                append([]string{}, p.Groups...),
+		Languages:             append([]string{}, p.Languages...),
+		MinSizeMB:             p.MinSizeMB,
+		MaxSizeMB:             p.MaxSizeMB,
 	}
 }
 
@@ -126,6 +128,7 @@ func LoadGlobal(ctx context.Context, svc *setting.Service) Preference {
 		}
 	}
 
+	p.AllowPreferenceFallback = get("download.allow_preference_fallback") == "true"
 	// 源启用（默认 true）
 	p.StreamEnabled = !isFalsy(get("download.source_enabled.stream"), true)
 	p.BTEnabled = !isFalsy(get("download.source_enabled.bt"), true)

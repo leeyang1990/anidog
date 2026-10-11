@@ -231,9 +231,16 @@ func (e *Engine) add(
 	hash := strings.ToUpper(t.InfoHash().HexString())
 	if !added {
 		e.mu.RLock()
-		_, tracked := e.entries[hash]
+		entry, tracked := e.entries[hash]
+		storedPath := ""
+		if tracked {
+			storedPath = entry.SavePath
+		}
 		e.mu.RUnlock()
 		if tracked {
+			if filepath.Clean(storedPath) != cleanSavePath {
+				return "", fmt.Errorf("同一 BT 任务已在不同目录中，拒绝复用: %s", storedPath)
+			}
 			return hash, nil
 		}
 		return "", fmt.Errorf("BT 客户端中已存在未受管任务: %s", hash)

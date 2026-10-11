@@ -39,7 +39,8 @@ type Config struct {
 	BTSeed             bool
 
 	// 媒体目录
-	MediaRoot string
+	MediaRoot             string
+	VerifyDownloadedMedia bool
 
 	// RSS
 	RSSCheckInterval int
@@ -105,6 +106,7 @@ func Load() *Config {
 	viper.SetDefault("bt_listen_port", 6881)
 	viper.SetDefault("bt_state_dir", "./data/torrent")
 	viper.SetDefault("bt_seed", true)
+	viper.SetDefault("verify_downloaded_media", true)
 	viper.SetDefault("rss_check_interval", 30)
 	viper.SetDefault("log_level", "INFO")
 	viper.SetDefault("tmdb_language", "zh-CN")
@@ -147,6 +149,7 @@ func Load() *Config {
 		BTListenPort:             viper.GetInt("bt_listen_port"),
 		BTStateDir:               viper.GetString("bt_state_dir"),
 		BTSeed:                   viper.GetBool("bt_seed"),
+		VerifyDownloadedMedia:    viper.GetBool("verify_downloaded_media"),
 		RSSCheckInterval:         viper.GetInt("rss_check_interval"),
 		LogLevel:                 viper.GetString("log_level"),
 		RenameMethod:             viper.GetString("rename_method"),

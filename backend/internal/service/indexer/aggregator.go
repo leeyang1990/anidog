@@ -92,6 +92,9 @@ func RankByPreferenceAndSeason(cands []Candidate, prefs DownloadPreference, targ
 		if targetSeason > 0 && c.Parsed != nil && c.Parsed.SeasonNum != nil && *c.Parsed.SeasonNum != targetSeason {
 			continue
 		}
+		if prefs.StrictQualityLanguage && !matchesRequiredMedia(c.Parsed, prefs) {
+			continue
+		}
 		// 集数过滤
 		if targetEpisode > 0 && c.Parsed != nil {
 			matched := false
@@ -279,4 +282,46 @@ func itoa64(n int64) string {
 		return "-" + string(buf)
 	}
 	return string(buf)
+}
+
+func matchesRequiredMedia(p *titleparse.ParsedTitle, pref DownloadPreference) bool {
+	if p == nil {
+		return false
+	}
+	if want := QualityHeight(pref.Quality); want > 0 && QualityHeight(p.Quality) > 0 && QualityHeight(p.Quality) < want {
+		return false
+	}
+	// Unknown languages may be established by real subtitle tracks on completion.
+	if len(pref.Languages) == 0 || len(p.Lang) == 0 {
+		return true
+	}
+	for _, want := range pref.Languages {
+		for _, have := range p.Lang {
+			if want == have {
+				return true
+			}
+		}
+	}
+	return false
+}
+func QualityHeight(quality string) int {
+	switch strings.ToLower(quality) {
+	case "480p":
+		return 480
+	case "576p":
+		return 576
+	case "720p":
+		return 720
+	case "900p":
+		return 900
+	case "1080p", "fhd":
+		return 1080
+	case "1440p":
+		return 1440
+	case "2160p", "4k", "uhd":
+		return 2160
+	case "4320p", "8k":
+		return 4320
+	}
+	return 0
 }

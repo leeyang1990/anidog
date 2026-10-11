@@ -50,12 +50,12 @@ func TestEngineDownloadsFromLocalPeerAndRestoresManifest(t *testing.T) {
 		t.Fatalf("hash mismatch: seed=%s leecher=%s", seedHash, leecherHash)
 	}
 	duplicateDir := filepath.Join(root, "duplicate-must-not-relocate")
-	duplicateHash, err := leecher.AddTorrent(ctx, torrentFile, duplicateDir)
-	if err != nil {
-		t.Fatalf("duplicate add: %v", err)
+	if _, err := leecher.AddTorrent(ctx, torrentFile, duplicateDir); err == nil {
+		t.Fatal("duplicate with different save path must be rejected")
 	}
-	if duplicateHash != leecherHash {
-		t.Fatalf("duplicate hash mismatch: first=%s duplicate=%s", leecherHash, duplicateHash)
+	duplicateHash, err := leecher.AddTorrent(ctx, torrentFile, downloadDir)
+	if err != nil || duplicateHash != leecherHash {
+		t.Fatalf("same-path duplicate: %s %v", duplicateHash, err)
 	}
 	leecher.mu.RLock()
 	trackedSavePath := leecher.entries[leecherHash].SavePath

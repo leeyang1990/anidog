@@ -6,6 +6,11 @@
     @update:show="$emit('update:show', $event)"
   >
     <div class="space-y-5">
+      <section v-if="epMeta?.status === 'completed' && epMeta.file_path" class="text-xs space-y-1">
+        <h3 class="text-sm font-bold">本集已归档</h3>
+        <div class="break-all text-muted-foreground">{{ epMeta.file_path }}</div>
+        <div v-if="epMeta.file_size" class="font-num text-muted-foreground">{{ formatSize(epMeta.file_size) }}</div>
+      </section>
       <!-- 已完成的下载 -->
       <section v-if="completedDownloads.length">
         <h3 class="text-sm font-bold mb-2 flex items-center gap-2">
@@ -21,7 +26,11 @@
               <span class="ml-auto text-muted-foreground font-num">{{ formatTime(d.completed_at || d.updated_at) }}</span>
             </div>
             <div class="truncate" :title="d.name">{{ d.name }}</div>
-            <div class="flex gap-2 pt-1">
+            <div v-if="d.scope === 'season'" class="text-muted-foreground pt-1">
+              来自合集（第 {{ d.episode_start }}–{{ d.episode_end }} 集），大小为整个合集。
+              <router-link to="/downloads" class="text-ac-grass-dark hover:underline font-bold">管理合集任务 →</router-link>
+            </div>
+            <div v-else class="flex gap-2 pt-1">
               <button class="text-ac-grass-dark hover:underline font-bold" @click="retryDownload(d)">重新下载</button>
               <button class="text-ac-heart-dark hover:underline font-bold" @click="deleteDownload(d)">删除</button>
             </div>
@@ -109,7 +118,7 @@
       </section>
 
       <!-- 空状态 -->
-      <div v-if="!hasAnyDownload && !diagnosis" class="text-center py-8 text-sm text-muted-foreground space-y-3">
+      <div v-if="!hasAnyDownload && !diagnosis && epMeta?.status !== 'completed'" class="text-center py-8 text-sm text-muted-foreground space-y-3">
         <div>等待下次检查...</div>
         <div class="flex gap-2 justify-center">
           <AcButton size="sm" variant="primary" @click="$emit('manual-search', episode)">🔍 立即手动搜索</AcButton>
@@ -142,18 +151,19 @@ const props = defineProps({
 const emit = defineEmits(['update:show', 'refresh', 'manual-search'])
 const toast = useToast()
 
-const completedDownloads = computed(() => props.downloads.filter(d => d.status === 'completed'))
+const completedDownloads = computed(() => props.downloads.filter(d => d.status === 'completed' && !d.media_missing))
 const activeDownloads = computed(() => props.downloads.filter(d => d.status === 'downloading' || d.status === 'pending'))
 const failedDownloads = computed(() => props.downloads.filter(d => d.status === 'failed'))
 const hasAnyDownload = computed(() => props.downloads.length > 0)
 
 function sourceLabel(src) {
-  return { bt: 'BT', stream: '流媒体', bangumi: '流媒体', rss: 'RSS', manual: '手动' }[src] || src
+  return { bt: 'BT', mikan: '蜜柑 BT', stream: '流媒体', bangumi: '流媒体', rss: 'RSS', manual: '手动' }[src] || src
 }
 
 function sourceVariant(src) {
   switch (src) {
-    case 'bt': return 'wood'
+    case 'bt':
+    case 'mikan': return 'wood'
     case 'stream':
     case 'bangumi': return 'grass'
     case 'rss': return 'sun'

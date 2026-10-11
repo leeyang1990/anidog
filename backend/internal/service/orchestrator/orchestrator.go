@@ -137,7 +137,7 @@ func (o *Orchestrator) collectBTCandidates(
 			lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			mid, matchedTitle, err := indexer.LookupMikanBangumiID(lookupCtx, keyword, season, o.indexerHTTP)
 			cancel()
-			if err != nil || mid <= 0 {
+			if err != nil || mid <= 0 || !titleparse.InstallmentCompatible(anime.Title, matchedTitle) {
 				continue
 			}
 			anime.MikanBangumiID = &mid
@@ -316,10 +316,6 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 	if ctx.Err() != nil {
 		return
 	}
-	if anime.MediaManagementState == MediaStateArchived {
-		return
-	}
-
 	pref := MergeWithAnime(global, anime)
 
 	// 期望集数
@@ -383,10 +379,10 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 	}
 	// 不依赖可能长期不刷新的 anime.status；当已知总集数中的最终集已经
 	// 明确播出，进入最终核验，完整后归档退出目录管理。
-	if state != MediaStateArchived && expected > 0 && latestAired >= expected {
+	if expected > 0 && latestAired >= expected {
 		state = MediaStateFinalizing
 	}
-	if state != MediaStateArchived && (state == MediaStateUninitialized || state == MediaStateFinalizing || triggerEpisode > anime.MediaAuditEpisode) {
+	if state == MediaStateArchived || state == MediaStateUninitialized || state == MediaStateFinalizing || triggerEpisode > anime.MediaAuditEpisode {
 		result := o.reconcileMissingMedia(ctx, anime)
 		if !result.Success {
 			return
@@ -533,6 +529,9 @@ func (o *Orchestrator) trySeasonPack(ctx context.Context, anime *model.Anime, mi
 	if anime.Season != nil && *anime.Season > 0 {
 		season = *anime.Season
 	}
+	if namedSeason := titleparse.InstallmentNumber(anime.Title); namedSeason > 1 {
+		season = namedSeason
+	}
 
 	for _, tier := range pref.Priority {
 		if tier != SourceMikan && tier != SourceBT {
@@ -546,7 +545,7 @@ func (o *Orchestrator) trySeasonPack(ctx context.Context, anime *model.Anime, mi
 			continue
 		}
 		cands := o.collectBTCandidates(ctx, anime, enabled, tier == SourceMikan)
-		ranked := indexer.RankByPreferenceAndSeason(cands, pref.ToIndexerPref(), 0, season)
+		ranked := indexer.RankByPreferenceAndSeason(filterInstallmentCandidates(anime.Title, cands), pref.ToIndexerPref(), 0, season)
 		ranked = retainPreferredLanguage(ranked, pref.Languages)
 		packs := make([]seasonPackCandidate, 0)
 		for _, candidate := range ranked {
@@ -594,6 +593,7 @@ func (o *Orchestrator) trySeasonPack(ctx context.Context, anime *model.Anime, mi
 		task := &dlservice.Task{
 			Name:          fmt.Sprintf("%s - 合集 %02d-%02d", anime.Title, start, end),
 			URL:           url,
+			SourceTitle:   top.Candidate.Title,
 			DownloadType:  model.DownloadTypeTorrent,
 			Source:        tier,
 			AnimeName:     anime.Title,
@@ -711,7 +711,10 @@ func (o *Orchestrator) tryBT(
 	if anime.Season != nil && *anime.Season > 0 {
 		season = *anime.Season
 	}
-	ranked := indexer.RankByPreferenceAndSeason(cands, pref.ToIndexerPref(), ep, season)
+	if namedSeason := titleparse.InstallmentNumber(anime.Title); namedSeason > 1 {
+		season = namedSeason
+	}
+	ranked := indexer.RankByPreferenceAndSeason(filterInstallmentCandidates(anime.Title, cands), pref.ToIndexerPref(), ep, season)
 	rankedOut = resultCount - len(ranked)
 	if len(ranked) == 0 {
 		return false, resultCount, rankedOut, "所有候选均不符合偏好（集数不匹配/分辨率不符/字幕组不符）", "", 0
@@ -871,6 +874,7 @@ func (o *Orchestrator) tryBT(
 	task := &dlservice.Task{
 		Name:          fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
 		URL:           url,
+		SourceTitle:   top.Title,
 		DownloadType:  model.DownloadTypeTorrent,
 		Source:        tier,
 		AnimeName:     anime.Title,
@@ -1160,6 +1164,9 @@ func (o *Orchestrator) downloadedEpisodes(ctx context.Context, animeID uint) map
 			}
 			continue
 		}
+		if r.Scope == model.DownloadScopeSeason {
+			continue // Completed packs are represented only by mapped episode files.
+		}
 		if r.EpisodeNumber != nil {
 			out[*r.EpisodeNumber] = true
 		}
@@ -1359,4 +1366,14 @@ func (o *Orchestrator) recordDiag(animeID uint, ep int, srcType string, resultCo
 	if err := o.db.Create(&rec).Error; err != nil {
 		zap.L().Warn("orchestrator: 写诊断记录失败", zap.Error(err))
 	}
+}
+
+func filterInstallmentCandidates(title string, candidates []indexer.Candidate) []indexer.Candidate {
+	filtered := make([]indexer.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if titleparse.InstallmentCompatible(title, candidate.Title) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }

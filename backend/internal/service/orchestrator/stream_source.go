@@ -23,6 +23,7 @@ type streamChoice struct {
 	detailURL string
 	episode   stream.EpisodeInfo
 	count     int
+	title     string
 }
 
 func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, retryCount int) (bool, int, string) {
@@ -38,7 +39,7 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, re
 	}
 	task := &dlservice.Task{
 		Name: fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
-		URL:  choice.episode.URL, DownloadType: model.DownloadTypeStream,
+		URL:  choice.episode.URL, SourceTitle: choice.title, DownloadType: model.DownloadTypeStream,
 		Source: SourceStream, AnimeName: anime.Title, AnimeID: &anime.ID,
 		EpisodeNumber: &ep, StreamRuleID: &choice.rule.ID, StreamRule: choice.rule,
 		StreamDetailURL: choice.detailURL, StreamRoadName: choice.episode.RoadName,
@@ -93,19 +94,28 @@ func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Ani
 				preferred = *anime.StreamRoadName
 			}
 		}
-		if detail == "" {
-			searchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			results, err := o.streamMgr.SearchAnime(searchCtx, rule, anime.Title)
-			cancel()
-			if err != nil {
-				continue
-			}
-			best := stream.PickBestMatch(anime.Title, results)
-			if best == nil {
-				continue
-			}
-			detail = best.URL
+		// Persisted URLs are hints, not verified identity. Recheck the catalog
+		// before reuse so an old wrong-arc binding cannot perpetuate itself.
+		searchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		results, err := o.streamMgr.SearchAnime(searchCtx, rule, anime.Title)
+		cancel()
+		if err != nil {
+			continue
 		}
+		best := stream.PickBestMatch(anime.Title, results)
+		if best == nil {
+			continue
+		}
+		for j := range results {
+			if results[j].URL == detail && stream.IsConfidentMatch(anime.Title, results[j].Name) {
+				best = &results[j]
+				break
+			}
+		}
+		if detail != best.URL {
+			preferred = ""
+		}
+		detail = best.URL
 		parseCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		episodes, err := o.streamMgr.GetEpisodes(parseCtx, rule, detail)
 		cancel()
@@ -118,7 +128,7 @@ func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Ani
 		} // DB failure must not bypass cooldown.
 		item, _, ok := selectStreamEpisode(episodes, ep, preferred, blocked, rule.MultiSources)
 		if ok {
-			return &streamChoice{rule: rule, detailURL: detail, episode: item, count: len(episodes)}, nil
+			return &streamChoice{rule: rule, detailURL: detail, episode: item, count: len(episodes), title: best.Name}, nil
 		}
 	}
 	if err := ctx.Err(); err != nil {

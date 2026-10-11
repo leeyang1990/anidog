@@ -25,7 +25,7 @@ func TestValidateDurationAgainstPeersRequiresTwoSamples(t *testing.T) {
 }
 
 func TestValidateDurationAgainstPeersUsesMedian(t *testing.T) {
-	if err := validateDurationAgainstPeers(705, []float64{1400, 1420, 5000}); err != nil {
-		t.Fatalf("candidate at 50%% of median rejected: %v", err)
+	if err := validateDurationAgainstPeers(1140, []float64{1400, 1420, 5000}); err != nil {
+		t.Fatalf("candidate at 80%% of median rejected: %v", err)
 	}
 }

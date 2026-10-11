@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"github.com/anidog/anidog-go/internal/service/titleparse"
 	"sort"
 	"strings"
 )
@@ -93,6 +94,9 @@ func PickBestMatch(target string, results []SearchResult) *SearchResult {
 // 不能因为“它是搜索结果里最高分”就被选中，例如「碧蓝之海」与「碧蓝航线」。
 // 明确包含关系直接通过；否则至少要求基础标题 60% 的唯一字符重叠。
 func IsConfidentMatch(target, candidate string) bool {
+	if !titleparse.InstallmentCompatible(target, candidate) {
+		return false
+	}
 	tBase := strings.TrimSpace(stripSeasonSuffix(target))
 	cBase := strings.TrimSpace(stripSeasonSuffix(candidate))
 	if tBase == "" || cBase == "" {

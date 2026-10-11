@@ -1,11 +1,12 @@
 {
   "name": "mikanani-dog-frontend",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "npm run test:auth && npm run test:preload-recovery && npm run test:i18n && npm run test:skin && npm run test:desktop-appearance && npm run test:poster && npm run test:interaction && npm run test:stage && npm run test:anim",
+    "test": "npm run test:auth && npm run test:preload-recovery && npm run test:i18n && npm run test:skin && npm run test:desktop-appearance && npm run test:poster && npm run test:interaction && npm run test:stage && npm run test:anim && npm run test:episodes",
+    "test:episodes": "node tests/episode-downloads.mjs",
     "test:desktop-appearance": "node tests/desktop-appearance.mjs",
     "test:poster": "node tests/poster-loading.mjs",
     "test:interaction": "node tests/interaction-polish.mjs",

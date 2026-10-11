@@ -50,13 +50,13 @@ func (h *OrchestratorHandler) Diagnosis(c *gin.Context) {
 
 	// 按 (episode, source) 分组输出
 	type epSource struct {
-		SourceType string                        `json:"source_type"`
-		CheckedAt  string                        `json:"checked_at"`
-		ResultCount int                          `json:"result_count"`
-		RankedOut  int                           `json:"ranked_out"`
-		Reason     string                        `json:"reason"`
-		BestTitle  string                        `json:"best_title,omitempty"`
-		BestScore  float64                       `json:"best_score,omitempty"`
+		SourceType  string  `json:"source_type"`
+		CheckedAt   string  `json:"checked_at"`
+		ResultCount int     `json:"result_count"`
+		RankedOut   int     `json:"ranked_out"`
+		Reason      string  `json:"reason"`
+		BestTitle   string  `json:"best_title,omitempty"`
+		BestScore   float64 `json:"best_score,omitempty"`
 	}
 	type epEntry struct {
 		EpisodeNumber int                 `json:"episode_number"`
@@ -126,7 +126,8 @@ func (h *OrchestratorHandler) RunAll(c *gin.Context) {
 
 // EpisodeStatus GET /anime/:id/episode-status
 // 返回该番剧每一集的综合状态：
-//   - completed / downloading / pending: 来自 download 表
+//   - completed: 来自逐集归档记录或单集 download；合集范围不代表全部已归档
+//   - downloading / pending / paused: 来自单集任务或覆盖该集的合集任务
 //   - upcoming: 来自 animeepisode.air_date 在未来
 //   - missing: 既未下载也无诊断（可能尚未扫到）
 //   - no_resource: 既未下载，且 orchestrator_diagnosis 有最新失败记录
@@ -160,11 +161,17 @@ func (h *OrchestratorHandler) EpisodeStatus(c *gin.Context) {
 	for _, e := range episodes {
 		epMeta[e.EpisodeNumber] = e
 	}
+	maxEp := expected
+	for ep := range epMeta {
+		if ep > maxEp {
+			maxEp = ep
+		}
+	}
 
 	// 2. download 表里有效记录（按集号最新一条优先级：completed > downloading > pending > failed）
 	var downloads []model.Download
 	h.db.WithContext(c.Request.Context()).
-		Where("anime_id = ? AND episode_number IS NOT NULL", animeID).
+		Where("anime_id = ?", animeID).
 		Order("created_at DESC").
 		Find(&downloads)
 	type dlInfo struct {
@@ -177,18 +184,53 @@ func (h *OrchestratorHandler) EpisodeStatus(c *gin.Context) {
 		model.DownloadStatusDownloading: 3,
 		model.DownloadStatusPending:     2,
 		model.DownloadStatusPaused:      1,
-		model.DownloadStatusFailed:      0,
 	}
 	dlByEp := make(map[int]dlInfo, len(downloads))
-	for _, d := range downloads {
-		if d.EpisodeNumber == nil {
-			continue
+	dlByTorrentID := make(map[string]model.Download, len(downloads))
+	addDownload := func(ep int, d model.Download) {
+		if ep <= 0 {
+			return
 		}
-		ep := *d.EpisodeNumber
 		old, has := dlByEp[ep]
 		if !has || statusRank[d.Status] > statusRank[old.Status] {
 			dlByEp[ep] = dlInfo{Status: d.Status, Source: d.Source, ID: d.ID}
 		}
+	}
+	for _, d := range downloads {
+		dlByTorrentID[d.TorrentID] = d
+		if _, valid := statusRank[d.Status]; !valid || (d.Status == model.DownloadStatusCompleted && d.MediaMissing) {
+			continue
+		}
+		if d.Scope == model.DownloadScopeSeason {
+			// Completed packs may have partial coverage. Only animeepisode can
+			// establish which files were actually archived, including EP1.
+			if d.Status == model.DownloadStatusCompleted || d.EpisodeStart == nil || d.EpisodeEnd == nil || *d.EpisodeStart <= 0 || *d.EpisodeEnd < *d.EpisodeStart {
+				continue
+			}
+			for ep := *d.EpisodeStart; ep <= *d.EpisodeEnd && ep <= maxEp; ep++ {
+				addDownload(ep, d)
+			}
+			continue
+		}
+		if d.EpisodeNumber == nil {
+			continue
+		}
+		addDownload(*d.EpisodeNumber, d)
+	}
+	for _, meta := range episodes {
+		if !meta.Downloaded {
+			continue
+		}
+		archived := dlInfo{Status: model.DownloadStatusCompleted}
+		if meta.DownloadID != nil {
+			if d, ok := dlByTorrentID[*meta.DownloadID]; ok {
+				if d.MediaMissing {
+					continue
+				}
+				archived.Source, archived.ID = d.Source, d.ID
+			}
+		}
+		dlByEp[meta.EpisodeNumber] = archived
 	}
 
 	// 3. 诊断记录（最新失败原因）
@@ -221,6 +263,8 @@ func (h *OrchestratorHandler) EpisodeStatus(c *gin.Context) {
 		Status        string      `json:"status"` // completed/downloading/pending/upcoming/no_resource/missing
 		Source        string      `json:"source,omitempty"`
 		DownloadID    uint        `json:"download_id,omitempty"`
+		FilePath      *string     `json:"file_path,omitempty"`
+		FileSize      *int64      `json:"file_size,omitempty"`
 		AirDate       string      `json:"air_date,omitempty"`
 		NameCN        string      `json:"name_cn,omitempty"`
 		Title         string      `json:"title,omitempty"`
@@ -229,13 +273,6 @@ func (h *OrchestratorHandler) EpisodeStatus(c *gin.Context) {
 	}
 
 	out := make([]epStatus, 0, expected)
-	maxEp := expected
-	// 兜底：如果 episodeCount 没设置，至少把 animeepisode 表里看到的都返回
-	for ep := range epMeta {
-		if ep > maxEp {
-			maxEp = ep
-		}
-	}
 	for ep := 1; ep <= maxEp; ep++ {
 		row := epStatus{EpisodeNumber: ep, IsAired: true}
 		if meta, has := epMeta[ep]; has {
@@ -251,10 +288,13 @@ func (h *OrchestratorHandler) EpisodeStatus(c *gin.Context) {
 			}
 		}
 
-		if dl, has := dlByEp[ep]; has && dl.Status != model.DownloadStatusFailed {
+		if dl, has := dlByEp[ep]; has {
 			row.Status = dl.Status
 			row.Source = dl.Source
 			row.DownloadID = dl.ID
+			if dl.Status == model.DownloadStatusCompleted {
+				row.FilePath, row.FileSize = epMeta[ep].FilePath, epMeta[ep].FileSize
+			}
 		} else if !row.IsAired {
 			row.Status = "upcoming"
 		} else if diag, has := diagByEp[ep]; has {

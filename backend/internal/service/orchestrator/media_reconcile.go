@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/disk"
 	"go.uber.org/zap"
 	"gorm.io/gorm/clause"
 
@@ -35,6 +37,7 @@ type MediaAuditResult struct {
 	Confirmed bool
 	Missing   []int
 	Snapshot  string
+	Present   map[int]bool // Actual files; queued tasks never establish completeness.
 }
 
 var standardEpisodeFile = regexp.MustCompile(`(?i)S(\d{1,2})E(\d{1,3})`)
@@ -118,8 +121,18 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 		}
 		missingSet[*dl.EpisodeNumber] = true
 	}
+	// Pack members and disk-adopted media may have no per-episode Download row.
+	var mapped []model.AnimeEpisode
+	if err := o.db.WithContext(ctx).Where("anime_id = ? AND downloaded = ?", anime.ID, true).Find(&mapped).Error; err != nil {
+		return MediaAuditResult{}
+	}
+	for _, row := range mapped {
+		if !present[row.EpisodeNumber] {
+			missingSet[row.EpisodeNumber] = true
+		}
+	}
 	if len(missingSet) == 0 {
-		return MediaAuditResult{Success: true, Confirmed: true}
+		return MediaAuditResult{Success: true, Confirmed: true, Present: present}
 	}
 
 	now := time.Now()
@@ -136,7 +149,7 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 	if !confirmed {
 		zap.L().Warn("媒体自愈：首次检测到文件缺失，等待二次确认",
 			zap.Uint("anime_id", anime.ID), zap.String("season_dir", seasonDir), zap.Ints("episodes", missing))
-		return MediaAuditResult{Success: true, Missing: missing, Snapshot: snapshot}
+		return MediaAuditResult{Success: true, Missing: missing, Snapshot: snapshot, Present: present}
 	}
 	for _, ep := range missing {
 		if err := o.db.WithContext(ctx).Model(&model.Download{}).
@@ -151,7 +164,7 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 	zap.L().Warn("媒体自愈：检测到当前季文件缺失，将自动补全",
 		zap.Uint("anime_id", anime.ID), zap.String("anime", anime.Title),
 		zap.String("season_dir", seasonDir), zap.Ints("episodes", missing))
-	return MediaAuditResult{Success: true, Confirmed: true, Missing: missing, Snapshot: snapshot}
+	return MediaAuditResult{Success: true, Confirmed: true, Missing: missing, Snapshot: snapshot, Present: present}
 }
 
 func (o *Orchestrator) auditHistoricalStreamMediaOnce(ctx context.Context, anime *model.Anime) {
@@ -189,8 +202,16 @@ func (o *Orchestrator) quarantineSuspiciousStreamMedia(ctx context.Context, anim
 		items = append(items, mediaDuration{dl: dl, duration: duration})
 		baseline = append(baseline, duration)
 	}
-	if len(baseline) < 3 {
+	if len(baseline) == 0 {
 		return nil
+	}
+	var refs []model.AnimeEpisode
+	if err := o.db.WithContext(ctx).Where("anime_id = ?", anime.ID).Find(&refs).Error; err != nil {
+		return nil
+	}
+	references := map[int]int{}
+	for _, row := range refs {
+		references[row.EpisodeNumber] = row.DurationSeconds
 	}
 	sort.Float64s(baseline)
 	median := baseline[len(baseline)/2]
@@ -198,10 +219,22 @@ func (o *Orchestrator) quarantineSuspiciousStreamMedia(ctx context.Context, anim
 		median = (baseline[len(baseline)/2-1] + median) / 2
 	}
 	minimum := median * 0.5
+	if median >= 600 {
+		minimum = median * 0.8
+	}
 	quarantined := make([]int, 0)
 	for _, item := range items {
 		dl := item.dl
-		if dl.EpisodeNumber == nil || dl.DownloadType != model.DownloadTypeStream || item.duration+5 >= minimum {
+		if dl.EpisodeNumber == nil || dl.DownloadType != model.DownloadTypeStream {
+			continue
+		}
+		rejected := false
+		if reference := references[*dl.EpisodeNumber]; reference > 0 {
+			rejected = dlservice.ValidateReferenceDuration(item.duration, reference) != nil
+		} else if len(baseline) >= 3 {
+			rejected = item.duration+5 < minimum
+		}
+		if !rejected {
 			continue
 		}
 		from := strings.TrimSpace(*dl.FilePath)
@@ -242,11 +275,6 @@ func (o *Orchestrator) RetryEpisodeAfterCandidateFailure(ctx context.Context, an
 	}
 	var anime model.Anime
 	if err := o.db.WithContext(ctx).First(&anime, animeID).Error; err != nil || !anime.IsSubscribed {
-		return
-	}
-	if anime.MediaManagementState == MediaStateArchived {
-		zap.L().Info("候选恢复：番剧已归档，不再自动补齐",
-			zap.Uint("anime_id", animeID), zap.Int("episode", episode))
 		return
 	}
 	if err := o.checkMediaRootHealth(ctx, o.currentMediaRoot(ctx)); err != nil {
@@ -302,8 +330,10 @@ func (o *Orchestrator) persistMediaAuditResult(ctx context.Context, anime *model
 		updates["media_missing_snapshot"] = ""
 		updates["media_missing_checked_at"] = nil
 		updates["media_audit_episode"] = latestAired
-		if state == MediaStateFinalizing && len(result.Missing) == 0 && latestAired >= expected {
+		if len(result.Missing) == 0 && latestAired >= expected && allEpisodesPresent(result.Present, expected) {
 			state = MediaStateArchived
+		} else if state == MediaStateArchived || state == MediaStateFinalizing {
+			state = MediaStateFinalizing
 		} else if state == MediaStateUninitialized {
 			state = MediaStateTracking
 		}
@@ -383,6 +413,24 @@ func (o *Orchestrator) checkMediaRootHealth(ctx context.Context, root string) er
 }
 
 func mountedFilesystemType(path string) (string, error) {
+	if runtime.GOOS != "linux" {
+		partitions, err := disk.Partitions(true)
+		if err != nil {
+			return "", err
+		}
+		clean := filepath.Clean(path)
+		bestMount, bestType := "", ""
+		for _, p := range partitions {
+			mount := filepath.Clean(p.Mountpoint)
+			if (clean == mount || strings.HasPrefix(clean, strings.TrimSuffix(mount, string(filepath.Separator))+string(filepath.Separator))) && len(mount) > len(bestMount) {
+				bestMount, bestType = mount, p.Fstype
+			}
+		}
+		if bestType == "" {
+			return "", fmt.Errorf("找不到媒体根目录的挂载信息")
+		}
+		return bestType, nil
+	}
 	file, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
 		return "", fmt.Errorf("读取挂载信息失败: %w", err)
@@ -420,4 +468,18 @@ func parsePositiveInt(value string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+// A successful loss audit is not proof of a complete season: an episode that
+// was never downloaded is absent from Missing as well as from Present.
+func allEpisodesPresent(present map[int]bool, expected int) bool {
+	if expected <= 0 {
+		return false
+	}
+	for ep := 1; ep <= expected; ep++ {
+		if !present[ep] {
+			return false
+		}
+	}
+	return true
 }

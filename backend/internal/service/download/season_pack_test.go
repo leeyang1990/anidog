@@ -111,6 +111,15 @@ func TestCompleteSeasonPackArchivesEveryMappedEpisode(t *testing.T) {
 	if _, err := os.Stat(savePath); !os.IsNotExist(err) {
 		t.Fatalf("race directory was not cleaned: %v", err)
 	}
+	// A restart must not copy the pack's directory and total size onto EP1.
+	svc.reconcileCompletedEpisodeStates(context.Background())
+	var first model.AnimeEpisode
+	if err := db.Where("anime_id = ? AND episode_number = 1", anime.ID).First(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	if first.FilePath == nil || *first.FilePath != *episodes[0].FilePath || first.FileSize == nil || *first.FileSize != *episodes[0].FileSize {
+		t.Fatalf("restart corrupted first episode: %+v", first)
+	}
 }
 
 func TestMapSeasonPackMediaFilesRejectsOpaqueLowCoverage(t *testing.T) {

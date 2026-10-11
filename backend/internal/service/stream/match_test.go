@@ -9,11 +9,11 @@ func TestPickBestMatchRejectsSharedPrefixOnly(t *testing.T) {
 	}
 }
 
-func TestPickBestMatchAcceptsExactBaseWithoutSeasonSuffix(t *testing.T) {
+func TestPickBestMatchRejectsUnprovenSequel(t *testing.T) {
 	results := []SearchResult{{Name: "碧蓝之海", URL: "right"}}
 	got := PickBestMatch("碧蓝之海 第3季", results)
-	if got == nil || got.URL != "right" {
-		t.Fatalf("exact base title rejected: %+v", got)
+	if got != nil {
+		t.Fatalf("unproven sequel selected: %+v", got)
 	}
 }
 

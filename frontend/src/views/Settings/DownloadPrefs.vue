@@ -152,6 +152,14 @@
             </div>
           </div>
 
+          <label class="flex items-center justify-between gap-4 p-3 rounded-2xl border-2 border-ac-sand">
+            <div>
+              <span class="text-sm font-bold">{{ t('downloadPrefs.allowFallback') }}</span>
+              <p class="text-xs text-muted-foreground mt-1">{{ t('downloadPrefs.allowFallbackDesc') }}</p>
+            </div>
+            <AcSwitch v-model="form.allow_preference_fallback" />
+          </label>
+
           <div class="space-y-2">
             <label class="text-sm font-bold text-foreground">{{ t('downloadPrefs.groupWhitelist') }}</label>
             <div class="flex flex-wrap gap-1.5 p-2 rounded-2xl border-2 border-ac-sand bg-card min-h-11">
@@ -275,6 +283,7 @@ const { t } = useI18n({ useScope: 'global' })
 
 const defaults = {
   quality: '1080p',
+  allow_preference_fallback: false,
   groups: ['LoliHouse', '桜都字幕组', 'ANi', '喵萌奶茶屋', '北宇治字幕组'],
   languages: ['simplified'],
   min_size_mb: 100,
@@ -350,6 +359,7 @@ async function load() {
     const data = await get('/settings')
     const map = Array.isArray(data) ? Object.fromEntries(data.map(s => [s.key, s.value])) : (data || {})
     form.quality = map['download.quality'] || defaults.quality
+    form.allow_preference_fallback = boolVal(map['download.allow_preference_fallback'], false)
     try { form.groups = JSON.parse(map['download.groups'] || '[]') } catch { form.groups = [...defaults.groups] }
     if (form.groups.length === 0) form.groups = [...defaults.groups]
     try { form.languages = JSON.parse(map['download.languages'] || '[]') } catch { form.languages = [...defaults.languages] }
@@ -398,6 +408,7 @@ async function save() {
   saving.value = true
   const payload = {
     'download.quality': form.quality,
+    'download.allow_preference_fallback': String(form.allow_preference_fallback),
     'download.groups': JSON.stringify(form.groups),
     'download.languages': JSON.stringify(form.languages),
     'download.min_size_mb': String(form.min_size_mb),

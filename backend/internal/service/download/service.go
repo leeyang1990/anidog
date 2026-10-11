@@ -19,6 +19,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/episode"
 	"github.com/anidog/anidog-go/internal/service/notification"
 	"github.com/anidog/anidog-go/internal/service/stream"
 	"github.com/anidog/anidog-go/internal/ws"
@@ -76,16 +77,26 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 	if err := task.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid task: %w", err)
 	}
+	if err := s.validateTaskAirDate(ctx, task); err != nil {
+		return nil, err
+	}
 	if err := s.ensureMediaCapacity(ctx); err != nil {
 		return nil, fmt.Errorf("媒体存储容量保护: %w", err)
 	}
 
 	torrentID := generateTorrentID(task.DownloadType)
 	savePath := s.resolveTaskSavePath(ctx, task)
+	if savePath != nil {
+		task.SavePath = *savePath
+	} // Executor and DB must use the same resolved directory.
+	if task.SourceTitle == "" {
+		task.SourceTitle = task.Name
+	}
 
 	dl := model.Download{
 		TorrentID:     torrentID,
 		Name:          task.Name,
+		SourceTitle:   task.SourceTitle,
 		URL:           task.URL,
 		SavePath:      savePath,
 		Status:        model.DownloadStatusPending,
@@ -388,6 +399,16 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		}
 		return false
 	}
+	if candidate.Status == model.DownloadStatusDownloading || candidate.Status == model.DownloadStatusPending {
+		ep := 0
+		if candidate.EpisodeNumber != nil {
+			ep = *candidate.EpisodeNumber
+		}
+		if err := s.validateCompletedMedia(ctx, &candidate, ep, existingCompletionPath(stagingPath, finalPath)); err != nil {
+			s.rejectMediaCandidate(ctx, &candidate, err)
+			return false
+		}
+	}
 	won := false
 	alreadyCompleted := false
 	discard := false
@@ -554,6 +575,10 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 	moves := make([]seasonPackFileMove, 0, len(episodes)*3)
 	for _, ep := range episodes {
 		from := stagingFiles[ep]
+		if err := s.validateCompletedMedia(ctx, &candidate, ep, from); err != nil {
+			s.rejectMediaCandidate(ctx, &candidate, err)
+			return false
+		}
 		if _, err := os.Stat(from); err != nil {
 			zap.L().Warn("合集归档源文件不存在", zap.Uint("id", dlID), zap.Int("episode", ep), zap.Error(err))
 			return false
@@ -951,6 +976,7 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 		}
 		task := &Task{
 			Name:          dl.Name,
+			SourceTitle:   dl.SourceTitle,
 			URL:           dl.URL,
 			DownloadType:  dl.DownloadType,
 			Source:        dl.Source,
@@ -1040,6 +1066,7 @@ func (s *Service) RecoverPending(ctx context.Context) {
 
 		task := &Task{
 			Name:          dl.Name,
+			SourceTitle:   dl.SourceTitle,
 			URL:           dl.URL,
 			DownloadType:  dl.DownloadType,
 			Source:        dl.Source,
@@ -1220,6 +1247,11 @@ func (s *Service) reconcileCompletedEpisodeStates(ctx context.Context) {
 	groups := make(map[episodeKey][]model.Download)
 	for i := range completed {
 		dl := completed[i]
+		// A pack's EpisodeNumber only records the scheduling trigger. Its
+		// FilePath and TotalBytes describe the whole pack, not that episode.
+		if dl.Scope == model.DownloadScopeSeason {
+			continue
+		}
 		groups[episodeKey{animeID: *dl.AnimeID, episode: *dl.EpisodeNumber}] = append(
 			groups[episodeKey{animeID: *dl.AnimeID, episode: *dl.EpisodeNumber}], dl)
 	}
@@ -1268,7 +1300,7 @@ func (s *Service) reconcileCompletedEpisodeStates(ctx context.Context) {
 }
 
 func (s *Service) syncCompletedEpisodeState(ctx context.Context, dl *model.Download) error {
-	if dl == nil || dl.Status != model.DownloadStatusCompleted || dl.MediaMissing || dl.AnimeID == nil || dl.EpisodeNumber == nil || *dl.EpisodeNumber <= 0 {
+	if dl == nil || dl.Scope == model.DownloadScopeSeason || dl.Status != model.DownloadStatusCompleted || dl.MediaMissing || dl.AnimeID == nil || dl.EpisodeNumber == nil || *dl.EpisodeNumber <= 0 {
 		return nil
 	}
 	now := time.Now()
@@ -1290,10 +1322,14 @@ func (s *Service) syncCompletedEpisodeState(ctx context.Context, dl *model.Downl
 		row.FilePath = &path
 		updates["file_path"] = path
 	}
-	if dl.TotalBytes != nil && *dl.TotalBytes > 0 {
-		size := *dl.TotalBytes
-		row.FileSize = &size
-		updates["file_size"] = size
+	// A torrent's total includes subtitles/extras or even an entire pack.
+	// The episode projection must use its actual media file, including streams.
+	if row.FilePath != nil {
+		if info, err := os.Stat(*row.FilePath); err == nil && info.Mode().IsRegular() {
+			size := info.Size()
+			row.FileSize = &size
+			updates["file_size"] = size
+		}
 	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "anime_id"}, {Name: "episode_number"}},
@@ -1525,6 +1561,28 @@ func (s *Service) ensureMediaCapacity(ctx context.Context) error {
 	freeGB := float64(usage.Free) / float64(1024*1024*1024)
 	if minFreeGB > 0 && freeGB < minFreeGB {
 		return fmt.Errorf("%s 仅剩 %.1f GB，低于 %.1f GB 保留空间", root, freeGB, minFreeGB)
+	}
+	return nil
+}
+
+// RSS, manual auto-search and season packs all pass the same airing boundary.
+// Explicit manual downloads remain possible when catalog dates are incorrect.
+func (s *Service) validateTaskAirDate(ctx context.Context, task *Task) error {
+	if task.Source == SourceManual || task.AnimeID == nil || task.EpisodeNumber == nil {
+		return nil
+	}
+	start, end := *task.EpisodeNumber, *task.EpisodeNumber
+	if task.Scope == model.DownloadScopeSeason && task.EpisodeStart != nil && task.EpisodeEnd != nil {
+		start, end = *task.EpisodeStart, *task.EpisodeEnd
+	}
+	var rows []model.AnimeEpisode
+	if err := s.db.WithContext(ctx).Where("anime_id = ? AND episode_number BETWEEN ? AND ?", *task.AnimeID, start, end).Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.AirDate != nil && !episode.IsAired(*row.AirDate, time.Now()) {
+			return fmt.Errorf("第 %d 集尚未播出（%s），自动下载已跳过", row.EpisodeNumber, *row.AirDate)
+		}
 	}
 	return nil
 }

@@ -24,7 +24,8 @@ type Task struct {
 	RuntimeID string
 
 	// Name is the human-readable name (e.g. "Frieren - 第1集")
-	Name string
+	Name        string
+	SourceTitle string
 
 	// URL is the resource URL. For torrents: magnet/torrent URL.
 	// For streams: the episode page URL (executor will intercept the video URL).

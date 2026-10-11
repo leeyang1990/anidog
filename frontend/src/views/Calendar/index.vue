@@ -12,6 +12,9 @@
     <div v-if="loading" class="flex justify-center py-16"><AcSpinner :size="48" /></div>
 
     <template v-else>
+      <div v-if="source !== 'bangumi'" role="status" class="mb-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        {{ source === 'cache' ? t('pages.calendar.cached', { time: updatedAt }) : t('pages.calendar.local', { start: weekStart, end: weekEnd }) }}
+      </div>
       <!-- 星期选择器 -->
       <nav class="flex gap-2 mb-6 overflow-x-auto pb-2">
         <button v-for="day in calendarData" :key="day.weekday"
@@ -35,13 +38,13 @@
       <div v-if="currentDay && currentDay.items.length" class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
         <AnimeCard
           v-for="item in currentDay.items"
-          :key="item.id"
+          :key="item.local_id || item.id"
           :item="item"
           @click="goToDetail(item)"
           @subscribe="subscribeBangumi(item)"
         />
       </div>
-      <AcEmpty v-else :title="t('pages.calendar.empty')" :description="t('pages.calendar.emptyDesc')" class="py-12" />
+      <AcEmpty v-else :title="t(source === 'local' ? 'pages.calendar.localEmpty' : 'pages.calendar.empty', { day: weekdayName(activeDay) })" :description="t('pages.calendar.emptyDesc')" class="py-12" />
     </template>
   </div>
 </template>
@@ -49,6 +52,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { calendarDay, calendarDate, calendarDays } from '@/utils/calendar'
 import { get, post } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
 import { RefreshOutline } from '@vicons/ionicons5'
@@ -66,8 +70,11 @@ const refreshing = ref(false)
 const calendarData = ref([])
 
 const today = new Date().getDay()
-const routeDay = Number(route.query.day)
-const activeDay = ref(Number.isInteger(routeDay) && routeDay >= 0 && routeDay <= 6 ? routeDay : today)
+const activeDay = ref(calendarDay(route.query.day, today))
+const source = ref('bangumi')
+const updatedAt = ref('')
+const weekStart = ref('')
+const weekEnd = ref('')
 
 const currentDay = computed(() => calendarData.value.find(d => d.weekday === activeDay.value))
 
@@ -83,28 +90,14 @@ function selectDay(day) {
 async function fetchCalendar() {
   loading.value = true
   try {
-    const data = await get('/calendar')
-    const days = Array.isArray(data) ? data : []
-    const grouped = {}
-    for (let i = 0; i < 7; i++) {
-      grouped[i] = { weekday: i, isToday: i === today, items: [] }
-    }
-    for (const day of days) {
-      const wd = day.weekday_id === 7 ? 0 : day.weekday_id
-      if (wd >= 0 && wd <= 6 && grouped[wd]) {
-        grouped[wd].items = (day.items || []).map(item => ({
-          id: item.id, name: item.name_cn || item.name, image: item.image,
-          rating_score: item.rating_score, air_date: item.air_date,
-          is_subscribed: item.is_subscribed, local_id: item.local_id
-        }))
-      }
-    }
-    calendarData.value = Object.values(grouped).sort((a, b) => {
-      const diffA = (a.weekday - today + 7) % 7
-      const diffB = (b.weekday - today + 7) % 7
-      return diffA - diffB
-    })
-  } catch { toast.error(t('pages.calendar.fetchFailed')) }
+    const data = await get(`/calendar?metadata=1&date=${calendarDate()}`)
+    source.value = data.source || 'bangumi'
+    updatedAt.value = data.updated_at ? new Date(data.updated_at).toLocaleString() : ''
+    weekStart.value = data.week_start || ''
+    weekEnd.value = data.week_end || ''
+    calendarData.value = calendarDays(Array.isArray(data) ? data : data.days, today)
+    return true
+  } catch { toast.error(t('pages.calendar.fetchFailed')); return false }
   finally { loading.value = false }
 }
 
@@ -112,8 +105,8 @@ async function refreshCalendar() {
   refreshing.value = true
   try {
     await post('/calendar/refresh')
-    toast.success(t('pages.calendar.refreshed'))
-    await fetchCalendar()
+    const fetched = await fetchCalendar()
+    if (fetched && source.value === 'bangumi') toast.success(t('pages.calendar.refreshed'))
   } catch { toast.error(t('pages.calendar.refreshFailed')) }
   finally { refreshing.value = false }
 }

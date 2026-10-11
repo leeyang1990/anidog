@@ -102,6 +102,10 @@ func (s *BangumiService) setCache(key string, data interface{}, ttl time.Duratio
 
 func (s *BangumiService) ClearCache() {
 	s.cache.Range(func(key, _ interface{}) bool {
+		// Keep the last verified calendar available if a manual refresh fails.
+		if key == "calendar:last-good" {
+			return true
+		}
 		s.cache.Delete(key)
 		return true
 	})
@@ -164,7 +168,7 @@ func (s *BangumiService) SearchAnime(ctx context.Context, keyword string) ([]Ban
 				Score float64 `json:"score"`
 			} `json:"rating"`
 			AirDate    string `json:"air_date"`
-			AirWeekday int    `json:"air_weekday"`
+			AirWeekday *int   `json:"air_weekday"`
 			EpsCount   int    `json:"eps_count"`
 			Type       int    `json:"type"`
 		} `json:"data"`
@@ -187,7 +191,7 @@ func (s *BangumiService) SearchAnime(ctx context.Context, keyword string) ([]Ban
 			ImageURL:   imageURL,
 			Rating:     item.Rating.Score,
 			AirDate:    item.AirDate,
-			AirWeekday: item.AirWeekday,
+			AirWeekday: resolveAirWeekday(item.AirWeekday, nil, item.AirDate),
 			EpsCount:   item.EpsCount,
 			Type:       item.Type,
 		})
@@ -456,7 +460,7 @@ func (s *BangumiService) GetAnimeDetail(ctx context.Context, bangumiID int) (*Ba
 		} `json:"rating"`
 		Date          string `json:"date"`
 		AirDate       string `json:"air_date"`
-		AirWeekday    int    `json:"air_weekday"`
+		AirWeekday    *int   `json:"air_weekday"`
 		Eps           int    `json:"eps"`
 		EpsCount      int    `json:"eps_count"`
 		TotalEpisodes int    `json:"total_episodes"`
@@ -523,7 +527,7 @@ func (s *BangumiService) GetAnimeDetail(ctx context.Context, bangumiID int) (*Ba
 		Rating:        item.Rating.Score,
 		Rank:          item.Rating.Rank,
 		AirDate:       airDate,
-		AirWeekday:    item.AirWeekday,
+		AirWeekday:    resolveAirWeekday(item.AirWeekday, infobox, airDate),
 		EpsCount:      eps,
 		TotalEpisodes: item.TotalEpisodes,
 		Platform:      item.Platform,
@@ -647,71 +651,6 @@ func (s *BangumiService) GetEpisodes(ctx context.Context, bangumiID int) ([]Bang
 	// 缓存 1 小时——播出时间表不会频繁变
 	s.setCache(cacheKey, resp.Data, time.Hour)
 	return resp.Data, nil
-}
-
-func (s *BangumiService) GetCalendar(ctx context.Context) ([]BangumiCalendarDay, error) {
-	cacheKey := "calendar"
-	if cached, ok := s.getCached(cacheKey); ok {
-		return cached.([]BangumiCalendarDay), nil
-	}
-
-	data, err := s.doRequest(ctx, http.MethodGet, "/calendar", nil)
-	if err != nil {
-		zap.L().Warn("Bangumi API 获取日历失败，尝试使用默认规则", zap.Error(err))
-		return s.GetCalendarWithDefaultRules(ctx)
-	}
-
-	var raw []struct {
-		Weekday struct {
-			ID int `json:"id"`
-		} `json:"weekday"`
-		Items []struct {
-			ID      int    `json:"id"`
-			Name    string `json:"name"`
-			NameCN  string `json:"name_cn"`
-			Summary string `json:"summary"`
-			Images  struct {
-				Common string `json:"common"`
-			} `json:"images"`
-			Rating struct {
-				Score float64 `json:"score"`
-			} `json:"rating"`
-			AirDate    string `json:"air_date"`
-			AirWeekday int    `json:"air_weekday"`
-			EpsCount   int    `json:"eps_count"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		zap.L().Warn("Bangumi API 日历解析失败，尝试使用默认规则", zap.Error(err))
-		return s.GetCalendarWithDefaultRules(ctx)
-	}
-
-	var calendar []BangumiCalendarDay
-	for _, day := range raw {
-		var items []BangumiAnime
-		for _, item := range day.Items {
-			items = append(items, BangumiAnime{
-				ID:         item.ID,
-				Name:       item.Name,
-				NameCN:     item.NameCN,
-				Summary:    item.Summary,
-				ImageURL:   item.Images.Common,
-				Rating:     item.Rating.Score,
-				AirDate:    item.AirDate,
-				AirWeekday: item.AirWeekday,
-				EpsCount:   item.EpsCount,
-			})
-		}
-		calendar = append(calendar, BangumiCalendarDay{
-			WeekdayID: day.Weekday.ID,
-			WeekdayCN: weekdayCN[day.Weekday.ID],
-			Items:     items,
-		})
-	}
-
-	s.setCache(cacheKey, calendar, 6*time.Hour)
-	zap.L().Info("Bangumi 日历数据已更新", zap.Int("天数", len(calendar)))
-	return calendar, nil
 }
 
 // SearchWithDefaultRules 使用默认规则搜索番剧（当 Bangumi API 不可用时）
@@ -933,113 +872,4 @@ func (s *BangumiService) generateIDFromLink(link string) int {
 		hash = -hash
 	}
 	return hash
-}
-
-// GetCalendarWithDefaultRules 使用默认规则获取日历数据
-func (s *BangumiService) GetCalendarWithDefaultRules(ctx context.Context) ([]BangumiCalendarDay, error) {
-	if !s.cfg.EnableDefaultRules {
-		return nil, fmt.Errorf("Bangumi API 不可用且默认规则已禁用")
-	}
-
-	cacheKey := "calendar:default"
-	if cached, ok := s.getCached(cacheKey); ok {
-		return cached.([]BangumiCalendarDay), nil
-	}
-
-	zap.L().Info("使用默认规则获取日历数据",
-		zap.String("优先规则", s.cfg.DefaultRuleName))
-
-	// 初始化一周的日历结构
-	days := make(map[int]*BangumiCalendarDay)
-	for i := 0; i <= 6; i++ {
-		days[i] = &BangumiCalendarDay{
-			WeekdayID: i,
-			WeekdayCN: weekdayCN[i],
-			Items:     []BangumiAnime{},
-		}
-	}
-
-	// 使用默认规则搜索当前热门番剧
-	hotKeywords := []string{"海贼王", "进击的巨人", "鬼灭之刃", "咒术回战", "间谍过家家", "电锯人", "蓝色监狱", "我推的孩子", "葬送的芙莉莲"}
-
-	// 优先使用指定的默认规则
-	var ruleNames []string
-	if s.cfg.DefaultRuleName != "" {
-		ruleNames = []string{s.cfg.DefaultRuleName}
-	}
-
-	// 如果没有指定规则，尝试所有规则
-	if len(ruleNames) == 0 {
-		for name := range s.defaultRules {
-			ruleNames = append(ruleNames, name)
-		}
-	}
-
-	// 搜索热门番剧
-	for _, keyword := range hotKeywords {
-		for _, ruleName := range ruleNames {
-			rule, ok := s.defaultRules[ruleName]
-			if !ok {
-				continue
-			}
-
-			selector := config.NewXpathSelector(rule, s.client, ctx)
-			results, err := selector.SearchAnime(keyword)
-			if err != nil {
-				zap.L().Warn("默认规则搜索失败",
-					zap.String("规则", ruleName),
-					zap.String("关键词", keyword),
-					zap.Error(err))
-				continue
-			}
-
-			// 转换并添加到日历
-			for _, result := range results {
-				anime := BangumiAnime{
-					Name:       s.getString(result, "title"),
-					NameCN:     s.getString(result, "name_cn"),
-					Summary:    s.getString(result, "summary"),
-					ImageURL:   s.getString(result, "image"),
-					AirDate:    s.getString(result, "air_date"),
-					EpsCount:   s.getInt(result, "eps_count"),
-					Rating:     s.getFloat(result, "score"),
-					AirWeekday: s.parseWeekday(s.getString(result, "air_weekday")),
-				}
-
-				// 从链接生成 ID
-				if link, ok := result["link"].(string); ok && link != "" {
-					anime.ID = s.generateIDFromLink(link)
-				}
-
-				// 如果有放送日期，添加到对应的星期
-				if anime.AirWeekday >= 0 && anime.AirWeekday <= 6 {
-					days[anime.AirWeekday].Items = append(days[anime.AirWeekday].Items, anime)
-				}
-			}
-
-			// 找到结果后继续下一个关键词
-			if len(results) > 0 {
-				break
-			}
-		}
-	}
-
-	// 构建结果数组
-	var calendar []BangumiCalendarDay
-	for i := 0; i <= 6; i++ {
-		if len(days[i].Items) > 0 {
-			calendar = append(calendar, *days[i])
-		}
-	}
-
-	zap.L().Info("默认规则日历数据已生成",
-		zap.Int("天数", len(calendar)),
-		zap.Int("总番剧数", len(hotKeywords)))
-
-	if len(calendar) == 0 {
-		return nil, fmt.Errorf("无法从默认规则获取日历数据")
-	}
-	s.setCache(cacheKey, calendar, 24*time.Hour)
-
-	return calendar, nil
 }

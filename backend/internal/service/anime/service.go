@@ -233,7 +233,7 @@ func (s *Service) CreateFromBangumi(ctx context.Context, bangumiID int, detail *
 		if detail.EpsCount > 0 {
 			anime.EpisodeCount = &detail.EpsCount
 		}
-		if detail.AirWeekday >= 0 {
+		if detail.AirWeekday >= 0 && detail.AirWeekday <= 6 {
 			anime.AirWeekday = &detail.AirWeekday
 		}
 		// 从 air_date 提取 year
@@ -259,6 +259,11 @@ func (s *Service) RefreshFromBangumi(ctx context.Context, id uint, detail *model
 		return nil
 	}
 	updates := map[string]interface{}{}
+	if detail.AirWeekday >= 0 && detail.AirWeekday <= 6 {
+		updates["air_weekday"] = detail.AirWeekday
+	} else {
+		updates["air_weekday"] = nil
+	}
 	if detail.Rating > 0 {
 		updates["bangumi_rating"] = detail.Rating
 	}
@@ -338,9 +343,12 @@ func (s *Service) GetSubscriptionMap(ctx context.Context) map[int]model.SubStatu
 	return m
 }
 
-func (s *Service) GetSubscribedWithAirWeekday(ctx context.Context) ([]model.Anime, error) {
+// GetSubscribedForCalendar includes dated episodes, never default weekdays.
+func (s *Service) GetSubscribedForCalendar(ctx context.Context, start, end string) ([]model.Anime, error) {
 	var animes []model.Anime
-	err := s.db.WithContext(ctx).Where("is_subscribed = ? AND air_weekday IS NOT NULL", true).Find(&animes).Error
+	err := s.db.WithContext(ctx).Where("is_subscribed = ?", true).
+		Preload("Episodes", "air_date >= ? AND air_date < ? AND episode_number > 0", start, end).
+		Order("id").Find(&animes).Error
 	return animes, err
 }
 

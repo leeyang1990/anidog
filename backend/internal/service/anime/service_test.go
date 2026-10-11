@@ -212,3 +212,30 @@ func TestEpisodeCRUD(t *testing.T) {
 }
 
 func ptrStr(s string) *string { return &s }
+
+func TestBangumiWeekdayUnknownAndRefresh(t *testing.T) {
+	svc := setupAnimeSvc()
+	a, err := svc.CreateFromBangumi(context.Background(), 200, &model.BangumiAnime{Name: "Unknown weekday", AirWeekday: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.AirWeekday != nil {
+		t.Fatal("unknown weekday stored as Sunday")
+	}
+	for _, wd := range []int{4, 0, -1, 7} {
+		if err := svc.RefreshFromBangumi(context.Background(), a.ID, &model.BangumiAnime{AirWeekday: wd}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.Get(context.Background(), a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wd < 0 || wd > 6 {
+			if got.AirWeekday != nil {
+				t.Fatal("invalid weekday persisted")
+			}
+		} else if got.AirWeekday == nil || *got.AirWeekday != wd {
+			t.Fatal("weekday not refreshed")
+		}
+	}
+}

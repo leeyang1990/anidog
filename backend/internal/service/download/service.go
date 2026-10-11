@@ -553,6 +553,8 @@ type seasonPackFileMove struct {
 // 并一次性写入 AnimeEpisode。任何目标冲突或移动失败都会回滚已经移动的文件，
 // 避免只归档半季却把合集标成完成。
 func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFiles map[int]string, mediaRoot string) bool {
+	s.completionMu.Lock()
+	defer s.completionMu.Unlock()
 	if len(stagingFiles) == 0 {
 		return false
 	}
@@ -561,9 +563,26 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 		candidate.AnimeID == nil || candidate.Scope != model.DownloadScopeSeason {
 		return false
 	}
+	if candidate.Status != model.DownloadStatusDownloading && candidate.Status != model.DownloadStatusPending {
+		return false
+	}
 	var anime model.Anime
 	if err := s.db.WithContext(ctx).First(&anime, *candidate.AnimeID).Error; err != nil {
 		return false
+	}
+	var existing []model.AnimeEpisode
+	if err := s.db.WithContext(ctx).Where("anime_id = ? AND downloaded = ?", anime.ID, true).Find(&existing).Error; err != nil {
+		return false
+	}
+	covered := make(map[int]bool)
+	seasonDir := BuildAnimeSavePath(mediaRoot, &anime)
+	for _, row := range existing {
+		if row.FilePath == nil || !pathWithin(*row.FilePath, seasonDir) {
+			continue
+		}
+		if info, err := os.Stat(*row.FilePath); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			covered[row.EpisodeNumber] = true
+		}
 	}
 
 	episodes := make([]int, 0, len(stagingFiles))
@@ -574,6 +593,11 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 	plans := make([]seasonPackMovePlan, 0, len(episodes))
 	moves := make([]seasonPackFileMove, 0, len(episodes)*3)
 	for _, ep := range episodes {
+		// A backfill pack naturally includes episodes already in the library.
+		// Keep their original winner and file, including a different extension.
+		if covered[ep] {
+			continue
+		}
 		from := stagingFiles[ep]
 		if err := s.validateCompletedMedia(ctx, &candidate, ep, from); err != nil {
 			s.rejectMediaCandidate(ctx, &candidate, err)
@@ -599,6 +623,16 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 		}
 		moves = append(moves, sidecars...)
 	}
+	if len(plans) == 0 {
+		if s.updateStatus(candidate.ID, model.DownloadStatusSuperseded, map[string]interface{}{
+			"quality_note": "合集内剧集均已归档，保留现有文件", "download_speed": 0,
+		}) {
+			if executor := s.executors[candidate.DownloadType]; executor != nil {
+				_ = executor.Remove(executorTaskID(&candidate), false)
+			}
+		}
+		return false
+	}
 
 	moved := make([]seasonPackFileMove, 0, len(moves))
 	for _, move := range moves {
@@ -616,7 +650,8 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 
 	now := time.Now()
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.Download{}).Where("id = ?", candidate.ID).Updates(map[string]interface{}{
+		result := tx.Model(&model.Download{}).Where("id = ? AND status IN ?", candidate.ID,
+			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Updates(map[string]interface{}{
 			"status":              model.DownloadStatusCompleted,
 			"progress":            100.0,
 			"completed_at":        &now,
@@ -626,8 +661,12 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 			"next_retry_at":       nil,
 			"seeking_alternative": false,
 			"quality_note":        fmt.Sprintf("合集已归档 %d 集", len(plans)),
-		}).Error; err != nil {
-			return err
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("合集任务状态已变化，取消归档")
 		}
 		for _, plan := range plans {
 			downloadID := candidate.TorrentID

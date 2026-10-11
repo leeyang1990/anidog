@@ -133,3 +133,78 @@ func TestMapSeasonPackMediaFilesRejectsOpaqueLowCoverage(t *testing.T) {
 		t.Fatal("opaque pack must not be archived by guessed ordering")
 	}
 }
+
+func TestBackfillPackPreservesExistingEpisodeAndImportsMissing(t *testing.T) {
+	for _, oldExt := range []string{".mkv", ".mp4"} {
+		t.Run(oldExt, func(t *testing.T) {
+			db := testutil.InitTestDB()
+			root := t.TempDir()
+			a := model.Anime{Title: "Backfill"}
+			db.Create(&a)
+			dir := BuildAnimeSavePath(root, &a)
+			os.MkdirAll(dir, 0755)
+			oldPath := filepath.Join(dir, "Backfill S01E01"+oldExt)
+			os.WriteFile(oldPath, []byte("original verified file"), 0600)
+			oldID := "original-winner"
+			db.Create(&model.AnimeEpisode{AnimeID: a.ID, EpisodeNumber: 1, Downloaded: true, FilePath: &oldPath, DownloadID: &oldID})
+			start, end, trigger := 1, 4, 2
+			staging := BuildTorrentPackSavePath(root, a.ID, start, end, "PACK", "magnet")
+			os.MkdirAll(staging, 0755)
+			files := map[int]string{}
+			for ep := 1; ep <= 4; ep++ {
+				p := filepath.Join(staging, fmt.Sprintf("episode-%02d.mkv", ep))
+				os.WriteFile(p, []byte("replacement candidate"), 0600)
+				files[ep] = p
+			}
+			d := model.Download{TorrentID: "backfill-pack", Name: "pack", URL: "magnet", Status: model.DownloadStatusDownloading, AnimeID: &a.ID, EpisodeNumber: &trigger, Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end, SavePath: &staging}
+			db.Create(&d)
+			s := NewService(db, &config.Config{MediaRoot: root}, nil)
+			if !s.CompleteSeasonPack(context.Background(), d.ID, files, root) {
+				t.Fatal("backfill conflicted with an already archived episode")
+			}
+			var first model.AnimeEpisode
+			db.Where("anime_id = ? AND episode_number = 1", a.ID).First(&first)
+			if first.DownloadID == nil || *first.DownloadID != oldID || *first.FilePath != oldPath {
+				t.Fatalf("existing mapping overwritten: %+v", first)
+			}
+			if content, _ := os.ReadFile(oldPath); string(content) != "original verified file" {
+				t.Fatal("existing media overwritten")
+			}
+			var count int64
+			db.Model(&model.AnimeEpisode{}).Where("anime_id = ? AND downloaded = ?", a.ID, true).Count(&count)
+			if count != 4 {
+				t.Fatalf("only %d episodes covered", count)
+			}
+			db.First(&d, d.ID)
+			if d.QualityNote != "合集已归档 3 集" {
+				t.Fatalf("incorrect backfill count: %s", d.QualityNote)
+			}
+		})
+	}
+}
+
+func TestCoveredOrRejectedPackCannotResurrectMedia(t *testing.T) {
+	db := testutil.InitTestDB()
+	root := t.TempDir()
+	a := model.Anime{Title: "Covered"}
+	db.Create(&a)
+	dir := BuildAnimeSavePath(root, &a)
+	os.MkdirAll(dir, 0755)
+	path := filepath.Join(dir, "Covered S01E01.mkv")
+	os.WriteFile(path, []byte("original"), 0600)
+	db.Create(&model.AnimeEpisode{AnimeID: a.ID, EpisodeNumber: 1, Downloaded: true, FilePath: &path})
+	d := model.Download{TorrentID: "covered-pack", Name: "pack", URL: "magnet", Status: model.DownloadStatusDownloading, AnimeID: &a.ID, Scope: model.DownloadScopeSeason}
+	db.Create(&d)
+	s := NewService(db, &config.Config{MediaRoot: root}, nil)
+	if s.CompleteSeasonPack(context.Background(), d.ID, map[int]string{1: "unused-candidate.mkv"}, root) {
+		t.Fatal("a wholly covered pack cannot replace the winner")
+	}
+	db.First(&d, d.ID)
+	if d.Status != model.DownloadStatusSuperseded {
+		t.Fatalf("covered pack kept retrying: %s", d.Status)
+	}
+	db.Model(&d).Update("status", model.DownloadStatusFailed)
+	if s.CompleteSeasonPack(context.Background(), d.ID, map[int]string{2: "unused-candidate.mkv"}, root) {
+		t.Fatal("failed pack resurrected")
+	}
+}

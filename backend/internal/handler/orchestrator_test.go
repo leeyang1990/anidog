@@ -129,3 +129,36 @@ func TestEpisodeStatusArchiveWinsOverActivePack(t *testing.T) {
 		t.Fatalf("pack without trigger lost: %+v", got)
 	}
 }
+
+func TestEpisodeStatusPreservesPlaybackDuringQualityUpgrade(t *testing.T) {
+	db := testutil.InitTestDB()
+	total, start, end := 2, 1, 2
+	a := model.Anime{Title: "upgrade", EpisodeCount: &total, Status: model.AnimeStatusFinished}
+	db.Create(&a)
+	p := "/media/old.mkv"
+	db.Create(&model.AnimeEpisode{AnimeID: a.ID, EpisodeNumber: 1, Downloaded: true, FilePath: &p, QualityStatus: model.QualityUpgradeNeeded, QualityReason: "繁体字幕"})
+	d := model.Download{TorrentID: "upgrade", Name: "upgrade", URL: "magnet", AnimeID: &a.ID, Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end, Status: model.DownloadStatusDownloading, Purpose: model.DownloadPurposeSeasonUpgrade, UpgradeReason: "补齐 1 集，升级 1 集"}
+	db.Create(&d)
+	router := testutil.SetupRouter()
+	NewOrchestratorHandler(db, nil, nil).RegisterRoutes(router.Group("/api/v1"))
+	w := testutil.MakeRequest(router, http.MethodGet, fmt.Sprintf("/api/v1/anime/%d/episode-status", a.ID), nil, "")
+	// Explicit wire names avoid accidentally testing Go's case-insensitive field matching.
+	var raw struct {
+		SeasonFinished bool                     `json:"season_finished"`
+		Upgrade        model.Download           `json:"season_upgrade"`
+		Summary        map[string]int           `json:"quality_summary"`
+		Episodes       []map[string]interface{} `json:"episodes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != 200 || !raw.SeasonFinished || raw.Upgrade.ID != d.ID || raw.Summary["available"] != 1 || raw.Summary["upgrade_needed"] != 1 || raw.Summary["meets_target"] != 0 {
+		t.Fatalf("unexpected response %s", w.Body.String())
+	}
+	if ep := raw.Episodes[0]; ep["status"] != "completed" || ep["file_path"] != p || ep["quality_status"] != model.QualityUpgradeNeeded || ep["upgrade_download_id"] != float64(d.ID) {
+		t.Fatalf("playback was hidden %+v", ep)
+	}
+	if raw.Episodes[1]["status"] != "downloading" {
+		t.Fatal("missing episode lost pack coverage")
+	}
+}

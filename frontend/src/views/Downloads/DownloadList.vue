@@ -104,6 +104,10 @@
             <div v-if="task.status === 'failed' && (task.last_error || task.error_message)" class="text-xs text-ac-heart-dark truncate mt-0.5">
               {{ task.last_error || task.error_message }}
             </div>
+            <div v-else-if="task.purpose === 'season_upgrade'" class="text-xs text-ac-sky-dark mt-0.5" :title="task.upgrade_reason">
+              {{ task.upgrade_reason || t('pages.downloads.seasonUpgrade') }}
+              <span v-if="task.backup_path" class="block text-muted-foreground" :title="task.backup_path">{{ t('pages.downloads.upgradeBackup') }}</span>
+            </div>
             <div v-else-if="task.scope === 'season' && task.episode_start && task.episode_end" class="text-xs text-muted-foreground mt-0.5">
               {{ t('pages.downloads.seasonPack', { start: String(task.episode_start).padStart(2, '0'), end: String(task.episode_end).padStart(2, '0') }) }}
             </div>

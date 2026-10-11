@@ -18,6 +18,7 @@ import (
 	dlservice "github.com/anidog/anidog-go/internal/service/download"
 	"github.com/anidog/anidog-go/internal/service/episode"
 	"github.com/anidog/anidog-go/internal/service/indexer"
+	"github.com/anidog/anidog-go/internal/service/mediacheck"
 	"github.com/anidog/anidog-go/internal/service/setting"
 	"github.com/anidog/anidog-go/internal/service/stream"
 	"github.com/anidog/anidog-go/internal/service/titleparse"
@@ -42,7 +43,8 @@ type Orchestrator struct {
 	mediaRoot      string                     // BT 下载根目录（容器内路径）
 	indexerHTTP    *http.Client               // 复用动态代理的 BT/Mikan 客户端
 	animeLocks     sync.Map                   // anime id -> *sync.Mutex（单实例内防并发审计/入队）
-	qualityAudited sync.Map                   // anime id -> bool（每次进程启动做一次历史流媒体时长复核）
+	mediaProbe     func(context.Context, string) (mediacheck.Media, error)
+	qualityAudited sync.Map // anime id -> bool（每次进程启动做一次历史流媒体时长复核）
 	candidateMu    sync.Mutex
 	candidates     map[string]candidateCacheEntry // 同一轮缺多集时复用 BT 元数据，避免请求量按集数放大
 }
@@ -403,6 +405,16 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 			}
 			o.persistMediaAuditResult(ctx, anime, state, triggerEpisode, expected, result)
 		}
+	}
+
+	quality, qualityErr := o.auditLibraryQuality(ctx, anime, pref)
+	if qualityErr != nil {
+		zap.L().Warn("剧集质量评估失败，保留现有版本", zap.Uint("anime_id", anime.ID), zap.Error(qualityErr))
+		return
+	}
+	o.persistQualityState(ctx, anime, quality, expected)
+	if o.trySeasonUpgrade(ctx, anime, quality, pref) {
+		return
 	}
 
 	if len(missing) == 0 {

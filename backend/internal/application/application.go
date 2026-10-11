@@ -94,6 +94,9 @@ func New(cfg *config.Config) (*Runtime, error) {
 
 	// 5a. 统一下载服务
 	dlSvc := dlservice.NewService(db, cfg, wsHub)
+	if err := dlSvc.RecoverSeasonUpgrades(context.Background()); err != nil {
+		return nil, fmt.Errorf("恢复整季升级事务: %w", err)
+	}
 	dlSvc.RegisterExecutor(model.DownloadTypeStream, dlservice.NewStreamExecutor(streamManager, db))
 	torrentEngine, err := downloader.Create(cfg.DownloaderType, cfg)
 	if err != nil {
@@ -102,6 +105,7 @@ func New(cfg *config.Config) (*Runtime, error) {
 	}
 	if torrentEngine != nil {
 		dlSvc.RegisterExecutor(model.DownloadTypeTorrent, dlservice.NewTorrentExecutor(torrentEngine))
+		dlSvc.SettleRecoveredSeasonUpgrades(context.Background())
 		restoreTorrentDownloads(context.Background(), db, torrentEngine, cfg.BTStateDir)
 	}
 

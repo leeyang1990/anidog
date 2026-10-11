@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -325,7 +326,8 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 							completionBlocked = true
 							updates["last_error"] = err.Error()
 							updates["quality_note"] = err.Error()
-							if strings.Contains(err.Error(), "越过隔离目录") {
+							var invalidMedia candidateMediaError
+							if errors.As(err, &invalidMedia) || strings.Contains(err.Error(), "越过隔离目录") {
 								s.raceService.rejectMediaCandidate(ctx, &dl, candidateMediaError{err})
 								continue
 							}
@@ -342,7 +344,8 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 							completionBlocked = true
 							updates["last_error"] = err.Error()
 							updates["quality_note"] = err.Error()
-							if strings.Contains(err.Error(), "越过隔离目录") {
+							var invalidMedia candidateMediaError
+							if errors.As(err, &invalidMedia) || strings.Contains(err.Error(), "越过隔离目录") {
 								s.raceService.rejectMediaCandidate(ctx, &dl, candidateMediaError{err})
 								continue
 							}
@@ -553,7 +556,7 @@ func (s *QBitSyncer) resolveTorrentSeasonCompletion(
 	if !pathWithin(contentPath, *dl.SavePath) {
 		return nil, "", fmt.Errorf("合集文件越过隔离目录: %s", contentPath)
 	}
-	files, err := mapSeasonPackMediaFiles(contentPath, *dl.EpisodeStart, *dl.EpisodeEnd)
+	files, err := mapSeasonPackMediaFilesMode(contentPath, *dl.EpisodeStart, *dl.EpisodeEnd, dl.Purpose == model.DownloadPurposeSeasonUpgrade)
 	if err != nil {
 		return nil, "", err
 	}

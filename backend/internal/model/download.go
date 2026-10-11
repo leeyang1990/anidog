@@ -36,8 +36,9 @@ const (
 
 // 下载范围。episode 表示单集候选；season 表示一个覆盖多集的合集种子。
 const (
-	DownloadScopeEpisode = "episode"
-	DownloadScopeSeason  = "season"
+	DownloadScopeEpisode         = "episode"
+	DownloadScopeSeason          = "season"
+	DownloadPurposeSeasonUpgrade = "season_upgrade"
 )
 
 // Download 下载数据库模型
@@ -95,6 +96,10 @@ type Download struct {
 
 	AnimeID       *uint  `gorm:"index" json:"anime_id"`
 	EpisodeNumber *int   `json:"episode_number"`
+	Purpose       string `gorm:"index;default:''" json:"purpose"`
+	UpgradeTarget string `json:"upgrade_target,omitempty"`
+	UpgradeReason string `json:"upgrade_reason,omitempty"`
+	BackupPath    string `json:"backup_path,omitempty"`
 	Scope         string `gorm:"index;default:'episode'" json:"scope"`
 	EpisodeStart  *int   `json:"episode_start"`
 	EpisodeEnd    *int   `json:"episode_end"`

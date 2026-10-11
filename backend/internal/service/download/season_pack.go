@@ -20,6 +20,10 @@ var (
 // mapSeasonPackMediaFiles 把合集目录中的视频映射到剧集号。只接受明确可识别
 // 的文件名；宁可让未识别的单集回到后续逐集补齐，也不能按文件排序盲猜集号。
 func mapSeasonPackMediaFiles(contentPath string, start, end int) (map[int]string, error) {
+	return mapSeasonPackMediaFilesMode(contentPath, start, end, false)
+}
+
+func mapSeasonPackMediaFilesMode(contentPath string, start, end int, strict bool) (map[int]string, error) {
 	if start <= 0 || end < start {
 		return nil, fmt.Errorf("无效合集范围 %d-%d", start, end)
 	}
@@ -33,6 +37,9 @@ func mapSeasonPackMediaFiles(contentPath string, start, end int) (map[int]string
 			if walkErr != nil {
 				return walkErr
 			}
+			if strict && entry.IsDir() && path != contentPath && isPackExtraComponent(entry.Name()) {
+				return filepath.SkipDir
+			}
 			if !entry.IsDir() && isRaceMediaExtension(filepath.Ext(path)) {
 				paths = append(paths, path)
 			}
@@ -45,6 +52,9 @@ func mapSeasonPackMediaFiles(contentPath string, start, end int) (map[int]string
 		paths = append(paths, contentPath)
 	}
 	if len(paths) == 0 {
+		if strict {
+			return nil, candidateMediaError{fmt.Errorf("升级合集内没有可识别正片")}
+		}
 		return nil, fmt.Errorf("合集内没有可识别视频文件")
 	}
 
@@ -52,12 +62,18 @@ func mapSeasonPackMediaFiles(contentPath string, start, end int) (map[int]string
 	unassignedExtras := make([]string, 0)
 	for _, path := range paths {
 		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if strict && isPackExtraComponent(name) {
+			continue
+		}
 		ep := packEpisodeNumber(name, start, end)
 		if ep == 0 {
 			if isExtraEpisodeName(name) {
 				unassignedExtras = append(unassignedExtras, path)
 			}
 			continue
+		}
+		if _, exists := mapped[ep]; strict && exists {
+			return nil, candidateMediaError{fmt.Errorf("升级合集第 %d 集文件重复，无法明确选择", ep)}
 		}
 		if previous, exists := mapped[ep]; !exists || fileSize(path) > fileSize(previous) {
 			mapped[ep] = path
@@ -68,6 +84,9 @@ func mapSeasonPackMediaFiles(contentPath string, start, end int) (map[int]string
 	// 标记为 OVA/OAD/OAV 的额外视频分配给范围末尾尚未覆盖的集数。
 	sort.Strings(unassignedExtras)
 	for _, path := range unassignedExtras {
+		if strict {
+			break
+		}
 		for ep := end; ep >= start; ep-- {
 			if _, exists := mapped[ep]; !exists {
 				mapped[ep] = path
@@ -77,6 +96,14 @@ func mapSeasonPackMediaFiles(contentPath string, start, end int) (map[int]string
 	}
 
 	rangeSize := end - start + 1
+	if strict {
+		for ep := start; ep <= end; ep++ {
+			if mapped[ep] == "" {
+				return nil, candidateMediaError{fmt.Errorf("升级合集缺少正片第 %d 集，保留原版", ep)}
+			}
+		}
+		return mapped, nil
+	}
 	minimum := (rangeSize*60 + 99) / 100
 	if minimum < 4 {
 		minimum = 4
@@ -118,4 +145,25 @@ func fileSize(path string) int64 {
 		return 0
 	}
 	return info.Size()
+}
+
+func isPackExtraComponent(name string) bool {
+	lower := strings.ToLower(name)
+	if isExtraEpisodeName(name) || strings.Contains(lower, "ncop") || strings.Contains(lower, "nced") || strings.Contains(lower, "sample") {
+		return true
+	}
+	return lower == "sp" || lower == "extras" || lower == "extra" || lower == "specials" || lower == "bonus" || lower == "特典"
+}
+
+func isUpgradeExtraPath(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return true
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if isPackExtraComponent(strings.TrimSuffix(part, filepath.Ext(part))) {
+			return true
+		}
+	}
+	return false
 }

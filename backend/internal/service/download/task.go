@@ -43,6 +43,9 @@ type Task struct {
 	// Optional relations
 	AnimeID         *uint
 	EpisodeNumber   *int
+	Purpose         string
+	UpgradeTarget   string
+	UpgradeReason   string
 	Scope           string
 	EpisodeStart    *int
 	EpisodeEnd      *int

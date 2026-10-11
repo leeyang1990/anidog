@@ -50,7 +50,17 @@ var mediaExtensions = map[string]bool{
 // reconcileMissingMedia checks completed episodes only inside the subscribed
 // anime's current season directory. Missing media is converted to a transient
 // failure so the same CheckAnime pass can schedule a replacement source.
-func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.Anime) MediaAuditResult {
+func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.Anime) (result MediaAuditResult) {
+	run := func() error { result = o.reconcileMissingMediaLocked(ctx, anime); return nil }
+	if o.dlSvc != nil {
+		_ = o.dlSvc.WithLibraryLock(run)
+	} else {
+		_ = run()
+	}
+	return
+}
+
+func (o *Orchestrator) reconcileMissingMediaLocked(ctx context.Context, anime *model.Anime) MediaAuditResult {
 	if anime == nil {
 		return MediaAuditResult{}
 	}
@@ -84,16 +94,19 @@ func (o *Orchestrator) reconcileMissingMedia(ctx context.Context, anime *model.A
 	// qBittorrent preallocates/sparsely creates the final filename before a
 	// torrent is complete. Such a file must not be adopted as completed media,
 	// otherwise a later dead-swarm replacement is blocked by AnimeEpisode.
-	var activeTorrentEpisodes []int
+	var activeTorrentEpisodes []model.Download
 	if err := o.db.WithContext(ctx).Model(&model.Download{}).
 		Where("anime_id = ? AND episode_number IS NOT NULL AND download_type = ?", anime.ID, model.DownloadTypeTorrent).
 		Where("status IN ?", []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).
-		Pluck("episode_number", &activeTorrentEpisodes).Error; err != nil {
+		Find(&activeTorrentEpisodes).Error; err != nil {
 		zap.L().Warn("媒体自愈：查询未完成 BT 任务失败", zap.Uint("anime_id", anime.ID), zap.Error(err))
 		return MediaAuditResult{}
 	}
-	for _, ep := range activeTorrentEpisodes {
-		delete(present, ep)
+	for _, d := range activeTorrentEpisodes {
+		if d.SavePath != nil && dlservice.IsTorrentRaceSavePath(*d.SavePath) {
+			continue
+		}
+		delete(present, *d.EpisodeNumber)
 	}
 
 	var completed []model.Download

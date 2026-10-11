@@ -37,7 +37,7 @@ type Anime struct {
 	// MediaAuditEpisode is the latest aired episode whose current-season files
 	// have been reconciled. A higher aired episode triggers one new audit.
 	MediaAuditEpisode int `gorm:"default:0" json:"media_audit_episode"`
-	// MediaManagementState: uninitialized / tracking / finalizing / archived.
+	// MediaManagementState: uninitialized / tracking / finalizing / upgrading / quality_review / archived.
 	MediaManagementState  string     `gorm:"index;default:'uninitialized'" json:"media_management_state"`
 	MediaMissingSnapshot  string     `gorm:"type:text" json:"-"`
 	MediaMissingCheckedAt *time.Time `json:"-"`
@@ -202,21 +202,31 @@ func (a *Anime) MediaSeriesYear() int {
 }
 
 // AnimeEpisode 番剧集数数据库模型
+const (
+	QualityMeetsTarget   = "meets_target"
+	QualityUpgradeNeeded = "upgrade_needed"
+	QualityUnknown       = "unknown"
+)
+
 type AnimeEpisode struct {
-	ID              uint      `gorm:"primaryKey" json:"id"`
-	EpisodeNumber   int       `gorm:"index;not null;uniqueIndex:idx_animeepisode_anime_ep,priority:2" json:"episode_number"`
-	Title           *string   `json:"title"`
-	NameCN          *string   `json:"name_cn"`
-	AirDate         *string   `gorm:"index" json:"air_date"`             // YYYY-MM-DD（来自 Bangumi /v0/episodes）
-	DurationSeconds int       `gorm:"default:0" json:"duration_seconds"` // Bangumi reference, zero means unknown.
-	FilePath        *string   `json:"file_path"`
-	FileSize        *int64    `json:"file_size"`
-	Downloaded      bool      `gorm:"index;default:false" json:"downloaded"`
-	DownloadID      *string   `json:"download_id"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	AnimeID         uint      `gorm:"index;not null;uniqueIndex:idx_animeepisode_anime_ep,priority:1" json:"anime_id"`
-	Anime           *Anime    `gorm:"foreignKey:AnimeID" json:"-"`
+	ID                 uint       `gorm:"primaryKey" json:"id"`
+	EpisodeNumber      int        `gorm:"index;not null;uniqueIndex:idx_animeepisode_anime_ep,priority:2" json:"episode_number"`
+	Title              *string    `json:"title"`
+	NameCN             *string    `json:"name_cn"`
+	AirDate            *string    `gorm:"index" json:"air_date"`             // YYYY-MM-DD（来自 Bangumi /v0/episodes）
+	DurationSeconds    int        `gorm:"default:0" json:"duration_seconds"` // Bangumi reference, zero means unknown.
+	FilePath           *string    `json:"file_path"`
+	FileSize           *int64     `json:"file_size"`
+	QualityStatus      string     `gorm:"index;default:''" json:"quality_status"`
+	QualityReason      string     `json:"quality_reason"`
+	QualityFingerprint string     `json:"-"`
+	QualityCheckedAt   *time.Time `json:"quality_checked_at,omitempty"`
+	Downloaded         bool       `gorm:"index;default:false" json:"downloaded"`
+	DownloadID         *string    `json:"download_id"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	AnimeID            uint       `gorm:"index;not null;uniqueIndex:idx_animeepisode_anime_ep,priority:1" json:"anime_id"`
+	Anime              *Anime     `gorm:"foreignKey:AnimeID" json:"-"`
 }
 
 func (AnimeEpisode) TableName() string { return "animeepisode" }

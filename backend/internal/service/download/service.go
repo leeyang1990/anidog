@@ -77,6 +77,9 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 	if err := task.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid task: %w", err)
 	}
+	if err := s.validateSeasonUpgradeTask(ctx, task); err != nil {
+		return nil, err
+	}
 	if err := s.validateTaskAirDate(ctx, task); err != nil {
 		return nil, err
 	}
@@ -105,6 +108,9 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 		AnimeID:       task.AnimeID,
 		EpisodeNumber: task.EpisodeNumber,
 		Scope:         task.Scope,
+		Purpose:       task.Purpose,
+		UpgradeReason: task.UpgradeReason,
+		UpgradeTarget: task.UpgradeTarget,
 		EpisodeStart:  task.EpisodeStart,
 		EpisodeEnd:    task.EpisodeEnd,
 		Source:        task.Source,
@@ -569,6 +575,9 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 	if candidate.Status != model.DownloadStatusDownloading && candidate.Status != model.DownloadStatusPending {
 		return false
 	}
+	if candidate.Purpose == model.DownloadPurposeSeasonUpgrade {
+		return s.completeSeasonUpgrade(ctx, &candidate, stagingFiles, mediaRoot)
+	}
 	var anime model.Anime
 	if err := s.db.WithContext(ctx).First(&anime, *candidate.AnimeID).Error; err != nil {
 		return false
@@ -832,6 +841,10 @@ func (s *Service) settleSeasonPack(ctx context.Context, winner *model.Download, 
 	}
 	for i := range siblings {
 		sibling := &siblings[i]
+		// A single/backfill winner cannot satisfy a whole-season quality upgrade.
+		if sibling.Purpose == model.DownloadPurposeSeasonUpgrade && winner.Purpose != model.DownloadPurposeSeasonUpgrade {
+			continue
+		}
 		if sibling.EpisodeNumber == nil || !covered[*sibling.EpisodeNumber] {
 			continue
 		}
@@ -884,6 +897,10 @@ func (s *Service) settleEpisodeRace(ctx context.Context, winner *model.Download)
 	}
 	for i := range siblings {
 		sibling := &siblings[i]
+		// A single/backfill winner cannot satisfy a whole-season quality upgrade.
+		if sibling.Purpose == model.DownloadPurposeSeasonUpgrade && winner.Purpose != model.DownloadPurposeSeasonUpgrade {
+			continue
+		}
 		note := fmt.Sprintf("同集候选 #%d 已完成，结束多源竞速", winner.ID)
 		if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", sibling.ID).
 			Updates(map[string]interface{}{

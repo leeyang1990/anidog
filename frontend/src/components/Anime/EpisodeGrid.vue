@@ -5,7 +5,10 @@
       <div class="text-sm">
         <span class="font-bold">📺 剧集进度</span>
         <span class="text-muted-foreground ml-2 font-num">
-          {{ completedCount }} / {{ effectiveCount }} 集
+          {{ completedCount }} / {{ effectiveCount }} 集可播放
+          <span v-if="completedCount > 0">· 符合偏好 {{ meetsTargetCount }} 集</span>
+          <span v-if="upgradeNeededCount > 0" class="text-ac-sun-dark">· 待升级 {{ upgradeNeededCount }} 集</span>
+          <span v-if="qualityUnknownCount > 0" class="text-muted-foreground">· 待核验 {{ qualityUnknownCount }} 集</span>
           <span v-if="!episodeCount && effectiveCount > 0" class="text-ac-sun-dark text-xs">（集数未知，按已下载动态显示）</span>
           <span v-if="downloadingCount > 0" class="text-ac-sky-dark">· 下载中 {{ downloadingCount }}</span>
           <span v-if="upcomingCount > 0" class="text-ac-sky-dark">· 待发布 {{ upcomingCount }}</span>
@@ -22,6 +25,13 @@
         </AcButton>
       </div>
     </div>
+
+    <div v-if="seasonUpgrade" class="rounded-xl border border-ac-sky/40 bg-ac-sky/10 px-3 py-2 text-sm">
+      <div class="font-bold">{{ seasonUpgrade.status === 'paused' ? '整季升级已暂停' : '完结整季升级' }} · {{ seasonUpgrade.status === 'pending' ? '排队中' : seasonUpgrade.status === 'downloading' ? '下载中' : '保留当前版本' }}</div>
+      <p class="text-xs text-muted-foreground mt-1">{{ seasonUpgrade.upgrade_reason }}</p>
+      <router-link to="/downloads" class="text-xs text-ac-sky-dark underline">查看升级任务 #{{ seasonUpgrade.id }} →</router-link>
+    </div>
+    <p v-else-if="upgradeNeededCount > 0" class="text-xs text-muted-foreground">{{ seasonFinished ? '已完结，正在寻找符合偏好的完整合集；现有版本仍可播放。' : '追更中，已记录待升级项；确认完结后统一评估整季升级。' }}</p>
 
     <!-- 格子 -->
     <div v-if="effectiveCount > 0" class="grid grid-cols-5 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2">
@@ -99,6 +109,8 @@ const toast = useToast()
 const downloads = ref([])
 const diagnosis = ref([])
 const episodeStatus = ref([])
+const seasonUpgrade = ref(null)
+const seasonFinished = ref(false)
 const triggering = ref(false)
 
 const showDrawer = ref(false)
@@ -131,6 +143,9 @@ const episodeStatusList = computed(() => episodeStatus.value)
 
 const effectiveCount = computed(() => episodeStatus.value.length)
 
+const meetsTargetCount = computed(() => episodeStatus.value.filter(e => e.status === 'completed' && e.quality_status === 'meets_target').length)
+const upgradeNeededCount = computed(() => episodeStatus.value.filter(e => e.status === 'completed' && e.quality_status === 'upgrade_needed').length)
+const qualityUnknownCount = computed(() => episodeStatus.value.filter(e => e.status === 'completed' && (!e.quality_status || e.quality_status === 'unknown')).length)
 const completedCount = computed(() => episodeStatus.value.filter(e => e.status === 'completed').length)
 const downloadingCount = computed(() => episodeStatus.value.filter(e => e.status === 'downloading' || e.status === 'pending').length)
 const upcomingCount = computed(() => episodeStatus.value.filter(e => e.status === 'upcoming').length)
@@ -153,6 +168,9 @@ function cellClass(ep) {
 }
 
 function sourceBadge(ep) {
+  if (ep.upgrade_download_id) return '升级中'
+  if (ep.quality_status === 'upgrade_needed') return '待升级'
+  if (!ep.quality_status || ep.quality_status === 'unknown') return '待核验'
   const map = { bt: 'BT', mikan: 'BT', stream: 'Str', rss: 'RSS', bangumi: 'Str', manual: '手' }
   return map[ep.source] || ''
 }
@@ -166,7 +184,7 @@ function tooltipText(ep) {
   const titleHint = ep.name_cn || ep.title ? `\n${ep.name_cn || ep.title}` : ''
   switch (ep.status) {
     case 'completed':
-      return `第 ${ep.episode_number} 集 · 已下载${titleHint}\n来源：${sourceName(ep.source)}\n点击查看详情`
+      return `第 ${ep.episode_number} 集 · 可播放${ep.quality_status === "upgrade_needed" ? " · 待升级" : ""}${titleHint}\n${ep.quality_reason || ""}\n来源：${sourceName(ep.source)}\n点击查看详情`
     case 'downloading':
     case 'pending':
       return `第 ${ep.episode_number} 集 · 下载中${titleHint}`
@@ -234,6 +252,8 @@ async function fetchEpisodeStatus() {
   try {
     const resp = await get(`/anime/${props.animeId}/episode-status`)
     episodeStatus.value = resp.episodes || []
+    seasonUpgrade.value = resp.season_upgrade || null
+    seasonFinished.value = Boolean(resp.season_finished)
   } catch {
     episodeStatus.value = []
   }

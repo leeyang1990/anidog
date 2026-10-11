@@ -7,7 +7,14 @@
   >
     <div class="space-y-5">
       <section v-if="epMeta?.status === 'completed' && epMeta.file_path" class="text-xs space-y-1">
-        <h3 class="text-sm font-bold">本集已归档</h3>
+        <h3 class="text-sm font-bold">当前可播放版本</h3>
+        <div :class="epMeta.quality_status === 'upgrade_needed' ? 'text-ac-sun-dark' : 'text-muted-foreground'">
+          {{ epMeta.quality_status === 'meets_target' ? '已符合下载偏好' : epMeta.quality_status === 'upgrade_needed' ? '字幕或画质待升级' : '质量待核验，保留当前版本' }}
+        </div>
+        <div v-if="epMeta.quality_reason" class="text-muted-foreground">{{ epMeta.quality_reason }}</div>
+        <div v-if="epMeta.upgrade_download_id" class="text-ac-sky-dark">
+          整季升级任务 #{{ epMeta.upgrade_download_id }} · 全季验证通过后替换，期间仍可播放当前版本。
+        </div>
         <div class="break-all text-muted-foreground">{{ epMeta.file_path }}</div>
         <div v-if="epMeta.file_size" class="font-num text-muted-foreground">{{ formatSize(epMeta.file_size) }}</div>
       </section>
@@ -51,6 +58,7 @@
               <AcTag :variant="sourceVariant(d.source)" size="sm">{{ sourceLabel(d.source) }}</AcTag>
               <span class="truncate flex-1" :title="d.name">{{ d.name }}</span>
             </div>
+            <div v-if="d.purpose === 'season_upgrade'" class="text-ac-sky-dark">{{ d.upgrade_reason }}</div>
             <div class="h-1.5 rounded-full bg-ac-sand overflow-hidden">
               <div class="h-full bg-ac-grass transition-all" :style="{ width: (d.progress || 0) + '%' }"></div>
             </div>

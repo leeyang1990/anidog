@@ -258,23 +258,39 @@ func (h *OrchestratorHandler) EpisodeStatus(c *gin.Context) {
 	}
 
 	now := time.Now()
+	var upgrade *model.Download
+	for i := range downloads {
+		d := &downloads[i]
+		if d.Purpose == model.DownloadPurposeSeasonUpgrade && (d.Status == model.DownloadStatusPending || d.Status == model.DownloadStatusDownloading || d.Status == model.DownloadStatusPaused) {
+			upgrade = d
+			break
+		}
+	}
 	type epStatus struct {
-		EpisodeNumber int         `json:"episode_number"`
-		Status        string      `json:"status"` // completed/downloading/pending/upcoming/no_resource/missing
-		Source        string      `json:"source,omitempty"`
-		DownloadID    uint        `json:"download_id,omitempty"`
-		FilePath      *string     `json:"file_path,omitempty"`
-		FileSize      *int64      `json:"file_size,omitempty"`
-		AirDate       string      `json:"air_date,omitempty"`
-		NameCN        string      `json:"name_cn,omitempty"`
-		Title         string      `json:"title,omitempty"`
-		IsAired       bool        `json:"is_aired"`
-		Diagnosis     []diagBrief `json:"diagnosis,omitempty"`
+		QualityStatus     string      `json:"quality_status,omitempty"`
+		QualityReason     string      `json:"quality_reason,omitempty"`
+		UpgradeDownloadID uint        `json:"upgrade_download_id,omitempty"`
+		UpgradeStatus     string      `json:"upgrade_status,omitempty"`
+		EpisodeNumber     int         `json:"episode_number"`
+		Status            string      `json:"status"` // completed/downloading/pending/upcoming/no_resource/missing
+		Source            string      `json:"source,omitempty"`
+		DownloadID        uint        `json:"download_id,omitempty"`
+		FilePath          *string     `json:"file_path,omitempty"`
+		FileSize          *int64      `json:"file_size,omitempty"`
+		AirDate           string      `json:"air_date,omitempty"`
+		NameCN            string      `json:"name_cn,omitempty"`
+		Title             string      `json:"title,omitempty"`
+		IsAired           bool        `json:"is_aired"`
+		Diagnosis         []diagBrief `json:"diagnosis,omitempty"`
 	}
 
 	out := make([]epStatus, 0, expected)
 	for ep := 1; ep <= maxEp; ep++ {
 		row := epStatus{EpisodeNumber: ep, IsAired: true}
+		if upgrade != nil && upgrade.EpisodeStart != nil && upgrade.EpisodeEnd != nil && ep >= *upgrade.EpisodeStart && ep <= *upgrade.EpisodeEnd {
+			row.UpgradeDownloadID = upgrade.ID
+			row.UpgradeStatus = upgrade.Status
+		}
 		if meta, has := epMeta[ep]; has {
 			if meta.AirDate != nil {
 				row.AirDate = *meta.AirDate
@@ -294,6 +310,10 @@ func (h *OrchestratorHandler) EpisodeStatus(c *gin.Context) {
 			row.DownloadID = dl.ID
 			if dl.Status == model.DownloadStatusCompleted {
 				row.FilePath, row.FileSize = epMeta[ep].FilePath, epMeta[ep].FileSize
+				row.QualityStatus, row.QualityReason = epMeta[ep].QualityStatus, epMeta[ep].QualityReason
+				if row.QualityStatus == "" {
+					row.QualityStatus = model.QualityUnknown
+				}
 			}
 		} else if !row.IsAired {
 			row.Status = "upcoming"
@@ -307,10 +327,26 @@ func (h *OrchestratorHandler) EpisodeStatus(c *gin.Context) {
 		out = append(out, row)
 	}
 
+	summary := gin.H{"available": 0, "meets_target": 0, "upgrade_needed": 0, "unknown": 0}
+	for _, row := range out {
+		if row.Status == model.DownloadStatusCompleted {
+			summary["available"] = summary["available"].(int) + 1
+			key := row.QualityStatus
+			if key == "" {
+				key = model.QualityUnknown
+			}
+			if n, ok := summary[key].(int); ok {
+				summary[key] = n + 1
+			}
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"anime_id":      anime.ID,
-		"title":         anime.Title,
-		"episode_count": expected,
-		"episodes":      out,
+		"quality_summary": summary,
+		"season_finished": episode.SeasonFinished(&anime, episodes, now),
+		"season_upgrade":  upgrade,
+		"anime_id":        anime.ID,
+		"title":           anime.Title,
+		"episode_count":   expected,
+		"episodes":        out,
 	})
 }

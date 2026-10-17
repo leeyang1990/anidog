@@ -22,6 +22,7 @@ type StreamRule struct {
 	UserAgent  *string `json:"user_agent"`
 	Referer    *string `json:"referer"`
 	UseWebview bool   `gorm:"default:false" json:"use_webview"`
+	ProxyMode string `gorm:"default:inherit" json:"proxy_mode"`
 	MultiSources bool  `gorm:"default:true" json:"multi_sources"`
 
 	// XPath 选择器
@@ -60,6 +61,7 @@ type StreamRuleCreate struct {
 	UserAgent         *string `json:"user_agent"`
 	Referer           *string `json:"referer"`
 	UseWebview        *bool   `json:"use_webview"`
+	ProxyMode *string `json:"proxy_mode" binding:"omitempty,oneof=inherit direct"`
 	MultiSources      *bool   `json:"multi_sources"`
 	SearchListXPath   string  `json:"search_list_xpath" binding:"required"`
 	SearchNameXPath   string  `json:"search_name_xpath" binding:"required"`
@@ -84,6 +86,7 @@ type StreamRuleUpdate struct {
 	UserAgent         *string `json:"user_agent"`
 	Referer           *string `json:"referer"`
 	UseWebview        *bool   `json:"use_webview"`
+	ProxyMode *string `json:"proxy_mode" binding:"omitempty,oneof=inherit direct"`
 	MultiSources      *bool   `json:"multi_sources"`
 	SearchListXPath   *string `json:"search_list_xpath"`
 	SearchNameXPath   *string `json:"search_name_xpath"`

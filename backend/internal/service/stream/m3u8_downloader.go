@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/anidog/anidog-go/internal/config"
+	"github.com/anidog/anidog-go/internal/service/mediacheck"
 )
 
 const (
@@ -79,7 +80,7 @@ func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputP
 	totalDuration := d.getM3U8Duration(ctx, videoURL, referer, userAgents...)
 
 	base := d.buildFFmpegCmd(videoURL, outputPath, videoType, referer, userAgents...)
-	cmd := exec.CommandContext(ctx, base.Path, base.Args[1:]...)
+	cmd := mediacheck.MediaCommand(ctx, base.Path, base.Args[1:]...)
 	cmd.WaitDelay = 5 * time.Second
 	d.activeProcs.Store(taskID, cmd)
 	defer d.activeProcs.Delete(taskID)
@@ -309,7 +310,7 @@ func (d *M3U8Downloader) getM3U8Duration(ctx context.Context, videoURL, referer 
 	}
 	args = append(args, videoURL)
 
-	cmd := exec.CommandContext(ctx, "ffprobe", args...)
+	cmd := mediacheck.MediaCommand(ctx, "ffprobe", args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return 0

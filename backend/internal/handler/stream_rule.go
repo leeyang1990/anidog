@@ -68,15 +68,15 @@ func (h *StreamRuleHandler) Create(c *gin.Context) {
 	}
 
 	rule := model.StreamRule{
-		Name:              req.Name,
-		DisplayName:       req.DisplayName,
-		BaseURL:           req.BaseURL,
-		SearchURL:         req.SearchURL,
-		SearchListXPath:   req.SearchListXPath,
-		SearchNameXPath:   req.SearchNameXPath,
-		SearchResultXPath: req.SearchResultXPath,
+		Name:               req.Name,
+		DisplayName:        req.DisplayName,
+		BaseURL:            req.BaseURL,
+		SearchURL:          req.SearchURL,
+		SearchListXPath:    req.SearchListXPath,
+		SearchNameXPath:    req.SearchNameXPath,
+		SearchResultXPath:  req.SearchResultXPath,
 		ChapterResultXPath: req.ChapterResultXPath,
-		Enabled:           true,
+		Enabled:            true,
 	}
 
 	if req.Version != nil {
@@ -96,6 +96,9 @@ func (h *StreamRuleHandler) Create(c *gin.Context) {
 	}
 	if req.UseWebview != nil {
 		rule.UseWebview = *req.UseWebview
+	}
+	if req.ProxyMode != nil {
+		rule.ProxyMode = *req.ProxyMode
 	}
 	if req.MultiSources != nil {
 		rule.MultiSources = *req.MultiSources
@@ -166,6 +169,9 @@ func (h *StreamRuleHandler) Update(c *gin.Context) {
 	}
 	if req.UseWebview != nil {
 		updates["use_webview"] = *req.UseWebview
+	}
+	if req.ProxyMode != nil {
+		updates["proxy_mode"] = *req.ProxyMode
 	}
 	if req.MultiSources != nil {
 		updates["multi_sources"] = *req.MultiSources

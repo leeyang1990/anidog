@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anidog/anidog-go/internal/config"
+	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/network"
 	"github.com/go-rod/rod/lib/proto"
 )
@@ -77,5 +78,13 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 		}
 		_ = page.Close()
 		proxy.Close()
+	}
+	direct := v.GetBrowserForRule(&model.StreamRule{ProxyMode: "direct"})
+	if direct == nil || direct.BrowserContextID == v.GetBrowser().BrowserContextID {
+		t.Fatal("direct rule reused the global proxy context")
+	}
+	video, err = v.InterceptVideoURL(context.Background(), srv.URL+"/valid", "", "", "direct")
+	if err != nil || video.ProxyURL != "" {
+		t.Fatalf("direct route did not reach media transport: %v %v", video, err)
 	}
 }

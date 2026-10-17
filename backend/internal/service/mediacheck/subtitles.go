@@ -99,7 +99,7 @@ func DetectHardSubtitles(ctx context.Context, input string, inputArgs []string, 
 		args := []string{"-nostdin", "-v", "error", "-rw_timeout", "10000000", "-ss", fmt.Sprintf("%.3f", at)}
 		args = append(args, inputArgs...)
 		args = append(args, "-i", input, "-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-vf", "crop=iw:ih*0.20:0:ih*0.80,scale=1920:-2", "-threads", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1")
-		frame, err := exec.CommandContext(frameCtx, "ffmpeg", args...).Output()
+		frame, err := MediaCommand(frameCtx, "ffmpeg", args...).Output()
 		stopFrame()
 		if err != nil {
 			continue

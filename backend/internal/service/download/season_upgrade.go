@@ -315,6 +315,13 @@ func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Do
 		zap.L().Error(note)
 		return false
 	}
+	// Stop peer reads and writes before moving any candidate files. With classic
+	// file IO their handles close at the end of each operation, including on SMB.
+	if executor := s.executors[candidate.DownloadType]; executor != nil {
+		if err := executor.Pause(executorTaskID(candidate)); err != nil {
+			return fail(fmt.Errorf("暂停升级候选的文件访问: %w", err))
+		}
+	}
 	for _, m := range j.Moves {
 		if _, err := os.Stat(m.To); err == nil {
 			return fail(fmt.Errorf("升级目标已存在: %s", m.To))

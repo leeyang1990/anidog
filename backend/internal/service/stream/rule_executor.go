@@ -42,12 +42,25 @@ type BrowserProvider interface {
 
 // StreamRuleExecutor XPath 规则执行器
 type StreamRuleExecutor struct {
-	httpClient *network.HTTPClient
-	browser    BrowserProvider
+	httpClient   *network.HTTPClient
+	browser      BrowserProvider
+	directClient *http.Client
 }
 
 func NewStreamRuleExecutor(httpClient *network.HTTPClient, browser BrowserProvider) *StreamRuleExecutor {
-	return &StreamRuleExecutor{httpClient: httpClient, browser: browser}
+	return &StreamRuleExecutor{httpClient: httpClient, browser: browser, directClient: network.NewClient(network.NewProxyProvider(""), 30*time.Second)}
+}
+
+func (e *StreamRuleExecutor) ruleBrowser(rule *model.StreamRule) *rod.Browser {
+	if e.browser == nil {
+		return nil
+	}
+	if routed, ok := e.browser.(interface {
+		GetBrowserForRule(*model.StreamRule) *rod.Browser
+	}); ok {
+		return routed.GetBrowserForRule(rule)
+	}
+	return e.browser.GetBrowser()
 }
 
 // needsBrowser 判断规则是否需要浏览器渲染。
@@ -68,7 +81,7 @@ func (e *StreamRuleExecutor) Search(ctx context.Context, rule *model.StreamRule,
 	var htmlStr string
 	var err error
 
-	if needsBrowser(rule) && e.browser != nil && e.browser.GetBrowser() != nil {
+	if needsBrowser(rule) && e.browser != nil && e.ruleBrowser(rule) != nil {
 		htmlStr, err = e.fetchWithBrowser(ctx, rule, searchURL, keyword, true)
 	} else {
 		htmlStr, err = e.fetchWithHTTP(ctx, rule, searchURL, keyword)
@@ -123,7 +136,7 @@ func (e *StreamRuleExecutor) ParseEpisodes(ctx context.Context, rule *model.Stre
 	var htmlStr string
 	var err error
 
-	if needsBrowser(rule) && e.browser != nil && e.browser.GetBrowser() != nil {
+	if needsBrowser(rule) && e.browser != nil && e.ruleBrowser(rule) != nil {
 		htmlStr, err = e.fetchWithBrowser(ctx, rule, detailURL, "", false)
 	} else {
 		htmlStr, err = e.fetchWithHTTP(ctx, rule, detailURL, "")
@@ -203,7 +216,7 @@ func (e *StreamRuleExecutor) fetchWithHTTP(ctx context.Context, rule *model.Stre
 
 	e.setHeaders(req, rule)
 
-	resp, err := e.httpClient.Client().Do(req)
+	resp, err := e.clientForRule(rule).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("请求失败: %w", err)
 	}
@@ -218,7 +231,7 @@ func (e *StreamRuleExecutor) fetchWithHTTP(ctx context.Context, rule *model.Stre
 
 // fetchWithBrowser 用 rod 浏览器加载页面，等待 JS 渲染后返回 HTML。
 func (e *StreamRuleExecutor) fetchWithBrowser(ctx context.Context, rule *model.StreamRule, pageURL, keyword string, isSearch bool) (string, error) {
-	browser := e.browser.GetBrowser()
+	browser := e.ruleBrowser(rule)
 	if browser == nil {
 		return "", fmt.Errorf("浏览器不可用")
 	}
@@ -307,4 +320,11 @@ func (e *StreamRuleExecutor) resolveURL(baseURL, href string) string {
 	}
 
 	return base.ResolveReference(ref).String()
+}
+
+func (e *StreamRuleExecutor) clientForRule(rule *model.StreamRule) *http.Client {
+	if rule.ProxyMode == "direct" {
+		return e.directClient
+	}
+	return e.httpClient.Client()
 }

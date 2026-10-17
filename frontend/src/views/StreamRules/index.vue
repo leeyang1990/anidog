@@ -92,6 +92,14 @@
             <AcInput v-model="ruleForm.chapter_result_xpath" placeholder="//li/a" />
           </div>
         </div>
+        <div class="space-y-2">
+          <label class="text-sm font-bold text-foreground">{{ t('pages.rules.networkRoute') }}</label>
+          <AcSelect v-model="ruleForm.proxy_mode" :options="[
+            { label: t('pages.rules.inheritProxy'), value: 'inherit' },
+            { label: t('pages.rules.directRoute'), value: 'direct' },
+          ]" />
+          <p class="text-xs text-muted-foreground">{{ t('pages.rules.routeHint') }}</p>
+        </div>
         <div class="flex items-center gap-6 flex-wrap">
           <label class="flex items-center gap-2 text-sm cursor-pointer">
             <AcCheckbox v-model="ruleForm.use_post" /> {{ t('pages.rules.postSearch') }}
@@ -149,7 +157,7 @@ import { AddOutline, GlobeOutline, CloudUploadOutline } from '@vicons/ionicons5'
 import { get, post, put, del } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
-import { AcPageHeader, AcButton, AcCard, AcTag, AcEmpty, AcSpinner, AcModal, AcInput, AcCheckbox } from '@/components/ac'
+import { AcPageHeader, AcButton, AcCard, AcTag, AcEmpty, AcSpinner, AcModal, AcInput, AcCheckbox, AcSelect } from '@/components/ac'
 import { useI18n } from 'vue-i18n'
 
 const toast = useToast()
@@ -178,7 +186,7 @@ function getEmptyForm() {
     name: '', display_name: '', base_url: '', search_url: '',
     search_list_xpath: '', search_name_xpath: '', search_result_xpath: '',
     chapter_roads_xpath: '', chapter_result_xpath: '',
-    use_post: false, use_webview: false, multi_sources: true,
+    use_post: false, use_webview: false, multi_sources: true, proxy_mode: 'inherit',
   }
 }
 
@@ -199,7 +207,7 @@ function openCreateModal() {
 
 function openEditModal(rule) {
   editingRule.value = rule
-  ruleForm.value = { ...rule }
+  ruleForm.value = { ...rule, proxy_mode: rule.proxy_mode || 'inherit' }
   showEditModal.value = true
 }
 

@@ -46,6 +46,10 @@ RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-chi_sim tesseract-ocr-da
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/anidog .
 
+# mmap storage in torrent v1.61 keeps handles open after pause/drop. SMB cannot
+# rename a completed season while those handles exist; classic IO closes them.
+ENV TORRENT_STORAGE_DEFAULT_FILE_IO=classic
+
 # HTTP API + 内嵌 BT TCP/UDP
 EXPOSE 8088 6881/tcp 6881/udp
 

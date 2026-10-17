@@ -74,7 +74,7 @@ func ProbeInput(ctx context.Context, path string, inputArgs []string) (Media, er
 	args := []string{"-v", "error", "-rw_timeout", "15000000", "-analyzeduration", "3000000", "-probesize", "3000000", "-show_entries", "stream=codec_type,width,height:stream_tags=language,title:stream_disposition=attached_pic:format=duration,bit_rate,size", "-of", "json"}
 	args = append(args, inputArgs...)
 	args = append(args, path)
-	out, err := exec.CommandContext(ctx, "ffprobe", args...).Output()
+	out, err := MediaCommand(ctx, "ffprobe", args...).Output()
 	var m Media
 	if err != nil {
 		return m, fmt.Errorf("无法读取成片: %w", commandError(ctx, err))

@@ -36,13 +36,14 @@ func upgradeTestVideo(t *testing.T) []byte {
 func TestSeasonUpgradeAllOrNothing(t *testing.T) {
 	video := upgradeTestVideo(t)
 	for _, tc := range []struct {
-		name                       string
-		broken, missing, dbFailure bool
-		ext                        string
+		name                                     string
+		broken, missing, dbFailure, pauseFailure bool
+		ext                                      string
 	}{
 		{name: "same extension", ext: ".mkv"}, {name: "different extension", ext: ".mp4"},
 		{name: "one bad episode", ext: ".mp4", broken: true}, {name: "incomplete pack", ext: ".mkv", missing: true},
 		{name: "database failure after moves", ext: ".mkv", dbFailure: true},
+		{name: "cannot stop file access", ext: ".mkv", pauseFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := testutil.InitTestDB()
@@ -80,10 +81,28 @@ func TestSeasonUpgradeAllOrNothing(t *testing.T) {
 			if tc.missing {
 				delete(files, 2)
 			}
-			candidate := model.Download{TorrentID: "upgrade", Name: "upgrade", URL: "magnet", AnimeID: &a.ID, EpisodeNumber: &trigger, EpisodeStart: &start, EpisodeEnd: &end, Scope: model.DownloadScopeSeason, Purpose: model.DownloadPurposeSeasonUpgrade, Status: model.DownloadStatusDownloading, SavePath: &staging, SourceTitle: "[Test] Upgrade [01-02][1080p][简体]", UpgradeTarget: QualityGoalKey("1080p", []string{"simplified"})}
+			candidate := model.Download{TorrentID: "upgrade", Name: "upgrade", URL: "magnet", AnimeID: &a.ID, EpisodeNumber: &trigger, EpisodeStart: &start, EpisodeEnd: &end, Scope: model.DownloadScopeSeason, Purpose: model.DownloadPurposeSeasonUpgrade, DownloadType: model.DownloadTypeTorrent, Status: model.DownloadStatusDownloading, SavePath: &staging, SourceTitle: "[Test] Upgrade [01-02][1080p][简体]", UpgradeTarget: QualityGoalKey("1080p", []string{"simplified"})}
 			db.Create(&candidate)
 			// Even with ordinary verification disabled, an upgrade must validate each file.
 			svc := NewService(db, &config.Config{MediaRoot: root, VerifyDownloadedMedia: false}, nil)
+			gate := &upgradeFileGate{pause: func() error {
+				for _, path := range files {
+					if _, err := os.Stat(path); err != nil {
+						t.Fatal("candidate moved before file access stopped", err)
+					}
+				}
+				for _, path := range oldPaths {
+					if _, err := os.Stat(path); err != nil {
+						t.Fatal("old season moved before file access stopped", err)
+					}
+				}
+				if tc.pauseFailure {
+					return fmt.Errorf("injected stop failure")
+				}
+				return nil
+			}}
+			svc.RegisterExecutor(model.DownloadTypeTorrent, gate)
+
 			if tc.dbFailure {
 				db.Callback().Update().Before("gorm:update").Register("test:fail-upgrade", func(tx *gorm.DB) {
 					if tx.Statement.Table == "anime" {
@@ -93,14 +112,21 @@ func TestSeasonUpgradeAllOrNothing(t *testing.T) {
 				defer db.Callback().Update().Remove("test:fail-upgrade")
 			}
 			ok := svc.CompleteSeasonPack(context.Background(), candidate.ID, files, root)
-			want := !tc.broken && !tc.missing && !tc.dbFailure
+			want := !tc.broken && !tc.missing && !tc.dbFailure && !tc.pauseFailure
 			if ok != want {
 				var d model.Download
 				db.First(&d, candidate.ID)
 				t.Fatalf("completed=%v want %v error=%v", ok, want, d.LastError)
 			}
 			db.First(&candidate, candidate.ID)
-			if tc.dbFailure {
+			wantCalls := 1
+			if tc.broken || tc.missing {
+				wantCalls = 0
+			}
+			if gate.calls != wantCalls {
+				t.Fatalf("file gate calls %d want %d", gate.calls, wantCalls)
+			}
+			if tc.dbFailure || tc.pauseFailure {
 				if candidate.Status != model.DownloadStatusPaused {
 					t.Fatalf("failed swap must pause, got %s", candidate.Status)
 				}
@@ -303,3 +329,16 @@ func TestSingleEpisodeWinnerDoesNotCancelWholeSeasonUpgrade(t *testing.T) {
 		t.Fatal("quality upgrade canceled by ordinary backfill")
 	}
 }
+
+type upgradeFileGate struct {
+	pause func() error
+	calls int
+}
+
+func (g *upgradeFileGate) Execute(context.Context, *Task, ProgressCallback) (*Result, error) {
+	return &Result{}, nil
+}
+func (g *upgradeFileGate) Pause(string) error        { g.calls++; return g.pause() }
+func (g *upgradeFileGate) Resume(string) error       { return nil }
+func (g *upgradeFileGate) Cancel(string) error       { return nil }
+func (g *upgradeFileGate) Remove(string, bool) error { return nil }

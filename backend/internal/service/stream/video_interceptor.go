@@ -16,10 +16,12 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/anidog/anidog-go/internal/config"
+	"github.com/anidog/anidog-go/internal/model"
 )
 
 // InterceptedVideo 拦截到的视频信息
 type InterceptedVideo struct {
+	ProxyURL  string `json:"-"`
 	URL       string `json:"url"`
 	VideoType string `json:"video_type"` // m3u8 / mp4
 	Referer   string `json:"referer,omitempty"`
@@ -106,12 +108,21 @@ func (v *VideoInterceptor) Close() {
 
 // GetBrowser 返回共享的 rod 浏览器实例，未启动时返回 nil。
 func (v *VideoInterceptor) GetBrowser() *rod.Browser {
+	return v.browserForProxy(v.proxyURL())
+}
+func (v *VideoInterceptor) GetBrowserForRule(rule *model.StreamRule) *rod.Browser {
+	proxy := v.proxyURL()
+	if rule != nil && rule.ProxyMode == "direct" {
+		proxy = ""
+	}
+	return v.browserForProxy(proxy)
+}
+func (v *VideoInterceptor) browserForProxy(proxy string) *rod.Browser {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.browser == nil {
 		return nil
 	}
-	proxy := v.proxyURL()
 	if browser := v.contexts[proxy]; browser != nil {
 		return browser
 	}
@@ -152,7 +163,7 @@ type playerFailure struct{ message string }
 func (e *playerFailure) Error() string { return "播放器已报错：" + e.message }
 
 // InterceptVideoURL 拦截页面中的视频 URL，失败时自动重试最多 maxAttempts 次，每次 timeout 递增
-func (v *VideoInterceptor) InterceptVideoURL(ctx context.Context, pageURL, referer, userAgent string) (*InterceptedVideo, error) {
+func (v *VideoInterceptor) InterceptVideoURL(ctx context.Context, pageURL, referer, userAgent string, proxyModes ...string) (*InterceptedVideo, error) {
 	const maxAttempts = 3
 	baseTimeout := time.Duration(v.cfg.StreamInterceptTimeout) * time.Second
 	if baseTimeout <= 0 {
@@ -171,7 +182,11 @@ func (v *VideoInterceptor) InterceptVideoURL(ctx context.Context, pageURL, refer
 		}
 		// 每次递增超时：30s → 60s → 90s（给慢加载/广告跳转的页面更多时间）
 		timeout := baseTimeout * time.Duration(attempt)
-		video, err := v.interceptOnce(ctx, pageURL, referer, userAgent, timeout)
+		proxy := v.proxyURL()
+		if len(proxyModes) > 0 && proxyModes[0] == "direct" {
+			proxy = ""
+		}
+		video, err := v.interceptOnce(ctx, pageURL, referer, userAgent, timeout, proxy)
 		if err == nil {
 			return video, nil
 		}
@@ -188,14 +203,18 @@ func (v *VideoInterceptor) InterceptVideoURL(ctx context.Context, pageURL, refer
 }
 
 // interceptOnce 单次尝试拦截（原有实现重命名）
-func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, userAgent string, timeout time.Duration) (*InterceptedVideo, error) {
+func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, userAgent string, timeout time.Duration, proxyURLs ...string) (*InterceptedVideo, error) {
 	select {
 	case v.sem <- struct{}{}:
 		defer func() { <-v.sem }()
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	browser := v.GetBrowser()
+	proxy := v.proxyURL()
+	if len(proxyURLs) > 0 {
+		proxy = proxyURLs[0]
+	}
+	browser := v.browserForProxy(proxy)
 	if browser == nil {
 		return nil, fmt.Errorf("流媒体浏览器或代理上下文不可用")
 	}
@@ -253,7 +272,7 @@ func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, 
 		if ref == "" {
 			ref = pageURL
 		}
-		video := &InterceptedVideo{URL: r.URL, VideoType: kind, Referer: ref, UserAgent: agent}
+		video := &InterceptedVideo{URL: r.URL, VideoType: kind, Referer: ref, UserAgent: agent, ProxyURL: proxy}
 		select {
 		case resultCh <- video:
 		default:

@@ -37,6 +37,7 @@ services:
       DOWNLOADER_TYPE: embedded
       BT_LISTEN_PORT: 6881
       BT_STATE_DIR: /var/lib/anidog/torrent
+      TORRENT_STORAGE_DEFAULT_FILE_IO: ${TORRENT_STORAGE_DEFAULT_FILE_IO:-classic}
       BT_SEED: "true"
     ports:
       - "6881:6881"

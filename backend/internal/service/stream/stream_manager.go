@@ -13,6 +13,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/mediacheck"
 	"github.com/anidog/anidog-go/internal/service/network"
 )
 
@@ -90,10 +91,11 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, epis
 		userAgent = *rule.UserAgent
 	}
 
-	video, err := m.interceptor.InterceptVideoURL(ctx, episode.URL, referer, userAgent)
+	video, err := m.interceptor.InterceptVideoURL(ctx, episode.URL, referer, userAgent, rule.ProxyMode)
 	if err != nil {
 		return "", "", fmt.Errorf("拦截视频 URL 失败: %w", err)
 	}
+	ctx = mediacheck.WithHTTPProxy(ctx, video.ProxyURL)
 	for _, preflight := range preflights {
 		if preflight != nil {
 			select {

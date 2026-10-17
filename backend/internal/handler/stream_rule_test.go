@@ -44,12 +44,12 @@ func TestStreamRule_CreateAndGet(t *testing.T) {
 	h.RegisterRoutes(v1)
 
 	body := map[string]interface{}{
-		"name":                "test-rule",
-		"base_url":            "https://example.com",
-		"search_url":          "https://example.com/search",
-		"search_list_xpath":   "//div",
-		"search_name_xpath":   "//h3",
-		"search_result_xpath": "//a",
+		"name":                 "test-rule",
+		"base_url":             "https://example.com",
+		"search_url":           "https://example.com/search",
+		"search_list_xpath":    "//div",
+		"search_name_xpath":    "//h3",
+		"search_result_xpath":  "//a",
 		"chapter_result_xpath": "//div",
 	}
 	w := testutil.MakeRequest(router, http.MethodPost, "/api/v1/stream-rules/", body, token)
@@ -60,10 +60,28 @@ func TestStreamRule_CreateAndGet(t *testing.T) {
 	var created map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&created)
 	id := uint(created["id"].(float64))
+	if created["proxy_mode"] != "inherit" {
+		t.Fatalf("old rules must inherit the global proxy: %v", created)
+	}
+	for _, mode := range []string{"invalid", "direct"} {
+		w = testutil.MakeRequest(router, http.MethodPut, "/api/v1/stream-rules/"+uintToStr(id), map[string]interface{}{"proxy_mode": mode}, token)
+		want := http.StatusOK
+		if mode == "invalid" {
+			want = http.StatusBadRequest
+		}
+		if w.Code != want {
+			t.Fatalf("route %s: status %d body %s", mode, w.Code, w.Body.String())
+		}
+	}
 
 	w = testutil.MakeRequest(router, http.MethodGet, "/api/v1/stream-rules/"+uintToStr(id), nil, token)
 	if w.Code != http.StatusOK {
 		t.Fatalf("get: status = %d; body = %s", w.Code, w.Body.String())
+	}
+	var saved map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&saved)
+	if saved["proxy_mode"] != "direct" {
+		t.Fatal("rule route did not persist")
 	}
 }
 
@@ -74,12 +92,12 @@ func TestStreamRule_Update(t *testing.T) {
 	h.RegisterRoutes(v1)
 
 	body := map[string]interface{}{
-		"name":                "old",
-		"base_url":            "https://a.com",
-		"search_url":          "https://a.com/search",
-		"search_list_xpath":   "//div",
-		"search_name_xpath":   "//h3",
-		"search_result_xpath": "//a",
+		"name":                 "old",
+		"base_url":             "https://a.com",
+		"search_url":           "https://a.com/search",
+		"search_list_xpath":    "//div",
+		"search_name_xpath":    "//h3",
+		"search_result_xpath":  "//a",
 		"chapter_result_xpath": "//div",
 	}
 	w := testutil.MakeRequest(router, http.MethodPost, "/api/v1/stream-rules/", body, token)
@@ -103,12 +121,12 @@ func TestStreamRule_Delete(t *testing.T) {
 	h.RegisterRoutes(v1)
 
 	body := map[string]interface{}{
-		"name":                "del",
-		"base_url":            "https://a.com",
-		"search_url":          "https://a.com/search",
-		"search_list_xpath":   "//div",
-		"search_name_xpath":   "//h3",
-		"search_result_xpath": "//a",
+		"name":                 "del",
+		"base_url":             "https://a.com",
+		"search_url":           "https://a.com/search",
+		"search_list_xpath":    "//div",
+		"search_name_xpath":    "//h3",
+		"search_result_xpath":  "//a",
 		"chapter_result_xpath": "//div",
 	}
 	w := testutil.MakeRequest(router, http.MethodPost, "/api/v1/stream-rules/", body, token)

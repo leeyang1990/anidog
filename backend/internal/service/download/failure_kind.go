@@ -43,6 +43,8 @@ func classifyError(err error, retryCount int) (string, time.Duration) {
 // 立刻尝试下一候选，所以使用 rejected，而不是 transient/permanent。
 func isRejectedCandidateError(msg string) bool {
 	markers := []string{
+		"播放器已报错",
+		"流媒体预检不符合要求",
 		"流媒体候选无效",
 		"视频时长过短",
 		"视频疑似下载截断",

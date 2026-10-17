@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/disk"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -31,51 +30,12 @@ func (s *Service) WithLibraryLock(fn func() error) error {
 // CheckAdditionalCapacity reserves room for the incoming copy without counting
 // on deletion of the playable old season. Existing queue payloads also count.
 func (s *Service) CheckAdditionalCapacity(ctx context.Context, bytes int64) error {
-	if err := s.ensureMediaCapacity(ctx); err != nil {
-		return err
-	}
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
 	if bytes <= 0 {
-		return nil
+		return s.ensureMediaCapacity(ctx)
 	}
-	usage, err := disk.Usage(s.currentMediaRoot(ctx))
-	if err != nil {
-		return err
-	}
-	var queued []model.Download
-	if err = s.db.WithContext(ctx).Where("status IN ?", []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Find(&queued).Error; err != nil {
-		return err
-	}
-	for _, d := range queued {
-		if d.TotalBytes != nil {
-			left := *d.TotalBytes
-			if d.DownloadedBytes != nil {
-				left -= *d.DownloadedBytes
-			}
-			if left > 0 {
-				bytes += left
-			}
-		}
-	}
-	minFree, maxUsed := 0.0, 100.0
-	var settings []model.Setting
-	if err = s.db.WithContext(ctx).Where("key IN ?", []string{"media.min_free_gb", "media.max_used_percent"}).Find(&settings).Error; err != nil {
-		return err
-	}
-	for _, r := range settings {
-		v, _ := strconv.ParseFloat(r.Value, 64)
-		if v <= 0 {
-			continue
-		}
-		if r.Key == "media.min_free_gb" {
-			minFree = v * 1024 * 1024 * 1024
-		} else {
-			maxUsed = v
-		}
-	}
-	if float64(usage.Free)-float64(bytes) < minFree || (usage.Total > 0 && (float64(usage.Total-usage.Free)+float64(bytes))/float64(usage.Total)*100 > maxUsed) {
-		return fmt.Errorf("整季升级空间不足：需保留旧版、下载空间及保留余量")
-	}
-	return nil
+	return s.ensureTaskCapacity(ctx, &Task{EstimatedBytes: bytes}, 0)
 }
 
 type upgradeMove struct {

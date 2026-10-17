@@ -55,7 +55,7 @@ func (e *StreamExecutor) Execute(ctx context.Context, task *Task, progressCB Pro
 
 	filePath, finalPath, err := e.streamMgr.DownloadEpisode(
 		ctx, task.RuntimeID, &ep, task.StreamRule, task.SavePath,
-		task.AnimeName, anime, episodeNumber, streamCB)
+		task.AnimeName, anime, episodeNumber, streamCB, task.Preflight)
 	if err != nil {
 		return nil, err
 	}

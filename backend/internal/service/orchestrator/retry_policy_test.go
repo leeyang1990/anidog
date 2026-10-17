@@ -77,6 +77,23 @@ func TestOldSearchScheduleDoesNotOverrideNewerFailure(t *testing.T) {
 	}
 }
 
+func TestStreamFailureCoolsOnlyTheFailedRoad(t *testing.T) {
+	db := testutil.InitTestDB()
+	aid, ep, rid := uint(1), 1, uint(2)
+	next := time.Now().Add(time.Hour)
+	road, detail := "broken", "https://example.test/show"
+	row := model.Download{TorrentID: "failed-road", Name: "failed", URL: "failed", AnimeID: &aid, EpisodeNumber: &ep, StreamRuleID: &rid, StreamRoadName: &road, StreamDetailURL: &detail, DownloadType: model.DownloadTypeStream, Source: SourceStream, Status: model.DownloadStatusFailed, FailureKind: model.FailureKindTransient, NextRetryAt: &next}
+	db.Create(&row)
+	o := &Orchestrator{db: db}
+	if o.isDuplicate(context.Background(), aid, ep, SourceStream) {
+		t.Fatal("one failed road blocked the whole stream source")
+	}
+	blocked, err := o.coolingStreamRoads(context.Background(), aid, ep, rid, detail, time.Now())
+	if err != nil || !blocked[road] || blocked["healthy"] {
+		t.Fatalf("blocked=%v error=%v", blocked, err)
+	}
+}
+
 func TestPausedSeasonPackPreservesEpisodeCoverage(t *testing.T) {
 	db := testutil.InitTestDB()
 	aid, start, end := uint(1), 1, 12

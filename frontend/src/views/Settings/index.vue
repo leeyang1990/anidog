@@ -306,6 +306,7 @@
             <div v-if="systemInfo.disk?.path" class="text-xs text-muted-foreground mt-1 font-num truncate" :title="systemInfo.disk.path">
               {{ systemInfo.disk.path }} · {{ t('settings.details.remaining', { size: fmtBytes(systemInfo.disk?.free) }) }}
             </div>
+            <p v-if="systemInfo.media_disk?.usage_warning" class="text-xs text-ac-heart-dark mt-2">{{ t('downloadPrefs.storageWarning') }}</p>
           </AcCard>
         </div>
 

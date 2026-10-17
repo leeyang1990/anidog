@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -65,7 +66,7 @@ func NewM3U8Downloader(cfg *config.Config) *M3U8Downloader {
 }
 
 // Download 下载 M3U8/MP4 视频
-func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputPath, videoType, referer string, progressCB func(progress float64, downloadedBytes int64)) (string, error) {
+func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputPath, videoType, referer string, progressCB func(progress float64, downloadedBytes int64), userAgents ...string) (string, error) {
 	// 获取信号量
 	select {
 	case d.semaphore <- struct{}{}:
@@ -75,9 +76,11 @@ func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputP
 	defer func() { <-d.semaphore }()
 
 	// 获取总时长（用于进度计算）
-	totalDuration := d.getM3U8Duration(ctx, videoURL, referer)
+	totalDuration := d.getM3U8Duration(ctx, videoURL, referer, userAgents...)
 
-	cmd := d.buildFFmpegCmd(videoURL, outputPath, videoType, referer)
+	base := d.buildFFmpegCmd(videoURL, outputPath, videoType, referer, userAgents...)
+	cmd := exec.CommandContext(ctx, base.Path, base.Args[1:]...)
+	cmd.WaitDelay = 5 * time.Second
 	d.activeProcs.Store(taskID, cmd)
 	defer d.activeProcs.Delete(taskID)
 
@@ -217,7 +220,7 @@ func (d *M3U8Downloader) Cancel(taskID string) bool {
 	return false
 }
 
-func (d *M3U8Downloader) buildFFmpegCmd(videoURL, outputPath, videoType, referer string) *exec.Cmd {
+func (d *M3U8Downloader) buildFFmpegCmd(videoURL, outputPath, videoType, referer string, userAgents ...string) *exec.Cmd {
 	args := []string{"-y"}
 
 	// HLS 特殊处理：ffmpeg 8+ 严格检查分片扩展名，而很多流媒体源的分片
@@ -234,6 +237,10 @@ func (d *M3U8Downloader) buildFFmpegCmd(videoURL, outputPath, videoType, referer
 	if referer != "" {
 		args = append(args, "-headers", fmt.Sprintf("Referer: %s\r\n", referer))
 	}
+	if len(userAgents) > 0 && userAgents[0] != "" {
+		args = append(args, "-user_agent", userAgents[0])
+	}
+	args = append(args, "-rw_timeout", "15000000")
 
 	args = append(args, "-i", videoURL)
 
@@ -289,9 +296,14 @@ func (d *M3U8Downloader) parseFFmpegProgress(line string, totalDuration float64)
 }
 
 // getM3U8Duration 获取视频总时长（m3u8 / mp4 都支持）
-func (d *M3U8Downloader) getM3U8Duration(ctx context.Context, videoURL, referer string) float64 {
+func (d *M3U8Downloader) getM3U8Duration(ctx context.Context, videoURL, referer string, userAgents ...string) float64 {
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
 	// 使用 ffprobe 获取时长（对 m3u8 / mp4 都有效）
 	args := []string{"-v", "quiet", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1"}
+	if len(userAgents) > 0 && userAgents[0] != "" {
+		args = append(args, "-user_agent", userAgents[0])
+	}
 	if referer != "" {
 		args = append(args, "-headers", fmt.Sprintf("Referer: %s\r\n", referer))
 	}

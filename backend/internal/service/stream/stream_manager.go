@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -17,12 +18,14 @@ import (
 
 // StreamManager 流媒体下载管理器
 type StreamManager struct {
-	cfg         *config.Config
-	db          *gorm.DB
-	executor    *StreamRuleExecutor
-	interceptor *VideoInterceptor
-	downloader  *M3U8Downloader
-	httpClient  *network.HTTPClient
+	cfg          *config.Config
+	db           *gorm.DB
+	executor     *StreamRuleExecutor
+	interceptor  *VideoInterceptor
+	downloader   *M3U8Downloader
+	httpClient   *network.HTTPClient
+	active       sync.Map
+	preflightSem chan struct{}
 }
 
 var (
@@ -31,14 +34,15 @@ var (
 )
 
 func NewStreamManager(cfg *config.Config, httpClient *network.HTTPClient, db *gorm.DB) *StreamManager {
-	interceptor := NewVideoInterceptor(cfg)
+	interceptor := NewVideoInterceptor(cfg, httpClient.ProxyURL)
 	return &StreamManager{
-		cfg:         cfg,
-		db:          db,
-		executor:    NewStreamRuleExecutor(httpClient, interceptor),
-		interceptor: interceptor,
-		downloader:  NewM3U8Downloader(cfg),
-		httpClient:  httpClient,
+		cfg:          cfg,
+		db:           db,
+		executor:     NewStreamRuleExecutor(httpClient, interceptor),
+		interceptor:  interceptor,
+		downloader:   NewM3U8Downloader(cfg),
+		httpClient:   httpClient,
+		preflightSem: make(chan struct{}, 2),
 	}
 }
 
@@ -71,7 +75,11 @@ func (m *StreamManager) GetEpisodes(ctx context.Context, rule *model.StreamRule,
 // DownloadEpisode 下载单集。
 //   - anime: 可选，用于按 Plex/Emby 规范生成路径。nil 时回退到 {base}/{animeName}/{ep}.mp4
 //   - episodeNumber: 集数（1-based），从 Plex 规范生成文件名时必需
-func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, episode *EpisodeInfo, rule *model.StreamRule, savePath, animeName string, anime *model.Anime, episodeNumber int, progressCB func(float64, int64)) (string, string, error) {
+func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, episode *EpisodeInfo, rule *model.StreamRule, savePath, animeName string, anime *model.Anime, episodeNumber int, progressCB func(float64, int64), preflights ...func(context.Context, *InterceptedVideo) error) (string, string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	m.active.Store(taskID, cancel)
+	defer m.active.Delete(taskID)
 	// 1. 拦截视频 URL
 	referer := ""
 	if rule.Referer != nil {
@@ -85,6 +93,20 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, epis
 	video, err := m.interceptor.InterceptVideoURL(ctx, episode.URL, referer, userAgent)
 	if err != nil {
 		return "", "", fmt.Errorf("拦截视频 URL 失败: %w", err)
+	}
+	for _, preflight := range preflights {
+		if preflight != nil {
+			select {
+			case m.preflightSem <- struct{}{}:
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			}
+			err := preflight(ctx, video)
+			<-m.preflightSem
+			if err != nil {
+				return "", "", err
+			}
+		}
 	}
 
 	// 2. 构建输出文件路径
@@ -112,7 +134,7 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, epis
 	// 3. 每个候选写入独立 staging 文件。赢家确认后才由 download.Service
 	// 原子提升到标准媒体路径，避免 BT/流媒体竞速时互相覆盖。
 	stagingPath := buildRaceStagingPath(outputPath, taskID)
-	resultPath, err := m.downloader.Download(ctx, taskID, video.URL, stagingPath, video.VideoType, video.Referer, progressCB)
+	resultPath, err := m.downloader.Download(ctx, taskID, video.URL, stagingPath, video.VideoType, video.Referer, progressCB, video.UserAgent)
 	if err != nil {
 		_ = os.Remove(stagingPath)
 		return "", "", fmt.Errorf("ffmpeg 下载失败: %w", err)
@@ -134,6 +156,11 @@ func buildRaceStagingPath(finalPath, taskID string) string {
 
 // CancelDownload 取消下载
 func (m *StreamManager) CancelDownload(taskID string) bool {
+	if cancel, ok := m.active.Load(taskID); ok {
+		cancel.(context.CancelFunc)()
+		m.downloader.Cancel(taskID)
+		return true
+	}
 	return m.downloader.Cancel(taskID)
 }
 

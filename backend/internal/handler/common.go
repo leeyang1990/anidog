@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/anidog/anidog-go/internal/model"
@@ -149,6 +150,13 @@ func getSystemInfo(version string, deps SystemInfoDeps) gin.H {
 					"used":         mediaStat.Used,
 					"free":         mediaStat.Free,
 					"used_percent": round1(mediaStat.UsedPercent),
+				}
+				if deps.DB != nil {
+					var setting model.Setting
+					if deps.DB.Where("key = ?", "media.max_used_percent").Take(&setting).Error == nil {
+						threshold, _ := strconv.ParseFloat(setting.Value, 64)
+						mediaDiskInfo["usage_warning"] = threshold > 0 && mediaStat.UsedPercent >= threshold
+					}
 				}
 				diskInfo = mediaDiskInfo
 				diskPercent = mediaStat.UsedPercent

@@ -6,13 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shirou/gopsutil/v3/disk"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -35,6 +33,8 @@ type Service struct {
 	notifSvc              *notification.Service // 可空：未注入时不发通知
 	rejectedStreamHandler func(context.Context, uint, int)
 	completionMu          sync.Mutex // SQLite ignores FOR UPDATE; serialize local finalization as well.
+	capacityMu            sync.Mutex // Check and reserve queued bytes atomically within this process.
+	capacityProbe         capacityProbe
 }
 
 // NewService creates a new unified download service.
@@ -83,18 +83,22 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 	if err := s.validateTaskAirDate(ctx, task); err != nil {
 		return nil, err
 	}
-	if err := s.ensureMediaCapacity(ctx); err != nil {
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
+	savePath := s.resolveTaskSavePath(ctx, task)
+	if savePath != nil {
+		task.SavePath = *savePath
+	}
+	task.EstimatedBytes = estimatedTaskBytes(task)
+	if err := s.ensureTaskCapacity(ctx, task, 0); err != nil {
 		return nil, fmt.Errorf("媒体存储容量保护: %w", err)
 	}
 
 	torrentID := generateTorrentID(task.DownloadType)
-	savePath := s.resolveTaskSavePath(ctx, task)
-	if savePath != nil {
-		task.SavePath = *savePath
-	} // Executor and DB must use the same resolved directory.
 	if task.SourceTitle == "" {
 		task.SourceTitle = task.Name
 	}
+	estimatedBytes := task.EstimatedBytes
 
 	dl := model.Download{
 		TorrentID:     torrentID,
@@ -115,6 +119,7 @@ func (s *Service) Create(ctx context.Context, task *Task) (*model.Download, erro
 		EpisodeEnd:    task.EpisodeEnd,
 		Source:        task.Source,
 		RetryCount:    task.RetryCount,
+		TotalBytes:    &estimatedBytes,
 	}
 	if dl.Scope == "" {
 		dl.Scope = model.DownloadScopeEpisode
@@ -205,6 +210,12 @@ func (s *Service) Resume(dlID uint) (*model.Download, error) {
 		return nil, fmt.Errorf("无对应执行器")
 	}
 
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
+	if err := s.ensureTaskCapacity(context.Background(), capacityTaskFromDownload(&dl, true), dl.ID); err != nil {
+		return nil, fmt.Errorf("媒体存储容量保护: %w", err)
+	}
+
 	if err := exec.Resume(executorTaskID(&dl)); err != nil {
 		return nil, err
 	}
@@ -288,6 +299,9 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	}
 
 	ctx := context.Background()
+	if task.DownloadType == model.DownloadTypeStream {
+		task.Preflight = s.streamPreflight(dlID, task)
+	}
 	result, err := exec.Execute(ctx, task, progressCB)
 
 	if err != nil {
@@ -314,17 +328,8 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		if !s.updateStatus(dlID, model.DownloadStatusFailed, extra) {
 			return
 		}
-		if kind == model.FailureKindRejected {
+		if kind == model.FailureKindRejected || kind == model.FailureKindTransient || kind == model.FailureKindExhausted {
 			s.triggerRejectedStreamRecovery(task)
-		}
-		if kind == model.FailureKindExhausted && task.StreamRuleID != nil {
-			now := time.Now()
-			note := "半开探测失败: " + truncateError(err)
-			s.db.Model(&model.StreamRule{}).Where("id = ?", *task.StreamRuleID).Updates(map[string]interface{}{
-				"health_status": "broken",
-				"health_note":   note,
-				"health_at":     &now,
-			})
 		}
 		zap.L().Error("下载失败",
 			zap.String("name", task.Name),
@@ -992,6 +997,7 @@ func (s *Service) List(ctx context.Context, status, downloadType string, animeID
 	if err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&downloads).Error; err != nil {
 		return nil, err
 	}
+	s.annotateRecovery(ctx, downloads)
 	return &ListResult{Items: downloads, Total: total}, nil
 }
 
@@ -1012,6 +1018,12 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	}
 	if dl.Status != model.DownloadStatusFailed {
 		return nil, fmt.Errorf("只有失败的任务可以重试")
+	}
+
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
+	if err := s.ensureTaskCapacity(ctx, capacityTaskFromDownload(&dl, false), dl.ID); err != nil {
+		return nil, fmt.Errorf("媒体存储容量保护: %w", err)
 	}
 
 	// 重置状态与进度
@@ -1069,6 +1081,11 @@ func (s *Service) PauseAll(ctx context.Context) (int64, error) {
 
 // ResumeAll resumes all paused torrent downloads.
 func (s *Service) ResumeAll(ctx context.Context) (int64, error) {
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
+	if err := s.ensureMediaCapacity(ctx); err != nil {
+		return 0, fmt.Errorf("媒体存储容量保护: %w", err)
+	}
 	result := s.db.WithContext(ctx).Model(&model.Download{}).
 		Where("status = ? AND download_type = ?", model.DownloadStatusPaused, model.DownloadTypeTorrent).
 		Update("status", model.DownloadStatusDownloading)
@@ -1587,41 +1604,6 @@ func (s *Service) currentMediaRoot(ctx context.Context) string {
 // MediaRoot 返回当前真正生效的媒体根目录，供系统状态和其他只读探针使用。
 func (s *Service) MediaRoot(ctx context.Context) string {
 	return s.currentMediaRoot(ctx)
-}
-
-// ensureMediaCapacity 在管理员配置阈值后统一保护所有下载入口。
-// 阈值为 0 或未配置表示不启用对应限制。
-func (s *Service) ensureMediaCapacity(ctx context.Context) error {
-	readFloat := func(key string) float64 {
-		var setting model.Setting
-		if err := s.db.WithContext(ctx).Where("key = ?", key).First(&setting).Error; err != nil {
-			return 0
-		}
-		value, err := strconv.ParseFloat(strings.TrimSpace(setting.Value), 64)
-		if err != nil || value <= 0 {
-			return 0
-		}
-		return value
-	}
-	minFreeGB := readFloat("media.min_free_gb")
-	maxUsedPercent := readFloat("media.max_used_percent")
-	if minFreeGB == 0 && maxUsedPercent == 0 {
-		return nil
-	}
-
-	root := s.currentMediaRoot(ctx)
-	usage, err := disk.Usage(root)
-	if err != nil {
-		return fmt.Errorf("无法读取 %s 的容量: %w", root, err)
-	}
-	if maxUsedPercent > 0 && usage.UsedPercent >= maxUsedPercent {
-		return fmt.Errorf("%s 已使用 %.1f%%，达到 %.1f%% 上限", root, usage.UsedPercent, maxUsedPercent)
-	}
-	freeGB := float64(usage.Free) / float64(1024*1024*1024)
-	if minFreeGB > 0 && freeGB < minFreeGB {
-		return fmt.Errorf("%s 仅剩 %.1f GB，低于 %.1f GB 保留空间", root, freeGB, minFreeGB)
-	}
-	return nil
 }
 
 // RSS, manual auto-search and season packs all pass the same airing boundary.

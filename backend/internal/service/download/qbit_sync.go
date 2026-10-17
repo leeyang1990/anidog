@@ -226,6 +226,9 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			downloadedBytes := int64(v)
 			updates["downloaded_bytes"] = downloadedBytes
 		}
+		if s.holdOversizedTorrent(ctx, &dl, qt, updates) {
+			continue
+		}
 		if v, ok := qt["progress"].(float64); ok {
 			progressPercent := v * 100.0
 			updates["progress"] = progressPercent

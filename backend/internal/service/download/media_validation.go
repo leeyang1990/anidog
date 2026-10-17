@@ -56,6 +56,12 @@ func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download
 	if fallback && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
 		return nil
 	}
+	if dl.VerifiedLanguages != "" {
+		var verified []string
+		if json.Unmarshal([]byte(dl.VerifiedLanguages), &verified) == nil {
+			withVerifiedLanguages(&m, verified)
+		}
+	}
 	if err := validateMediaPreferences(m, path, dl.SourceTitle, quality, languages); err != nil {
 		return candidateMediaError{err}
 	}
@@ -122,7 +128,10 @@ func validateMediaPreferences(m mediacheck.Media, path, title, quality string, l
 
 // AssessMediaPreferences keeps preference debt separate from playback availability.
 // Unknown hard subtitles do not prove that the existing file needs replacement.
-func AssessMediaPreferences(m mediacheck.Media, path, title, quality string, languages []string) QualityAssessment {
+func AssessMediaPreferences(m mediacheck.Media, path, title, quality string, languages []string, verified ...[]string) QualityAssessment {
+	if len(verified) > 0 {
+		withVerifiedLanguages(&m, verified[0])
+	}
 	w, h := m.Resolution()
 	want := indexer.QualityHeight(quality)
 	// Cinema crops can retain the full width of a 1080p/2160p master.
@@ -162,7 +171,10 @@ func AssessMediaPreferences(m mediacheck.Media, path, title, quality string, lan
 		}
 	}
 	base := strings.TrimSuffix(path, filepath.Ext(path))
-	siblings, _ := filepath.Glob(base + "*")
+	var siblings []string
+	if path != "" {
+		siblings, _ = filepath.Glob(base + "*")
+	}
 	for _, p := range siblings {
 		switch strings.ToLower(filepath.Ext(p)) {
 		case ".ass", ".ssa", ".srt", ".vtt":

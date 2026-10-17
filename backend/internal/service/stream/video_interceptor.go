@@ -2,7 +2,9 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -22,6 +24,7 @@ type InterceptedVideo struct {
 	VideoType string `json:"video_type"` // m3u8 / mp4
 	Referer   string `json:"referer,omitempty"`
 	Headers   string `json:"headers,omitempty"`
+	UserAgent string `json:"user_agent,omitempty"`
 }
 
 // 广告域名黑名单
@@ -39,17 +42,24 @@ type VideoInterceptor struct {
 	browser *rod.Browser
 	mu      sync.Mutex
 	// 信号量限制并发拦截数（rod page 太多会拖垮 chromium）
-	sem chan struct{}
+	sem      chan struct{}
+	proxyURL func() string
+	contexts map[string]*rod.Browser
 }
 
-func NewVideoInterceptor(cfg *config.Config) *VideoInterceptor {
+func NewVideoInterceptor(cfg *config.Config, proxies ...func() string) *VideoInterceptor {
+	proxy := func() string { return cfg.HTTPProxy }
+	if len(proxies) > 0 && proxies[0] != nil {
+		proxy = proxies[0]
+	}
 	maxConcurrent := cfg.StreamMaxConcurrent
 	if maxConcurrent <= 0 {
 		maxConcurrent = 2
 	}
 	return &VideoInterceptor{
-		cfg: cfg,
-		sem: make(chan struct{}, maxConcurrent),
+		cfg:      cfg,
+		sem:      make(chan struct{}, maxConcurrent),
+		proxyURL: proxy, contexts: make(map[string]*rod.Browser),
 	}
 }
 
@@ -87,8 +97,9 @@ func (v *VideoInterceptor) Close() {
 	defer v.mu.Unlock()
 
 	if v.browser != nil {
-		v.browser.MustClose()
+		_ = v.browser.Close()
 		v.browser = nil
+		v.contexts = make(map[string]*rod.Browser)
 		zap.L().Info("rod 浏览器已关闭")
 	}
 }
@@ -97,8 +108,48 @@ func (v *VideoInterceptor) Close() {
 func (v *VideoInterceptor) GetBrowser() *rod.Browser {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return v.browser
+	if v.browser == nil {
+		return nil
+	}
+	proxy := v.proxyURL()
+	if browser := v.contexts[proxy]; browser != nil {
+		return browser
+	}
+	proxyServer := proxy
+	if proxy != "" {
+		parsed, err := url.Parse(proxy)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return nil
+		}
+		// Chromium's context proxy does not accept embedded credentials. Keep them
+		// out of process arguments and handle its proxy authentication challenge.
+		if parsed.User != nil {
+			username := parsed.User.Username()
+			password, _ := parsed.User.Password()
+			go v.browser.HandleAuth(username, password)()
+			parsed.User = nil
+		}
+		if parsed.Scheme == "socks5h" {
+			parsed.Scheme = "socks5"
+		}
+		proxyServer = parsed.String()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := (proto.TargetCreateBrowserContext{ProxyServer: proxyServer}).Call(v.browser.Context(ctx))
+	if err != nil {
+		zap.L().Warn("创建流媒体浏览器网络上下文失败", zap.Error(err))
+		return nil
+	}
+	browser := *v.browser
+	browser.BrowserContextID = res.BrowserContextID
+	v.contexts[proxy] = &browser
+	return &browser
 }
+
+type playerFailure struct{ message string }
+
+func (e *playerFailure) Error() string { return "播放器已报错：" + e.message }
 
 // InterceptVideoURL 拦截页面中的视频 URL，失败时自动重试最多 maxAttempts 次，每次 timeout 递增
 func (v *VideoInterceptor) InterceptVideoURL(ctx context.Context, pageURL, referer, userAgent string) (*InterceptedVideo, error) {
@@ -125,6 +176,10 @@ func (v *VideoInterceptor) InterceptVideoURL(ctx context.Context, pageURL, refer
 			return video, nil
 		}
 		lastErr = err
+		var failed *playerFailure
+		if errors.As(err, &failed) {
+			return nil, err
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -134,119 +189,154 @@ func (v *VideoInterceptor) InterceptVideoURL(ctx context.Context, pageURL, refer
 
 // interceptOnce 单次尝试拦截（原有实现重命名）
 func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, userAgent string, timeout time.Duration) (*InterceptedVideo, error) {
-	// 获取信号量（限制并发拦截数）
 	select {
 	case v.sem <- struct{}{}:
 		defer func() { <-v.sem }()
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-
-	v.mu.Lock()
-	browser := v.browser
-	v.mu.Unlock()
-
+	browser := v.GetBrowser()
 	if browser == nil {
-		return nil, fmt.Errorf("浏览器未启动")
+		return nil, fmt.Errorf("流媒体浏览器或代理上下文不可用")
 	}
-
-	zap.L().Info("开始拦截视频 URL", zap.String("pageURL", pageURL))
-
-	// 创建新页面
-	page := browser.MustPage("")
-	defer page.MustClose()
-
-	// 设置 User-Agent
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	page, err := browser.Context(ctx).Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = page.Context(context.Background()).Close() }()
 	if userAgent != "" {
-		page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
-			UserAgent: userAgent,
-		})
-	}
-
-	// 拦截结果通道
-	resultCh := make(chan *InterceptedVideo, 1)
-
-	tryReport := func(v *InterceptedVideo) {
-		select {
-		case resultCh <- v:
-		default:
+		if err := page.SetUserAgent(&proto.NetworkSetUserAgentOverride{UserAgent: userAgent}); err != nil {
+			return nil, err
 		}
 	}
-
-	// 监听 Request 事件：URL 匹配视频路径
-	go page.EachEvent(func(e *proto.NetworkRequestWillBeSent) bool {
-		reqURL := e.Request.URL
-
-		// 过滤广告/非视频
-		for _, adDomain := range adDomains {
-			if strings.Contains(reqURL, adDomain) {
+	resultCh := make(chan *InterceptedVideo, 1)
+	failureCh := make(chan error, 1)
+	// A successful media response is required; requests alone also include broken
+	// manifests, advertising placeholders and 403 responses.
+	go page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
+		r := e.Response
+		if isAsset(r.URL) {
+			return false
+		}
+		for _, domain := range adDomains {
+			if strings.Contains(r.URL, domain) {
 				return false
 			}
 		}
-		if isAsset(reqURL) {
+		ct := strings.ToLower(r.Headers["content-type"].Str() + r.Headers["Content-Type"].Str())
+		kind := mediaResponseType(r.URL, ct)
+		if kind == "" {
 			return false
 		}
-
-		if vtype := classifyByURL(reqURL); vtype != "" {
-			tryReport(&InterceptedVideo{URL: reqURL, VideoType: vtype, Referer: referer})
+		if r.Status >= 400 {
+			select {
+			case failureCh <- &playerFailure{fmt.Sprintf("媒体请求返回 HTTP %d", r.Status)}:
+			default:
+			}
 			return true
 		}
-		return false
-	})()
-
-	// 监听 Response 事件：Content-Type 是 video/* 或 hls
-	go page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
-		resp := e.Response
-		reqURL := resp.URL
-		ct := ""
-		if resp.Headers != nil {
-			if v, ok := resp.Headers["Content-Type"]; ok {
-				ct = v.Str()
-			} else if v, ok := resp.Headers["content-type"]; ok {
-				ct = v.Str()
+		if r.Status < 200 || r.Status >= 300 {
+			return false
+		}
+		ref := referer
+		agent := userAgent
+		for name, value := range r.RequestHeaders {
+			if strings.EqualFold(name, "Referer") && value.Str() != "" {
+				ref = value.Str()
+			}
+			if strings.EqualFold(name, "User-Agent") && value.Str() != "" {
+				agent = value.Str()
 			}
 		}
-		if ct == "" {
-			return false
+		if ref == "" {
+			ref = pageURL
 		}
-		if isAsset(reqURL) {
-			return false
+		video := &InterceptedVideo{URL: r.URL, VideoType: kind, Referer: ref, UserAgent: agent}
+		select {
+		case resultCh <- video:
+		default:
 		}
-
-		ctLower := strings.ToLower(ct)
-		if strings.Contains(ctLower, "mpegurl") || strings.Contains(ctLower, "hls") {
-			tryReport(&InterceptedVideo{URL: reqURL, VideoType: "m3u8", Referer: referer})
-			return true
-		}
-		if strings.HasPrefix(ctLower, "video/") {
-			tryReport(&InterceptedVideo{URL: reqURL, VideoType: "mp4", Referer: referer})
-			return true
-		}
-		return false
+		return true
 	})()
-
-	// 导航到页面
 	if err := page.Navigate(pageURL); err != nil {
-		return nil, fmt.Errorf("导航到页面失败: %w", err)
+		return nil, fmt.Errorf("导航到播放页失败: %w", err)
 	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case video := <-resultCh:
+			zap.L().Info("视频 URL 拦截成功", zap.String("page", pageURL), zap.String("type", video.VideoType))
+			return video, nil
+		case err := <-failureCh:
+			return nil, err
+		case <-ticker.C:
+			if reason := inspectPlayerFailure(page, 0); reason != "" {
+				return nil, &playerFailure{reason}
+			}
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, fmt.Errorf("视频拦截超时 (%v)", timeout)
+			}
+			return nil, ctx.Err()
+		}
+	}
+}
 
-	// 不等 WaitStable（有些站点永远不稳定），直接等待拦截结果
-	if timeout <= 0 {
-		timeout = 60 * time.Second
+func mediaResponseType(rawURL, contentType string) string {
+	lower := strings.ToLower(strings.SplitN(rawURL, "?", 2)[0])
+	if strings.HasSuffix(lower, ".ts") || strings.HasSuffix(lower, ".m4s") {
+		return ""
 	}
-	select {
-	case video := <-resultCh:
-		zap.L().Info("视频 URL 拦截成功",
-			zap.String("type", video.VideoType),
-			zap.String("page", pageURL),
-			zap.String("url", video.URL))
-		return video, nil
-	case <-time.After(timeout):
-		zap.L().Warn("视频拦截超时", zap.String("page", pageURL), zap.Duration("timeout", timeout))
-		return nil, fmt.Errorf("视频拦截超时 (%v)", timeout)
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if strings.Contains(contentType, "mpegurl") || strings.HasSuffix(lower, ".m3u8") {
+		return "m3u8"
 	}
+	if strings.HasSuffix(lower, ".mp4") || strings.Contains(contentType, "video/mp4") || strings.Contains(contentType, "video/webm") {
+		return "mp4"
+	}
+	return ""
+}
+
+// Inspect only short, visible error messages, including nested player frames.
+// Long outer pages often mention errors in help text and must not be rejected.
+func playerFailureText(text string) string {
+	text = strings.TrimSpace(text)
+	if len([]rune(text)) > 500 {
+		return ""
+	}
+	for _, marker := range []string{"播放失败，请刷新或稍候再试", "播放失败，请刷新", "未取得有效播放地址", "解析接口返回无效", "解析请求异常", "播放器组件加载失败", "The media could not be loaded"} {
+		if strings.Contains(text, marker) {
+			return marker
+		}
+	}
+	return ""
+}
+
+func inspectPlayerFailure(page *rod.Page, depth int) string {
+	if depth > 4 {
+		return ""
+	}
+	result, err := page.Eval(`() => document.body ? document.body.innerText : ""`)
+	if err == nil {
+		if text := playerFailureText(result.Value.Str()); text != "" {
+			return text
+		}
+	}
+	frames, err := page.Elements("iframe")
+	if err != nil {
+		return ""
+	}
+	for _, el := range frames {
+		frame, err := el.Frame()
+		if err == nil {
+			if reason := inspectPlayerFailure(frame, depth+1); reason != "" {
+				return reason
+			}
+		}
+	}
+	return ""
 }
 
 // classifyByURL 通过 URL 模式判断是否为视频流

@@ -39,6 +39,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # 不会每次生成并重新下载一个 400MB+ 的依赖层，只需拉取新的 Go 二进制层。
 FROM leeyang1990/anidog-backend-runtime:alpine3.24-v1
 
+# Verify burned-in Chinese subtitles from a few frames before downloading a
+# whole episode. Keep the stable Chromium runtime layer reusable.
+RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-chi_sim tesseract-ocr-data-chi_tra
+
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/anidog .
 

@@ -47,13 +47,34 @@ type Media struct {
 	Streams []Stream `json:"streams"`
 	Format  struct {
 		Duration string `json:"duration"`
+		BitRate  string `json:"bit_rate"`
+		Size     string `json:"size"`
 	} `json:"format"`
 }
 
 func Probe(ctx context.Context, path string) (Media, error) {
+	return ProbeInput(ctx, path, nil)
+}
+
+// InputArgs contains only transport headers, placed before the input URL.
+func InputArgs(referer, userAgent string) []string {
+	args := []string{}
+	if referer != "" {
+		args = append(args, "-referer", referer)
+	}
+	if userAgent != "" {
+		args = append(args, "-user_agent", userAgent)
+	}
+	return args
+}
+
+func ProbeInput(ctx context.Context, path string, inputArgs []string) (Media, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height:stream_tags=language,title:stream_disposition=attached_pic:format=duration", "-of", "json", path).Output()
+	args := []string{"-v", "error", "-rw_timeout", "15000000", "-analyzeduration", "3000000", "-probesize", "3000000", "-show_entries", "stream=codec_type,width,height:stream_tags=language,title:stream_disposition=attached_pic:format=duration,bit_rate,size", "-of", "json"}
+	args = append(args, inputArgs...)
+	args = append(args, path)
+	out, err := exec.CommandContext(ctx, "ffprobe", args...).Output()
 	var m Media
 	if err != nil {
 		return m, fmt.Errorf("无法读取成片: %w", commandError(ctx, err))
@@ -78,12 +99,13 @@ func (m Media) Duration() float64 {
 	return n
 }
 func (m Media) Resolution() (int, int) {
+	w, h := 0, 0
 	for _, s := range m.Streams {
-		if s.CodecType == "video" && s.Disposition.AttachedPic == 0 {
-			return s.Width, s.Height
+		if s.CodecType == "video" && s.Disposition.AttachedPic == 0 && s.Width*s.Height > w*h {
+			w, h = s.Width, s.Height
 		}
 	}
-	return 0, 0
+	return w, h
 }
 
 // CheckTail performs a bounded real decode, rather than trusting an MP4 index

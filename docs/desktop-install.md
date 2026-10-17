@@ -23,6 +23,6 @@ macOS 包为自签名，尚未 Apple 公证。Windows 包尚未 Authenticode 签
 
 首次启动注册本地管理员。默认下载目录为用户主目录下的 `Downloads/AniDog`，可在设置中修改。配置和数据库分别存储在 macOS 的 `~/Library/Application Support/AniDog`、Windows 的 `%AppData%\AniDog`、Linux 的 `~/.config/AniDog`（或 `$XDG_CONFIG_HOME/AniDog`）。
 
-BT 下载开箱可用；流媒体抓取还需要本机安装 `ffmpeg` / `ffprobe` 并使其可在 PATH 中找到，浏览器由 Rod 管理，首次使用可能需要联网下载。压缩包不附带这些外部程序。
+BT 下载开箱可用；流媒体抓取还需要本机安装 `ffmpeg` / `ffprobe` 并使其可在 PATH 中找到，浏览器由 Rod 管理，首次使用可能需要联网下载。压缩包不附带这些外部程序。自动抓取带硬字幕的视频时，还可安装 Tesseract 及 `chi_sim` / `chi_tra` 中文模型，用于下载前抽样确认字幕简繁体；无法确认时会换源，不会自动放宽字幕偏好。Docker 镜像已包含这些工具。
 
 Release 附带 `SHA256SUMS`，可用 `sha256sum --check SHA256SUMS`（Linux）或 `shasum -a 256`（macOS）校验附件。

@@ -41,8 +41,15 @@ func (o *Orchestrator) auditLibraryQuality(ctx context.Context, anime *model.Ani
 			return err
 		}
 		titles := map[string]string{}
+		verified := map[string][]string{}
 		for _, d := range downloads {
 			titles[d.TorrentID] = d.SourceTitle
+			if d.VerifiedLanguages != "" {
+				var languages []string
+				if json.Unmarshal([]byte(d.VerifiedLanguages), &languages) == nil {
+					verified[d.TorrentID] = languages
+				}
+			}
 		}
 		probe := o.mediaProbe
 		if probe == nil {
@@ -70,6 +77,10 @@ func (o *Orchestrator) auditLibraryQuality(ctx context.Context, anime *model.Ani
 			}
 			languages, _ := json.Marshal(pref.Languages)
 			evidence := fmt.Sprintf("v1|%s|%d|%d|%s|%s|%s", path, info.Size(), info.ModTime().UnixNano(), title, pref.Quality, languages)
+			if row.DownloadID != nil && len(verified[*row.DownloadID]) > 0 {
+				raw, _ := json.Marshal(verified[*row.DownloadID])
+				evidence += "|verified:" + string(raw)
+			}
 			sidecars, _ := filepath.Glob(strings.TrimSuffix(path, filepath.Ext(path)) + "*")
 			for _, sidecar := range sidecars {
 				if st, e := os.Stat(sidecar); e == nil {
@@ -85,7 +96,11 @@ func (o *Orchestrator) auditLibraryQuality(ctx context.Context, anime *model.Ani
 				if pref.Quality == "" && len(pref.Languages) == 0 {
 					assessment.Status, assessment.Reason = model.QualityMeetsTarget, ""
 				} else if m, e := probe(ctx, path); e == nil {
-					assessment = dlservice.AssessMediaPreferences(m, path, title, pref.Quality, pref.Languages)
+					var evidence []string
+					if row.DownloadID != nil {
+						evidence = verified[*row.DownloadID]
+					}
+					assessment = dlservice.AssessMediaPreferences(m, path, title, pref.Quality, pref.Languages, evidence)
 				} else if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -247,7 +262,7 @@ func (o *Orchestrator) trySeasonUpgrade(ctx context.Context, anime *model.Anime,
 				return false
 			}
 			start, end, trigger := 1, expected, q.Needed[0]
-			_, err := o.dlSvc.Create(ctx, &dlservice.Task{Name: fmt.Sprintf("%s - 整季升级 01-%02d", anime.Title, expected), URL: url, SourceTitle: c.Title, DownloadType: model.DownloadTypeTorrent, Source: tier, AnimeName: anime.Title, AnimeID: &anime.ID, EpisodeNumber: &trigger, Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end, Purpose: model.DownloadPurposeSeasonUpgrade, UpgradeTarget: dlservice.QualityGoalKey(pref.Quality, pref.Languages), UpgradeReason: reason})
+			_, err := o.dlSvc.Create(ctx, &dlservice.Task{Name: fmt.Sprintf("%s - 整季升级 01-%02d", anime.Title, expected), URL: url, SourceTitle: c.Title, EstimatedBytes: c.Size, DownloadType: model.DownloadTypeTorrent, Source: tier, AnimeName: anime.Title, AnimeID: &anime.ID, EpisodeNumber: &trigger, Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end, Purpose: model.DownloadPurposeSeasonUpgrade, UpgradeTarget: dlservice.QualityGoalKey(pref.Quality, pref.Languages), UpgradeReason: reason})
 			if err != nil {
 				o.recordDiag(anime.ID, trigger, tier, len(candidates), 0, "整季升级入队失败: "+err.Error(), c.Title, c.Score)
 				continue

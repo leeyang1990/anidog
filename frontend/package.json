@@ -1,11 +1,11 @@
 {
   "name": "mikanani-dog-frontend",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "private": true,
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "npm run test:auth && npm run test:preload-recovery && npm run test:i18n && npm run test:skin && npm run test:desktop-appearance && npm run test:poster && npm run test:interaction && npm run test:stage && npm run test:anim && npm run test:episodes && npm run test:calendar",
+    "test": "npm run test:auth && npm run test:preload-recovery && npm run test:i18n && npm run test:skin && npm run test:desktop-appearance && npm run test:poster && npm run test:interaction && npm run test:stage && npm run test:anim && npm run test:episodes && npm run test:calendar && npm run test:numeric-setting",
     "test:episodes": "node tests/episode-downloads.mjs",
     "test:desktop-appearance": "node tests/desktop-appearance.mjs",
     "test:poster": "node tests/poster-loading.mjs",
@@ -18,7 +18,8 @@
     "test:skin": "node tests/skin.mjs",
     "serve": "vite preview",
     "lint": "eslint --ext .js,.vue --ignore-path .gitignore --fix src",
-    "test:calendar": "node tests/calendar.mjs"
+    "test:calendar": "node tests/calendar.mjs",
+    "test:numeric-setting": "node tests/numeric-setting.mjs"
   },
   "dependencies": {
     "@fontsource/nunito": "5.3.0",

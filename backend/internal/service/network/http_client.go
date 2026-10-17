@@ -13,6 +13,7 @@ import (
 type HTTPClient struct {
 	client *http.Client
 	cfg    *config.Config
+	proxy  *ProxyProvider
 }
 
 func NewHTTPClient(cfg *config.Config, providers ...*ProxyProvider) *HTTPClient {
@@ -23,7 +24,16 @@ func NewHTTPClient(cfg *config.Config, providers ...*ProxyProvider) *HTTPClient 
 	return &HTTPClient{
 		client: NewClient(proxy, 30*time.Second),
 		cfg:    cfg,
+		proxy:  proxy,
 	}
+}
+
+// ProxyURL shares hot-updated routing with browser-based page loading.
+func (c *HTTPClient) ProxyURL() string {
+	if c == nil || c.proxy == nil {
+		return ""
+	}
+	return c.proxy.Get()
 }
 
 func (c *HTTPClient) Client() *http.Client {

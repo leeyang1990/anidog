@@ -270,6 +270,7 @@
 </template>
 
 <script setup>
+import { nonNegativeSetting } from '../../utils/numericSetting.js'
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LayersOutline, DiamondOutline, TimerOutline, CheckmarkOutline, FolderOpenOutline } from '@vicons/ionicons5'
@@ -390,8 +391,8 @@ async function load() {
     // 下载与归档
     form.download_dir = map['download_dir'] || map['media_root'] || defaults.download_dir
     form.max_concurrent = Math.min(100, Math.max(1, parseInt(map['max_concurrent']) || parseInt(map['stream_max_concurrent']) || defaults.max_concurrent))
-    form.media_min_free_gb = Math.max(0, parseFloat(map['media.min_free_gb']) || defaults.media_min_free_gb)
-    form.media_max_used_percent = Math.max(0, parseFloat(map['media.max_used_percent']) || defaults.media_max_used_percent)
+    form.media_min_free_gb = nonNegativeSetting(map['media.min_free_gb'], defaults.media_min_free_gb)
+    form.media_max_used_percent = nonNegativeSetting(map['media.max_used_percent'], defaults.media_max_used_percent)
     try {
       const system = await get('/system/info')
       engineInfo.value = system.torrent_engine || system.qbittorrent || engineInfo.value

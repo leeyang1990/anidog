@@ -603,18 +603,19 @@ func (o *Orchestrator) trySeasonPack(ctx context.Context, anime *model.Anime, mi
 		start, end := top.Start, top.End
 		ep := firstMissing
 		task := &dlservice.Task{
-			Name:          fmt.Sprintf("%s - 合集 %02d-%02d", anime.Title, start, end),
-			URL:           url,
-			SourceTitle:   top.Candidate.Title,
-			DownloadType:  model.DownloadTypeTorrent,
-			Source:        tier,
-			AnimeName:     anime.Title,
-			AnimeID:       &anime.ID,
-			EpisodeNumber: &ep,
-			Scope:         model.DownloadScopeSeason,
-			EpisodeStart:  &start,
-			EpisodeEnd:    &end,
-			RetryCount:    o.retryCountForEpisode(ctx, anime.ID, firstMissing),
+			Name:           fmt.Sprintf("%s - 合集 %02d-%02d", anime.Title, start, end),
+			URL:            url,
+			SourceTitle:    top.Candidate.Title,
+			EstimatedBytes: top.Candidate.Size,
+			DownloadType:   model.DownloadTypeTorrent,
+			Source:         tier,
+			AnimeName:      anime.Title,
+			AnimeID:        &anime.ID,
+			EpisodeNumber:  &ep,
+			Scope:          model.DownloadScopeSeason,
+			EpisodeStart:   &start,
+			EpisodeEnd:     &end,
+			RetryCount:     o.retryCountForEpisode(ctx, anime.ID, firstMissing),
 		}
 		if _, err := o.dlSvc.Create(ctx, task); err != nil {
 			o.recordDiag(anime.ID, firstMissing, tier, len(cands), len(cands)-len(packs),
@@ -884,14 +885,15 @@ func (o *Orchestrator) tryBT(
 	epCopy := ep
 
 	task := &dlservice.Task{
-		Name:          fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
-		URL:           url,
-		SourceTitle:   top.Title,
-		DownloadType:  model.DownloadTypeTorrent,
-		Source:        tier,
-		AnimeName:     anime.Title,
-		AnimeID:       &anime.ID,
-		EpisodeNumber: &epCopy,
+		Name:           fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
+		URL:            url,
+		SourceTitle:    top.Title,
+		EstimatedBytes: top.Size,
+		DownloadType:   model.DownloadTypeTorrent,
+		Source:         tier,
+		AnimeName:      anime.Title,
+		AnimeID:        &anime.ID,
+		EpisodeNumber:  &epCopy,
 		SavePath: dlservice.BuildTorrentRaceSavePath(
 			o.currentMediaRoot(ctx), anime.ID, ep, top.InfoHash, url),
 		RetryCount: retryCount,
@@ -1238,10 +1240,16 @@ func (o *Orchestrator) isDuplicate(ctx context.Context, animeID uint, ep int, so
 	}
 	switch failure.FailureKind {
 	case model.FailureKindTransient:
+		if sourceType == SourceStream {
+			return false
+		} // Per-road cooldown must not block healthy backup roads.
 		return failure.NextRetryAt != nil && time.Now().Before(*failure.NextRetryAt)
 	case model.FailureKindPermanent, "":
 		return time.Since(failure.UpdatedAt) < 6*time.Hour
 	case model.FailureKindExhausted:
+		if sourceType == SourceStream {
+			return false
+		}
 		return time.Since(failure.UpdatedAt) < time.Hour
 	default:
 		return false // Rejected candidates are filtered individually, not by source.

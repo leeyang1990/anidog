@@ -1,9 +1,11 @@
 package download
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/stream"
 )
 
 // Source constants identify the trigger that created a download.
@@ -21,7 +23,10 @@ const (
 type Task struct {
 	// RuntimeID is assigned by Service and identifies the concrete executor
 	// process. Callers leave it empty.
-	RuntimeID string
+	RuntimeID      string
+	EstimatedBytes int64
+	// Prepared by Service; the executor calls this before downloading payload.
+	Preflight func(context.Context, *stream.InterceptedVideo) error
 
 	// Name is the human-readable name (e.g. "Frieren - 第1集")
 	Name        string

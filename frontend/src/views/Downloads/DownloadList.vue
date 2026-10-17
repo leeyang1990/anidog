@@ -111,8 +111,12 @@
             <div v-else-if="task.scope === 'season' && task.episode_start && task.episode_end" class="text-xs text-muted-foreground mt-0.5">
               {{ t('pages.downloads.seasonPack', { start: String(task.episode_start).padStart(2, '0'), end: String(task.episode_end).padStart(2, '0') }) }}
             </div>
+            <div v-else-if="task.status === 'paused' && task.quality_note" class="text-xs text-ac-heart-dark truncate mt-0.5" :title="task.quality_note">{{ task.quality_note }}</div>
             <div v-else-if="task.episode_number" class="text-xs text-muted-foreground mt-0.5">
               {{ t('pages.downloads.episode', { episode: String(task.episode_number).padStart(2, '0') }) }}
+            </div>
+            <div v-if="task.status === 'failed' && task.recovery_note" class="text-xs text-ac-sky-dark truncate mt-0.5" :title="task.recovery_note">
+              {{ t('pages.downloads.recoveryStatus') }}：{{ task.recovery_note }}
             </div>
           </div>
 

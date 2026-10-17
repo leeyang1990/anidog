@@ -100,6 +100,19 @@ func TestSeasonUpgradeAllOrNothing(t *testing.T) {
 				t.Fatalf("completed=%v want %v error=%v", ok, want, d.LastError)
 			}
 			db.First(&candidate, candidate.ID)
+			if tc.dbFailure {
+				if candidate.Status != model.DownloadStatusPaused {
+					t.Fatalf("failed swap must pause, got %s", candidate.Status)
+				}
+				before, _ := filepath.Glob(filepath.Join(root, ".anidog-upgrades", "anime-*", "task-*", "*"))
+				if svc.CompleteSeasonPack(context.Background(), candidate.ID, files, root) {
+					t.Fatal("paused failed swap ran again")
+				}
+				after, _ := filepath.Glob(filepath.Join(root, ".anidog-upgrades", "anime-*", "task-*", "*"))
+				if len(after) != len(before) {
+					t.Fatal("failed swap created another attempt")
+				}
+			}
 			for ep, p := range oldPaths {
 				var row model.AnimeEpisode
 				db.Where("anime_id = ? AND episode_number = ?", a.ID, ep).First(&row)
@@ -180,6 +193,37 @@ func TestUpgradeRecoveryAtEveryMoveBoundary(t *testing.T) {
 				if data, _ := os.ReadFile(filepath.Join(input, fmt.Sprint(i))); string(data) != "new" {
 					t.Fatal("incoming file lost during recovery")
 				}
+			}
+		})
+	}
+}
+
+func TestTerminalUpgradeJournalLeavesStartupScan(t *testing.T) {
+	for _, state := range []string{"committed", "rolled_back"} {
+		t.Run(state, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, ".anidog-upgrades", "anime-1", "task-1", "attempt", "journal.json")
+			j := upgradeJournal{DownloadID: 1, State: state}
+			if err := writeUpgradeJournal(path, &j); err != nil {
+				t.Fatal(err)
+			}
+			archived := filepath.Join(filepath.Dir(path), "journal."+state+".json")
+			if _, err := os.Stat(archived); err != nil {
+				t.Fatal("terminal journal was not preserved", err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatal("terminal journal remains in startup scan")
+			}
+			// Old releases left terminal records under the active filename.
+			if err := os.Rename(archived, path); err != nil {
+				t.Fatal(err)
+			}
+			svc := NewService(testutil.InitTestDB(), &config.Config{MediaRoot: root}, nil)
+			if err := svc.RecoverSeasonUpgrades(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(archived); err != nil {
+				t.Fatal("legacy terminal journal was not archived", err)
 			}
 		})
 	}

@@ -77,12 +77,22 @@ func writeUpgradeJournal(path string, j *upgradeJournal) error {
 	if err = os.Rename(path+".tmp", path); err != nil {
 		return err
 	}
+	if j.State == "committed" || j.State == "rolled_back" {
+		// Terminal records remain beside their backups, outside the startup scan.
+		if err = archiveUpgradeJournal(path, j.State); err != nil {
+			return err
+		}
+	}
 	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
 	defer dir.Close()
 	return dir.Sync()
+}
+
+func archiveUpgradeJournal(path, state string) error {
+	return os.Rename(path, filepath.Join(filepath.Dir(path), "journal."+state+".json"))
 }
 
 func rollbackUpgrade(j *upgradeJournal) error {
@@ -127,6 +137,9 @@ func (s *Service) RecoverSeasonUpgrades(ctx context.Context) error {
 			return err
 		}
 		if j.State == "committed" || j.State == "rolled_back" {
+			if err = archiveUpgradeJournal(path, j.State); err != nil {
+				return err
+			}
 			continue
 		}
 		for _, m := range j.Moves {
@@ -295,10 +308,10 @@ func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Do
 		note := fmt.Sprintf("整季升级切换失败，原版已保留: %v", err)
 		if rollbackErr != nil {
 			note = fmt.Sprintf("整季升级需恢复，已暂停: %v；回滚: %v", err, rollbackErr)
-			s.updateStatus(candidate.ID, model.DownloadStatusPaused, map[string]interface{}{"last_error": note})
-		} else {
-			s.db.Model(candidate).Update("last_error", note)
 		}
+		// A successful rollback does not resolve the cause of the failed swap.
+		// Pause both outcomes so the BT poller cannot repeat this every few seconds.
+		s.updateStatus(candidate.ID, model.DownloadStatusPaused, map[string]interface{}{"last_error": note})
 		zap.L().Error(note)
 		return false
 	}

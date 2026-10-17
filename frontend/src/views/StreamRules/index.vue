@@ -66,7 +66,7 @@
         <div class="space-y-2">
           <label class="text-sm font-bold text-foreground">{{ t('pages.rules.searchUrl') }}</label>
           <AcInput v-model="ruleForm.search_url" placeholder="https://example.com/search?q=@keyword" />
-          <p class="text-xs text-muted-foreground">{{ t('pages.rules.keywordHint') }}</p>
+          <p class="text-xs text-muted-foreground">{{ t('pages.rules.keywordHint', { keyword: '@keyword' }) }}</p>
         </div>
         <div class="space-y-2">
           <label class="text-sm font-bold text-foreground">{{ t('pages.rules.searchListXpath') }}</label>

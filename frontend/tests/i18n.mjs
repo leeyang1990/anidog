@@ -33,6 +33,8 @@ function flattenKeys(value, prefix = '') {
 const referenceKeys = flattenKeys(i18n.global.getLocaleMessage('zh-CN')).sort()
 for (const localeName of localeOptions.map(option => option.value)) {
   assert.deepEqual(flattenKeys(i18n.global.getLocaleMessage(localeName)).sort(), referenceKeys, `${localeName} translation keys differ`)
+  setLocale(localeName)
+  assert.ok(i18n.global.t('pages.rules.keywordHint', { keyword: '@keyword' }).startsWith('@keyword '), `${localeName} rule hint must render a literal search token`)
 }
 
 setLocale('en-US')

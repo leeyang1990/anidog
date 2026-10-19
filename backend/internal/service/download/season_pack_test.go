@@ -12,7 +12,7 @@ import (
 	"github.com/anidog/anidog-go/internal/testutil"
 )
 
-func TestMapSeasonPackMediaFilesMapsEpisodesAndOVA(t *testing.T) {
+func TestMapSeasonPackMediaFilesKeepsOVAApart(t *testing.T) {
 	dir := t.TempDir()
 	for ep := 1; ep <= 4; ep++ {
 		path := filepath.Join(dir, fmt.Sprintf("[Group][Lucky Star][%02d][1080p].mkv", ep))
@@ -28,8 +28,8 @@ func TestMapSeasonPackMediaFilesMapsEpisodesAndOVA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mapped) != 5 || mapped[5] != ova {
-		t.Fatalf("mapped=%v, want episodes 1-5 with OVA at 5", mapped)
+	if len(mapped) != 4 || mapped[5] != "" {
+		t.Fatalf("mapped=%v, want only regular episodes 1-4", mapped)
 	}
 }
 
@@ -206,5 +206,47 @@ func TestCoveredOrRejectedPackCannotResurrectMedia(t *testing.T) {
 	db.Model(&d).Update("status", model.DownloadStatusFailed)
 	if s.CompleteSeasonPack(context.Background(), d.ID, map[int]string{2: "unused-candidate.mkv"}, root) {
 		t.Fatal("failed pack resurrected")
+	}
+}
+
+func TestPackIgnoresNumberedExtrasInBothModes(t *testing.T) {
+	root := t.TempDir()
+	for ep := 1; ep <= 4; ep++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("Nova S01E%02d.mkv", ep)), []byte("episode"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"OVA 05.mkv", "[SP05].mkv", "NCOP 05.mkv", "sample S01E05.mkv", "Extras/Series S01E05.mkv"} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("extra"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := mapSeasonPackMediaFilesMode(root, 1, 5, false)
+	if err != nil || len(files) != 4 || files[5] != "" {
+		t.Fatalf("backfill: %v %v", files, err)
+	}
+	if _, err := mapSeasonPackMediaFilesMode(root, 1, 5, true); err == nil {
+		t.Fatal("upgrade cannot use an extra for EP5")
+	}
+}
+
+func TestBackfillNeverUsesOVAAsFinale(t *testing.T) {
+	root := t.TempDir()
+	for ep := 1; ep <= 11; ep++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("Series S01E%02d.mkv", ep)), []byte("episode"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	extra := filepath.Join(root, "OVA.mkv")
+	if err := os.WriteFile(extra, []byte("bonus"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files, err := mapSeasonPackMediaFilesMode(root, 1, 12, false)
+	if err != nil || len(files) != 11 || files[12] != "" {
+		t.Fatalf("missing EP12 must remain missing: %v %v", files, err)
 	}
 }

@@ -77,7 +77,7 @@ func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputP
 	defer func() { <-d.semaphore }()
 
 	// 获取总时长（用于进度计算）
-	totalDuration := d.getM3U8Duration(ctx, videoURL, referer, userAgents...)
+	totalDuration := d.getMediaDuration(ctx, videoURL, videoType, referer, userAgents...)
 
 	base := d.buildFFmpegCmd(videoURL, outputPath, videoType, referer, userAgents...)
 	cmd := mediacheck.MediaCommand(ctx, base.Path, base.Args[1:]...)
@@ -224,23 +224,11 @@ func (d *M3U8Downloader) Cancel(taskID string) bool {
 func (d *M3U8Downloader) buildFFmpegCmd(videoURL, outputPath, videoType, referer string, userAgents ...string) *exec.Cmd {
 	args := []string{"-y"}
 
-	// HLS 特殊处理：ffmpeg 8+ 严格检查分片扩展名，而很多流媒体源的分片
-	// 是 query string（没扩展名）或自定义扩展名，需要关闭这些检查
-	if videoType == "m3u8" {
-		args = append(args,
-			"-extension_picky", "0",
-			"-allowed_extensions", "ALL",
-			"-allowed_segment_extensions", "ALL",
-		)
+	agent := ""
+	if len(userAgents) > 0 {
+		agent = userAgents[0]
 	}
-
-	// Headers 需要在 -i 之前
-	if referer != "" {
-		args = append(args, "-headers", fmt.Sprintf("Referer: %s\r\n", referer))
-	}
-	if len(userAgents) > 0 && userAgents[0] != "" {
-		args = append(args, "-user_agent", userAgents[0])
-	}
+	args = append(args, mediacheck.MediaInputArgs(d.cfg.FFMPEGPath, videoURL, videoType, referer, agent)...)
 	args = append(args, "-rw_timeout", "15000000")
 
 	args = append(args, "-i", videoURL)
@@ -297,17 +285,16 @@ func (d *M3U8Downloader) parseFFmpegProgress(line string, totalDuration float64)
 }
 
 // getM3U8Duration 获取视频总时长（m3u8 / mp4 都支持）
-func (d *M3U8Downloader) getM3U8Duration(ctx context.Context, videoURL, referer string, userAgents ...string) float64 {
+func (d *M3U8Downloader) getMediaDuration(ctx context.Context, videoURL, kind, referer string, userAgents ...string) float64 {
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	// 使用 ffprobe 获取时长（对 m3u8 / mp4 都有效）
 	args := []string{"-v", "quiet", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1"}
-	if len(userAgents) > 0 && userAgents[0] != "" {
-		args = append(args, "-user_agent", userAgents[0])
+	agent := ""
+	if len(userAgents) > 0 {
+		agent = userAgents[0]
 	}
-	if referer != "" {
-		args = append(args, "-headers", fmt.Sprintf("Referer: %s\r\n", referer))
-	}
+	args = append(args, mediacheck.MediaInputArgs("ffprobe", videoURL, kind, referer, agent)...)
 	args = append(args, videoURL)
 
 	cmd := mediacheck.MediaCommand(ctx, "ffprobe", args...)

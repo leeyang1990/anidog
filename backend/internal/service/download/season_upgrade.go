@@ -118,6 +118,20 @@ func rollbackUpgrade(j *upgradeJournal) error {
 	return nil
 }
 
+// Lock the primary row on a fresh transaction: a COMMIT error may only mean
+// its acknowledgement was lost. The lock waits for the original transaction
+// to finish before deciding whether the file swap may be undone.
+func (s *Service) upgradeCommitted(ctx context.Context, j *upgradeJournal) (bool, error) {
+	var d model.Download
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&d, j.DownloadID).Error
+	})
+	if err == gorm.ErrRecordNotFound {
+		return false, nil
+	}
+	return d.Status == model.DownloadStatusCompleted && d.BackupPath == j.BackupPath, err
+}
+
 // RecoverSeasonUpgrades runs before the BT engine or scheduler starts. A DB
 // commit is the decision point: committed swaps stay, interrupted swaps roll
 // back. Journals retain the previous file mappings for manual recovery as well.
@@ -147,11 +161,11 @@ func (s *Service) RecoverSeasonUpgrades(ctx context.Context) error {
 				return fmt.Errorf("升级日志路径越界: %s", path)
 			}
 		}
-		var d model.Download
-		if err = s.db.WithContext(ctx).First(&d, j.DownloadID).Error; err != nil && err != gorm.ErrRecordNotFound {
+		committed, err := s.upgradeCommitted(ctx, &j)
+		if err != nil {
 			return err
 		}
-		if err == nil && d.Status == model.DownloadStatusCompleted && d.BackupPath == j.BackupPath {
+		if committed {
 			j.State = "committed"
 		} else {
 			if err = rollbackUpgrade(&j); err != nil {
@@ -170,6 +184,11 @@ func (s *Service) RecoverSeasonUpgrades(ctx context.Context) error {
 // moves. Two directory renames switch the library, with durable recovery for a
 // process crash between filesystem work and the database commit.
 func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Download, files map[int]string, mediaRoot string) bool {
+	// An unresolved commit belongs to recovery, never to a second swap attempt.
+	pending, err := filepath.Glob(filepath.Join(mediaRoot, ".anidog-upgrades", "anime-*", fmt.Sprintf("task-%d", candidate.ID), "*", "journal.json"))
+	if err != nil || len(pending) != 0 {
+		return false
+	}
 	var anime model.Anime
 	if err := s.db.WithContext(ctx).First(&anime, *candidate.AnimeID).Error; err != nil {
 		return false
@@ -311,7 +330,7 @@ func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Do
 		}
 		// A successful rollback does not resolve the cause of the failed swap.
 		// Pause both outcomes so the BT poller cannot repeat this every few seconds.
-		s.updateStatus(candidate.ID, model.DownloadStatusPaused, map[string]interface{}{"last_error": note})
+		s.db.Model(&model.Download{}).Where("id = ? AND status IN ?", candidate.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Updates(map[string]interface{}{"status": model.DownloadStatusPaused, "last_error": note})
 		zap.L().Error(note)
 		return false
 	}
@@ -336,7 +355,12 @@ func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Do
 		}
 	}
 	now := time.Now()
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	j.State = "committing"
+	if err := writeUpgradeJournal(journalPath, &j); err != nil {
+		return fail(err)
+	}
+	readyToCommit := false
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		r := tx.Model(&model.Download{}).Where("id = ? AND status IN ?", candidate.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Updates(map[string]interface{}{"status": model.DownloadStatusCompleted, "progress": 100, "completed_at": now, "file_path": seasonDir, "backup_path": backup, "failure_kind": "", "last_error": "", "next_retry_at": nil, "seeking_alternative": false, "quality_note": fmt.Sprintf("整季 %d 集升级完成；旧版已备份", total)})
 		if r.Error != nil {
 			return r.Error
@@ -361,10 +385,28 @@ func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Do
 				return err
 			}
 		}
-		return tx.Model(&model.Anime{}).Where("id = ?", anime.ID).Updates(map[string]interface{}{"media_management_state": "archived", "current_episode": total}).Error
+		err := tx.Model(&model.Anime{}).Where("id = ?", anime.ID).Updates(map[string]interface{}{"media_management_state": "archived", "current_episode": total}).Error
+		readyToCommit = err == nil
+		return err
 	})
 	if err != nil {
-		return fail(err)
+		if !readyToCommit {
+			return fail(err)
+		}
+		// The request may have been cancelled after the server committed. Resolve
+		// independently of that request, with a bounded primary database read.
+		resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		committed, resolveErr := s.upgradeCommitted(resolveCtx, &j)
+		cancel()
+		if resolveErr != nil {
+			// Keep both copies and the nonterminal journal. In particular, never
+			// overwrite a possibly committed task or archive this as rolled back.
+			zap.L().Error("整季升级提交结果待恢复；保留新旧文件和恢复日志", zap.Uint("id", candidate.ID), zap.Error(err), zap.NamedError("resolution", resolveErr))
+			return false
+		}
+		if !committed {
+			return fail(err)
+		}
 	}
 	j.State = "committed"
 	if err = writeUpgradeJournal(journalPath, &j); err != nil {

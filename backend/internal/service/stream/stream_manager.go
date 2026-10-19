@@ -95,7 +95,11 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, epis
 	if err != nil {
 		return "", "", fmt.Errorf("拦截视频 URL 失败: %w", err)
 	}
-	ctx = mediacheck.WithHTTPProxy(ctx, video.ProxyURL)
+	ctx, closeTransport, err := mediacheck.PrepareTransport(ctx, video.ProxyURL)
+	if err != nil {
+		return "", "", err
+	}
+	defer closeTransport()
 	for _, preflight := range preflights {
 		if preflight != nil {
 			select {

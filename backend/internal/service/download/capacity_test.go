@@ -2,7 +2,10 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -104,5 +107,64 @@ func TestLargerMagnetMetadataPausesWithoutDeletingPayload(t *testing.T) {
 	s.db.First(&saved, row.ID)
 	if saved.Status != model.DownloadStatusPaused || saved.TotalBytes == nil || *saved.TotalBytes != 20*gib || saved.QualityNote == "" {
 		t.Fatal(saved)
+	}
+}
+
+func TestCapacitySeparatesVolumesIncludingNestedMount(t *testing.T) {
+	for _, same := range []bool{false, true} {
+		t.Run(fmt.Sprint(same), func(t *testing.T) {
+			s := capacityService(t, 150*gib)
+			nested := filepath.Join(s.cfg.MediaRoot, "nested-mount")
+			if err := os.MkdirAll(nested, 0700); err != nil {
+				t.Fatal(err)
+			}
+			s.capacityVolume = func(path string) (string, error) {
+				if path == nested && !same {
+					return "other-volume", nil
+				}
+				return "target-volume", nil
+			}
+			bytes := int64(40 * gib)
+			if err := s.db.Create(&model.Download{TorrentID: "nested", Name: "nested", URL: "magnet:x", Status: model.DownloadStatusPaused, SavePath: &nested, TotalBytes: &bytes}).Error; err != nil {
+				t.Fatal(err)
+			}
+			err := s.ensureTaskCapacity(context.Background(), &Task{EstimatedBytes: 20 * gib}, 0)
+			if (err != nil) != same {
+				t.Fatalf("same volume=%v: %v", same, err)
+			}
+			s.capacityVolume = func(string) (string, error) { return "", errors.New("mount unavailable") }
+			if s.ensureTaskCapacity(context.Background(), &Task{EstimatedBytes: 1}, 0) == nil {
+				t.Fatal("unknown volume must not admit work")
+			}
+		})
+	}
+}
+
+func TestSharedFilesystemCapacity(t *testing.T) {
+	s := capacityService(t, 150*gib)
+	sibling := filepath.Join(filepath.Dir(s.cfg.MediaRoot), "movies")
+	if err := os.MkdirAll(sibling, 0700); err != nil {
+		t.Fatal(err)
+	}
+	bytes := int64(40 * gib)
+	d := model.Download{TorrentID: "other-directory", Name: "other", URL: "magnet:x", Status: model.DownloadStatusDownloading, SavePath: &sibling, TotalBytes: &bytes}
+	if err := s.db.Create(&d).Error; err != nil {
+		t.Fatal(err)
+	}
+	err := s.ensureTaskCapacity(context.Background(), &Task{SavePath: s.cfg.MediaRoot, EstimatedBytes: 20 * gib}, 0)
+	if err == nil {
+		t.Fatal("same volume: admitted 20 GiB with 150 GiB free, 40 GiB pending and 100 GiB reserve; sibling directory was excluded")
+	}
+}
+
+func TestCapacityInvalidReserveNeverBecomesZero(t *testing.T) {
+	s := capacityService(t, 150*gib)
+	for _, value := range []string{"invalid", "NaN", "+Inf", "-1"} {
+		if err := s.db.Model(&model.Setting{}).Where("key = ?", "media.min_free_gb").Update("value", value).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ensureTaskCapacity(context.Background(), &Task{EstimatedBytes: 1}, 0); err == nil {
+			t.Fatalf("invalid reserve admitted a task: %s", value)
+		}
 	}
 }

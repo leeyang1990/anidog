@@ -101,23 +101,7 @@
 
           <div class="flex-1 min-w-0">
             <div class="text-sm truncate font-bold" :title="task.name">{{ task.name }}</div>
-            <div v-if="task.status === 'failed' && (task.last_error || task.error_message)" class="text-xs text-ac-heart-dark truncate mt-0.5">
-              {{ task.last_error || task.error_message }}
-            </div>
-            <div v-else-if="task.purpose === 'season_upgrade'" class="text-xs text-ac-sky-dark mt-0.5" :title="task.upgrade_reason">
-              {{ task.upgrade_reason || t('pages.downloads.seasonUpgrade') }}
-              <span v-if="task.backup_path" class="block text-muted-foreground" :title="task.backup_path">{{ t('pages.downloads.upgradeBackup') }}</span>
-            </div>
-            <div v-else-if="task.scope === 'season' && task.episode_start && task.episode_end" class="text-xs text-muted-foreground mt-0.5">
-              {{ t('pages.downloads.seasonPack', { start: String(task.episode_start).padStart(2, '0'), end: String(task.episode_end).padStart(2, '0') }) }}
-            </div>
-            <div v-else-if="task.status === 'paused' && task.quality_note" class="text-xs text-ac-heart-dark truncate mt-0.5" :title="task.quality_note">{{ task.quality_note }}</div>
-            <div v-else-if="task.episode_number" class="text-xs text-muted-foreground mt-0.5">
-              {{ t('pages.downloads.episode', { episode: String(task.episode_number).padStart(2, '0') }) }}
-            </div>
-            <div v-if="task.status === 'failed' && task.recovery_note" class="text-xs text-ac-sky-dark truncate mt-0.5" :title="task.recovery_note">
-              {{ t('pages.downloads.recoveryStatus') }}：{{ task.recovery_note }}
-            </div>
+            <DownloadTaskDescription :task="task" :t="t" />
           </div>
 
           <div class="w-16 shrink-0 flex items-center justify-center">
@@ -255,6 +239,7 @@ import { get, post, del } from '@/utils/api'
 import { isDesktopRuntime, openDesktopPath } from '@/utils/desktop'
 import { resolveDownloadStage } from '@/utils/downloadStage'
 import { useSound } from '@/composables/useSound'
+import DownloadTaskDescription from '@/components/Downloads/DownloadTaskDescription.vue'
 import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
 import {
   AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea,

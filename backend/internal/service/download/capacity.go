@@ -2,15 +2,16 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/shirou/gopsutil/v3/disk"
+	"gorm.io/gorm"
 )
 
 const gib = int64(1024 * 1024 * 1024)
@@ -56,19 +57,16 @@ func estimatedTaskBytes(task *Task) int64 {
 	return count * perEpisode
 }
 
-func withinStorage(root, path string) bool {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-func existingStoragePath(path string) string {
+func existingStoragePath(path string) (string, error) {
 	for {
 		if _, err := os.Stat(path); err == nil {
-			return path
+			return path, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
 		}
 		parent := filepath.Dir(path)
 		if parent == path {
-			return path
+			return "", fmt.Errorf("存储路径不存在: %s", path)
 		}
 		path = parent
 	}
@@ -82,22 +80,58 @@ func (s *Service) ensureMediaCapacity(ctx context.Context) error {
 // terabytes. Admission depends on available bytes, remaining queued bytes and
 // the candidate size, keeping the configured reserve after all of those finish.
 func (s *Service) ensureTaskCapacity(ctx context.Context, task *Task, excludeID uint) error {
-	root := s.currentMediaRoot(ctx)
-	if task != nil && task.SavePath != "" && !withinStorage(root, task.SavePath) {
+	defaultRoot := s.currentMediaRoot(ctx)
+	root := defaultRoot
+	if task != nil && task.SavePath != "" {
 		root = task.SavePath
+	}
+	volume := s.capacityVolume
+	if volume == nil {
+		volume = storageVolume
+	}
+	// Resolve the filesystem, including nested mounts and paths that have not
+	// been created yet. Directory ancestry does not identify shared capacity.
+	volumes := make(map[string]string)
+	volumeOf := func(path string) (string, error) {
+		var err error
+		path, err = existingStoragePath(path)
+		if err != nil {
+			return "", err
+		}
+		if id, ok := volumes[path]; ok {
+			return id, nil
+		}
+		id, err := volume(path)
+		if err == nil {
+			volumes[path] = id
+		}
+		return id, err
+	}
+	targetVolume, err := volumeOf(root)
+	if err != nil {
+		return fmt.Errorf("无法确认下载目标的存储卷: %w", err)
 	}
 	probe := s.capacityProbe
 	if probe == nil {
 		probe = disk.Usage
 	}
-	usage, err := probe(existingStoragePath(root))
+	existing, err := existingStoragePath(root)
+	if err != nil {
+		return err
+	}
+	usage, err := probe(existing)
 	if err != nil {
 		return fmt.Errorf("无法读取 %s 的可用空间: %w", root, err)
 	}
 	var setting model.Setting
 	reserveGB := float64(0)
 	if err := s.db.WithContext(ctx).Where("key = ?", "media.min_free_gb").Take(&setting).Error; err == nil {
-		reserveGB, _ = strconv.ParseFloat(setting.Value, 64)
+		reserveGB, err = strconv.ParseFloat(setting.Value, 64)
+		if err != nil {
+			return fmt.Errorf("最少保留空间设置无效")
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("无法读取容量设置: %w", err)
 	}
 	if math.IsNaN(reserveGB) || math.IsInf(reserveGB, 0) || reserveGB < 0 || reserveGB > float64(math.MaxInt64)/float64(gib) {
 		return fmt.Errorf("最少保留空间设置无效")
@@ -109,7 +143,15 @@ func (s *Service) ensureTaskCapacity(ctx context.Context, task *Task, excludeID 
 	}
 	queued := int64(0)
 	for _, row := range rows {
-		if row.SavePath != nil && *row.SavePath != "" && !withinStorage(root, *row.SavePath) {
+		path := defaultRoot
+		if row.SavePath != nil && *row.SavePath != "" {
+			path = *row.SavePath
+		}
+		id, err := volumeOf(path)
+		if err != nil {
+			return fmt.Errorf("无法确认排队任务 #%d 的存储卷: %w", row.ID, err)
+		}
+		if id != targetVolume {
 			continue
 		}
 		t := Task{DownloadType: row.DownloadType, Scope: row.Scope, EpisodeStart: row.EpisodeStart, EpisodeEnd: row.EpisodeEnd}

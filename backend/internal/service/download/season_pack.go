@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -37,7 +36,7 @@ func mapSeasonPackMediaFilesMode(contentPath string, start, end int, strict bool
 			if walkErr != nil {
 				return walkErr
 			}
-			if strict && entry.IsDir() && path != contentPath && isPackExtraComponent(entry.Name()) {
+			if entry.IsDir() && path != contentPath && isPackExtraComponent(entry.Name()) {
 				return filepath.SkipDir
 			}
 			if !entry.IsDir() && isRaceMediaExtension(filepath.Ext(path)) {
@@ -59,17 +58,13 @@ func mapSeasonPackMediaFilesMode(contentPath string, start, end int, strict bool
 	}
 
 	mapped := make(map[int]string)
-	unassignedExtras := make([]string, 0)
 	for _, path := range paths {
 		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		if strict && isPackExtraComponent(name) {
+		if isPackExtraComponent(name) {
 			continue
 		}
 		ep := packEpisodeNumber(name, start, end)
 		if ep == 0 {
-			if isExtraEpisodeName(name) {
-				unassignedExtras = append(unassignedExtras, path)
-			}
 			continue
 		}
 		if _, exists := mapped[ep]; strict && exists {
@@ -77,21 +72,6 @@ func mapSeasonPackMediaFilesMode(contentPath string, start, end int, strict bool
 		}
 		if previous, exists := mapped[ep]; !exists || fileSize(path) > fileSize(previous) {
 			mapped[ep] = path
-		}
-	}
-
-	// 标题声明 01-24+OVA 时，Orchestrator 会把范围扩到第 25 集。把明确
-	// 标记为 OVA/OAD/OAV 的额外视频分配给范围末尾尚未覆盖的集数。
-	sort.Strings(unassignedExtras)
-	for _, path := range unassignedExtras {
-		if strict {
-			break
-		}
-		for ep := end; ep >= start; ep-- {
-			if _, exists := mapped[ep]; !exists {
-				mapped[ep] = path
-				break
-			}
 		}
 	}
 
@@ -134,11 +114,6 @@ func packEpisodeNumber(name string, start, end int) int {
 	return 0
 }
 
-func isExtraEpisodeName(name string) bool {
-	lower := strings.ToLower(name)
-	return strings.Contains(lower, "ova") || strings.Contains(lower, "oad") || strings.Contains(lower, "oav")
-}
-
 func fileSize(path string) int64 {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -147,12 +122,10 @@ func fileSize(path string) int64 {
 	return info.Size()
 }
 
+var packExtraToken = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:ova|oad|oav|sp|specials?|extras?|bonus|ncop|nced|sample)(?:[ _-]*\d{1,3})?(?:$|[^a-z0-9])`)
+
 func isPackExtraComponent(name string) bool {
-	lower := strings.ToLower(name)
-	if isExtraEpisodeName(name) || strings.Contains(lower, "ncop") || strings.Contains(lower, "nced") || strings.Contains(lower, "sample") {
-		return true
-	}
-	return lower == "sp" || lower == "extras" || lower == "extra" || lower == "specials" || lower == "bonus" || lower == "特典"
+	return packExtraToken.MatchString(name) || strings.Contains(name, "特典")
 }
 
 func isUpgradeExtraPath(path, root string) bool {

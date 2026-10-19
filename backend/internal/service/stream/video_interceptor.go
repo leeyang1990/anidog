@@ -231,7 +231,7 @@ func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, 
 		}
 	}
 	resultCh := make(chan *InterceptedVideo, 1)
-	failureCh := make(chan error, 1)
+	failureCh := make(chan int, 1)
 	// A successful media response is required; requests alone also include broken
 	// manifests, advertising placeholders and 403 responses.
 	go page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
@@ -251,10 +251,10 @@ func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, 
 		}
 		if r.Status >= 400 {
 			select {
-			case failureCh <- &playerFailure{fmt.Sprintf("媒体请求返回 HTTP %d", r.Status)}:
+			case failureCh <- r.Status:
 			default:
 			}
-			return true
+			return false
 		}
 		if r.Status < 200 || r.Status >= 300 {
 			return false
@@ -284,19 +284,25 @@ func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, 
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	mediaFailure := 0
 	for {
 		select {
 		case video := <-resultCh:
 			zap.L().Info("视频 URL 拦截成功", zap.String("page", pageURL), zap.String("type", video.VideoType))
 			return video, nil
-		case err := <-failureCh:
-			return nil, err
+		case status := <-failureCh:
+			// A failed ad or stale manifest is evidence, not a terminal player
+			// failure. Keep listening for the actual source/fallback request.
+			mediaFailure = status
 		case <-ticker.C:
 			if reason := inspectPlayerFailure(page, 0); reason != "" {
 				return nil, &playerFailure{reason}
 			}
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				if mediaFailure != 0 {
+					return nil, fmt.Errorf("视频拦截超时 (%v)，曾收到媒体 HTTP %d", timeout, mediaFailure)
+				}
 				return nil, fmt.Errorf("视频拦截超时 (%v)", timeout)
 			}
 			return nil, ctx.Err()

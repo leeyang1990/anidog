@@ -32,6 +32,8 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 			fmt.Fprint(w, `<iframe src="/bad"></iframe>`)
 		case "/bad":
 			fmt.Fprint(w, `播放失败，请刷新或稍候再试！`)
+		case "/ad-then-main":
+			fmt.Fprint(w, `<script>fetch('/missing.m3u8').finally(()=>setTimeout(()=>fetch('/index.m3u8'),200))</script>`)
 		case "/valid":
 			fmt.Fprint(w, `<script>fetch('/index.m3u8')</script>`)
 		case "/invalid":
@@ -44,7 +46,7 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	for _, path := range []string{"/outer", "/invalid"} {
+	for _, path := range []string{"/outer"} {
 		start := time.Now()
 		_, err := v.InterceptVideoURL(context.Background(), srv.URL+path, "", "")
 		var player *playerFailure
@@ -52,9 +54,20 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 			t.Fatalf("%s: %v after %s", path, err, time.Since(start))
 		}
 	}
+
+	_, err := v.interceptOnce(context.Background(), srv.URL+"/invalid", "", "", time.Second)
+	var player *playerFailure
+	if err == nil || errors.As(err, &player) {
+		t.Fatalf("an HTTP error alone is retryable: %v", err)
+	}
 	video, err := v.InterceptVideoURL(context.Background(), srv.URL+"/valid", "", "")
 	if err != nil || video.VideoType != "m3u8" {
 		t.Fatalf("%v %v", video, err)
+	}
+
+	video, err = v.InterceptVideoURL(context.Background(), srv.URL+"/ad-then-main", "", "")
+	if err != nil || video == nil || video.URL != srv.URL+"/index.m3u8" {
+		t.Fatalf("auxiliary 403 hid the main media: %v %v", video, err)
 	}
 	// Each new proxy value gets its own context; no restart and no silent direct fallback.
 	for _, label := range []string{"first-proxy", "second-proxy"} {

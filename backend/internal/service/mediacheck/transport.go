@@ -2,6 +2,8 @@ package mediacheck
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,6 +24,15 @@ func MediaCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
 	proxy, configured := ctx.Value(mediaProxyKey{}).(string)
 	if !configured {
 		return cmd
+	}
+	if proxy != "" {
+		u, err := url.Parse(proxy)
+		if err != nil || u.Scheme != "http" || u.Hostname() == "" {
+			// FFmpeg ignores SOCKS in http_proxy and silently connects directly.
+			// SOCKS routes must first go through PrepareTransport's local bridge.
+			cmd.Err = toolError{fmt.Errorf("媒体代理路由不可用：需要 HTTP 代理或已准备的 SOCKS 转接")}
+			return cmd
+		}
 	}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")

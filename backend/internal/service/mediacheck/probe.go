@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -68,16 +71,82 @@ func InputArgs(referer, userAgent string) []string {
 	return args
 }
 
+// MediaInputArgs is shared by probing, OCR and transfers. HLS servers often
+// use extensionless or disguised segments; all stages must accept the same input.
+func MediaInputArgs(tool, input, kind, referer, userAgent string) []string {
+	return hlsInputArgs(tool, input, kind, InputArgs(referer, userAgent))
+}
+
+var hlsCapabilities sync.Map
+
+func hlsOptions(tool string) []string {
+	path, err := exec.LookPath(tool)
+	if err != nil {
+		return nil
+	}
+	if cached, ok := hlsCapabilities.Load(path); ok {
+		return cached.([]string)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	help, err := exec.CommandContext(ctx, path, "-hide_banner", "-h", "demuxer=hls").CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	args := []string{}
+	for _, option := range []struct{ key, value string }{{"-extension_picky", "0"}, {"-allowed_extensions", "ALL"}, {"-allowed_segment_extensions", "ALL"}} {
+		if strings.Contains(string(help), option.key+" ") {
+			args = append(args, option.key, option.value)
+		}
+	}
+	hlsCapabilities.Store(path, args)
+	return args
+}
+
+func hlsInputArgs(tool, input, kind string, args []string) []string {
+	u, _ := url.Parse(input)
+	hls := kind == "m3u8" || (u != nil && strings.HasSuffix(strings.ToLower(u.Path), ".m3u8"))
+	clean := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-extension_picky", "-allowed_extensions", "-allowed_segment_extensions":
+			hls = true
+			i++ // Rebuild options for the actual binary, which may be older.
+		default:
+			clean = append(clean, args[i])
+		}
+	}
+	if !hls {
+		return clean
+	}
+	return append(append([]string{}, hlsOptions(tool)...), clean...)
+}
+
+var diagnosticURL = regexp.MustCompile(`(?i)(?:https?|socks5h?)://[^\s'"<>]+`)
+
+// Tool stderr may contain signed media URLs or proxy credentials.
+func probeDiagnostic(err error) string {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return ""
+	}
+	detail := diagnosticURL.ReplaceAllString(string(exit.Stderr), "[URL]")
+	if len(detail) > 1000 {
+		detail = detail[:1000]
+	}
+	return strings.TrimSpace(detail)
+}
+
 func ProbeInput(ctx context.Context, path string, inputArgs []string) (Media, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	args := []string{"-v", "error", "-rw_timeout", "15000000", "-analyzeduration", "3000000", "-probesize", "3000000", "-show_entries", "stream=codec_type,width,height:stream_tags=language,title:stream_disposition=attached_pic:format=duration,bit_rate,size", "-of", "json"}
-	args = append(args, inputArgs...)
+	args = append(args, hlsInputArgs("ffprobe", path, "", inputArgs)...)
 	args = append(args, path)
 	out, err := MediaCommand(ctx, "ffprobe", args...).Output()
 	var m Media
 	if err != nil {
-		return m, fmt.Errorf("无法读取成片: %w", commandError(ctx, err))
+		return m, fmt.Errorf("无法读取成片: %w %s", commandError(ctx, err), probeDiagnostic(err))
 	}
 	if err := json.Unmarshal(out, &m); err != nil {
 		return m, err

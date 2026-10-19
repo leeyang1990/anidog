@@ -35,6 +35,7 @@ type Service struct {
 	completionMu          sync.Mutex // SQLite ignores FOR UPDATE; serialize local finalization as well.
 	capacityMu            sync.Mutex // Check and reserve queued bytes atomically within this process.
 	capacityProbe         capacityProbe
+	capacityVolume        func(string) (string, error)
 }
 
 // NewService creates a new unified download service.

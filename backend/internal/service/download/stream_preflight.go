@@ -16,7 +16,7 @@ func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *
 	return func(ctx context.Context, video *stream.InterceptedVideo) error {
 		// Old evidence belongs to the previous execution, never to a refreshed URL.
 		s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Update("verified_languages", "")
-		args := mediacheck.InputArgs(video.Referer, video.UserAgent)
+		args := mediacheck.MediaInputArgs("ffprobe", video.URL, video.VideoType, video.Referer, video.UserAgent)
 		media, err := mediacheck.ProbeInput(ctx, video.URL, args)
 		if err != nil {
 			return fmt.Errorf("流媒体预检探测失败: %w", err)

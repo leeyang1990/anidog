@@ -3,9 +3,13 @@ package download
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
+
+	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/mediacheck"
@@ -15,15 +19,21 @@ import (
 func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *stream.InterceptedVideo) error {
 	return func(ctx context.Context, video *stream.InterceptedVideo) error {
 		// Old evidence belongs to the previous execution, never to a refreshed URL.
-		s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Update("verified_languages", "")
-		args := mediacheck.MediaInputArgs("ffprobe", video.URL, video.VideoType, video.Referer, video.UserAgent)
+		if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Update("verified_languages", "").Error; err != nil {
+			return err
+		}
+		args := video.InputArgs("ffprobe")
 		media, err := mediacheck.ProbeInput(ctx, video.URL, args)
 		if err != nil {
 			return fmt.Errorf("流媒体预检探测失败: %w", err)
 		}
 		if task.AnimeID != nil && task.EpisodeNumber != nil {
 			var episode model.AnimeEpisode
-			if s.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ?", *task.AnimeID, *task.EpisodeNumber).Take(&episode).Error == nil {
+			lookupErr := s.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ?", *task.AnimeID, *task.EpisodeNumber).Take(&episode).Error
+			if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+				return lookupErr
+			}
+			if lookupErr == nil {
 				if err := ValidateReferenceDuration(media.Duration(), episode.DurationSeconds); err != nil {
 					return fmt.Errorf("流媒体预检不符合要求：%w", err)
 				}
@@ -44,6 +54,9 @@ func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *
 		assessment := AssessMediaPreferences(media, "", "", quality, languages)
 		if assessment.Status == model.QualityUnknown {
 			evidence := mediacheck.DetectHardSubtitles(ctx, video.URL, args, media.Duration())
+			if evidence.Retryable {
+				return fmt.Errorf("字幕检测暂时不可用：%s", evidence.Reason)
+			}
 			if evidence.Language != "" {
 				withVerifiedLanguages(&media, []string{evidence.Language})
 				assessment = AssessMediaPreferences(media, "", task.SourceTitle, quality, languages)
@@ -80,7 +93,8 @@ func withVerifiedLanguages(media *mediacheck.Media, languages []string) {
 }
 
 func estimateStreamBytes(media mediacheck.Media, fallback int64) int64 {
-	if size, _ := strconv.ParseInt(media.Format.Size, 10, 64); size > 0 {
+	// HLS format.size is often the playlist (e.g. 96 bytes), not the video.
+	if size, _ := strconv.ParseInt(media.Format.Size, 10, 64); !strings.Contains(media.Format.Name, "hls") && !strings.Contains(media.Format.Name, "dash") && size > 0 && size < math.MaxInt64/11*10 {
 		return size + size/10
 	}
 	if rate, _ := strconv.ParseFloat(media.Format.BitRate, 64); rate > 0 {

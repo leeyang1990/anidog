@@ -7,13 +7,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-rod/rod/lib/proto"
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/network"
-	"github.com/go-rod/rod/lib/proto"
 )
 
 func TestBrowserRecoveryFixtures(t *testing.T) {
@@ -28,6 +30,15 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 	defer v.Close()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/catalog-456":
+			w.WriteHeader(456)
+			fmt.Fprint(w, "challenge")
+		case "/no-referrer":
+			http.SetCookie(w, &http.Cookie{Name: "media", Value: "allowed", Path: "/"})
+			fmt.Fprint(w, `<script>fetch('/protected.m3u8', {referrerPolicy:'no-referrer'})</script>`)
+		case "/protected.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			fmt.Fprint(w, "#EXTM3U\n")
 		case "/outer":
 			fmt.Fprint(w, `<iframe src="/bad"></iframe>`)
 		case "/bad":
@@ -55,10 +66,15 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 		}
 	}
 
+	beforePages, _ := v.GetBrowser().Pages()
 	_, err := v.interceptOnce(context.Background(), srv.URL+"/invalid", "", "", time.Second)
 	var player *playerFailure
 	if err == nil || errors.As(err, &player) {
 		t.Fatalf("an HTTP error alone is retryable: %v", err)
+	}
+	afterPages, _ := v.GetBrowser().Pages()
+	if len(afterPages) != len(beforePages) {
+		t.Fatal("timed-out interception leaked a browser page")
 	}
 	video, err := v.InterceptVideoURL(context.Background(), srv.URL+"/valid", "", "")
 	if err != nil || video.VideoType != "m3u8" {
@@ -68,6 +84,14 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 	video, err = v.InterceptVideoURL(context.Background(), srv.URL+"/ad-then-main", "", "")
 	if err != nil || video == nil || video.URL != srv.URL+"/index.m3u8" {
 		t.Fatalf("auxiliary 403 hid the main media: %v %v", video, err)
+	}
+	video, err = v.InterceptVideoURL(context.Background(), srv.URL+"/no-referrer", "https://configured-referer.invalid/", "")
+	if err != nil || video == nil || video.Referer != "" || video.UserAgent == "" || !strings.Contains(video.RequestHeaders().Get("Cookie"), "media=allowed") {
+		t.Fatalf("browser request context was lost: referer=%v error=%v", video, err)
+	}
+	executor := NewStreamRuleExecutor(network.NewHTTPClient(&config.Config{}, provider), v)
+	if _, err := executor.fetchWithBrowser(context.Background(), &model.StreamRule{ProxyMode: "direct"}, srv.URL+"/catalog-456", "", true); err == nil || !strings.Contains(err.Error(), "456") {
+		t.Fatalf("browser challenge became successful empty catalog: %v", err)
 	}
 	// Each new proxy value gets its own context; no restart and no silent direct fallback.
 	for _, label := range []string{"first-proxy", "second-proxy"} {

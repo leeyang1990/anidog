@@ -95,25 +95,11 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, epis
 	if err != nil {
 		return "", "", fmt.Errorf("拦截视频 URL 失败: %w", err)
 	}
-	ctx, closeTransport, err := mediacheck.PrepareTransport(ctx, video.ProxyURL)
+	ctx, closeTransport, err := m.preflightVideo(ctx, video, rule, preflights)
 	if err != nil {
 		return "", "", err
 	}
 	defer closeTransport()
-	for _, preflight := range preflights {
-		if preflight != nil {
-			select {
-			case m.preflightSem <- struct{}{}:
-			case <-ctx.Done():
-				return "", "", ctx.Err()
-			}
-			err := preflight(ctx, video)
-			<-m.preflightSem
-			if err != nil {
-				return "", "", err
-			}
-		}
-	}
 
 	// 2. 构建输出文件路径
 	baseDir := savePath
@@ -140,7 +126,7 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, epis
 	// 3. 每个候选写入独立 staging 文件。赢家确认后才由 download.Service
 	// 原子提升到标准媒体路径，避免 BT/流媒体竞速时互相覆盖。
 	stagingPath := buildRaceStagingPath(outputPath, taskID)
-	resultPath, err := m.downloader.Download(ctx, taskID, video.URL, stagingPath, video.VideoType, video.Referer, progressCB, video.UserAgent)
+	resultPath, err := m.downloader.DownloadVideo(ctx, taskID, video, stagingPath, progressCB)
 	if err != nil {
 		_ = os.Remove(stagingPath)
 		return "", "", fmt.Errorf("ffmpeg 下载失败: %w", err)
@@ -193,4 +179,52 @@ func sanitizeFileName(name string) string {
 		"?", "_", "\"", "_", "<", "_", ">", "_", "|", "_",
 	)
 	return replacer.Replace(name)
+}
+
+// An inherited proxy can reach the player but fail on a different media CDN.
+// Probe the configured route first, then at most one direct route on access
+// failure. Quality rejection never triggers fallback. Keep the winning route
+// for every later read without modifying the shared network provider.
+func (m *StreamManager) preflightVideo(ctx context.Context, video *InterceptedVideo, rule *model.StreamRule, checks []func(context.Context, *InterceptedVideo) error) (context.Context, func(), error) {
+	run := func(route context.Context) error {
+		for _, check := range checks {
+			if check == nil {
+				continue
+			}
+			select {
+			case m.preflightSem <- struct{}{}:
+			case <-route.Done():
+				return route.Err()
+			}
+			err := check(route, video)
+			<-m.preflightSem
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	route, closeRoute, err := mediacheck.PrepareTransport(ctx, video.ProxyURL)
+	if err != nil {
+		return ctx, func() {}, err
+	}
+	err = run(route)
+	if err == nil {
+		return route, closeRoute, nil
+	}
+	closeRoute()
+	if !mediacheck.IsInputError(err) || video.ProxyURL == "" || rule.ProxyMode == "direct" || ctx.Err() != nil {
+		return ctx, func() {}, err
+	}
+	direct, closeDirect, prepareErr := mediacheck.PrepareTransport(ctx, "")
+	if prepareErr != nil {
+		return ctx, func() {}, prepareErr
+	}
+	if directErr := run(direct); directErr != nil {
+		closeDirect()
+		return ctx, func() {}, fmt.Errorf("代理路径失败后直连预检仍未通过：%w", directErr)
+	}
+	video.ProxyURL = ""
+	zap.L().Info("媒体 CDN 直连预检通过，后续使用直连", zap.Uint("rule_id", rule.ID))
+	return direct, closeDirect, nil
 }

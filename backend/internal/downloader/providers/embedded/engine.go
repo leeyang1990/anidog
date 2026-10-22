@@ -34,8 +34,15 @@ const (
 )
 
 type manifest struct {
-	Version int             `json:"version"`
-	Tasks   []manifestEntry `json:"tasks"`
+	Version  int                     `json:"version"`
+	Tasks    []manifestEntry         `json:"tasks"`
+	Removals map[string]removalEntry `json:"removals,omitempty"`
+}
+
+type removalEntry struct {
+	ContentPath string `json:"content_path"`
+	SavePath    string `json:"save_path"`
+	RemoveFiles bool   `json:"remove_files"`
 }
 
 type manifestEntry struct {
@@ -58,8 +65,12 @@ type torrentEntry struct {
 // It deliberately owns no HTTP API or credentials.
 type Engine struct {
 	mu           sync.RWMutex
+	cleanupMu    sync.Mutex
 	client       *atorrent.Client
 	entries      map[string]*torrentEntry
+	removals     map[string]removalEntry
+	cleanupAt    time.Time
+	removeData   func(string, string) error
 	stateDir     string
 	manifestPath string
 	metainfoDir  string
@@ -154,6 +165,7 @@ func New(cfg *config.Config) (*Engine, error) {
 	engine := &Engine{
 		client:       client,
 		entries:      make(map[string]*torrentEntry),
+		removals:     make(map[string]removalEntry),
 		stateDir:     stateDir,
 		manifestPath: filepath.Join(stateDir, "tasks.json"),
 		metainfoDir:  metainfoDir,
@@ -167,7 +179,12 @@ func New(cfg *config.Config) (*Engine, error) {
 		done:         make(chan struct{}),
 	}
 	if err := engine.restore(context.Background()); err != nil {
-		_ = engine.Close()
+		// A partial restore must never overwrite the original recovery manifest.
+		engine.mu.Lock()
+		engine.closed = true
+		close(engine.done)
+		engine.mu.Unlock()
+		_ = client.Close()
 		return nil, err
 	}
 	return engine, nil
@@ -251,6 +268,11 @@ func (e *Engine) add(
 
 	var metadataCancel chan struct{}
 	e.mu.Lock()
+	if _, removing := e.removals[hash]; removing {
+		e.mu.Unlock()
+		t.Drop()
+		return "", errors.New("上次 BT 数据清理尚未完成，等待重试")
+	}
 	if old, ok := e.entries[hash]; ok {
 		old.URL = manifestURL
 		old.SavePath = cleanSavePath
@@ -357,35 +379,96 @@ func (e *Engine) ResumeTorrent(_ context.Context, torrentID string) error {
 	return e.persistLocked()
 }
 
-func (e *Engine) RemoveTorrent(_ context.Context, torrentID string, removeFiles bool) error {
-	hash := strings.ToUpper(strings.TrimSpace(torrentID))
-	e.mu.Lock()
-	entry, err := e.entryLocked(hash)
-	if err != nil {
-		e.mu.Unlock()
+// RemoveTorrent commits the removal intent before dropping the live torrent.
+// Filesystem cleanup is a separately journaled, idempotent operation: a NAS
+// unlink failure must not resurrect the torrent or leave the caller believing
+// the transfer is still active.
+func (e *Engine) RemoveTorrent(ctx context.Context, torrentID string, removeFiles bool) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	contentPath := e.contentPathLocked(entry)
-	savePath := entry.SavePath
-	entry.torrent.Drop()
-	if entry.metadataCancel != nil {
-		close(entry.metadataCancel)
-		entry.metadataCancel = nil
+	hash := strings.ToUpper(strings.TrimSpace(torrentID))
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return errors.New("BT 引擎已关闭")
 	}
-	delete(e.entries, hash)
-	e.rebalanceLocked()
-	persistErr := e.persistLocked()
+	if entry := e.entries[hash]; entry != nil {
+		e.removals[hash] = removalEntry{ContentPath: e.contentPathLocked(entry), SavePath: entry.SavePath, RemoveFiles: removeFiles}
+		if err := e.persistLocked(); err != nil {
+			delete(e.removals, hash)
+			e.mu.Unlock()
+			return err
+		}
+		entry.torrent.Drop()
+		if entry.metadataCancel != nil {
+			close(entry.metadataCancel)
+			entry.metadataCancel = nil
+		}
+		delete(e.entries, hash)
+		e.rebalanceLocked()
+	}
 	e.mu.Unlock()
-	if persistErr != nil {
-		return persistErr
+	// Removing an already removed hash succeeds, including after a caller crash.
+	e.cleanupRemoval(ctx, hash)
+	return nil
+}
+
+func (e *Engine) cleanupRemoval(ctx context.Context, hash string) {
+	// NAS cleanup may stall. Serialize cleanup without holding the engine lock,
+	// so progress reads, cancellation and manifest commits remain available.
+	e.cleanupMu.Lock()
+	defer e.cleanupMu.Unlock()
+	e.mu.RLock()
+	removal, ok := e.removals[hash]
+	remove := e.removeData
+	e.mu.RUnlock()
+	if !ok || ctx.Err() != nil {
+		return
 	}
 	if err := os.Remove(e.metainfoPath(hash)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("删除 BT 元数据: %w", err)
+		zap.L().Warn("BT 已移除，元数据清理等待重试", zap.String("hash", hash), zap.Error(err))
+		return
 	}
-	if removeFiles {
-		return removeTorrentData(contentPath, savePath)
+	if removal.RemoveFiles {
+		if remove == nil {
+			remove = removeTorrentData
+		}
+		if err := remove(removal.ContentPath, removal.SavePath); err != nil {
+			zap.L().Warn("BT 已移除，下载文件清理等待重试", zap.String("hash", hash), zap.Error(err))
+			return
+		}
 	}
-	return nil
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.removals, hash)
+	if err := e.persistLocked(); err != nil {
+		e.removals[hash] = removal
+		zap.L().Warn("BT 清理完成但提交状态失败，保留清理日志", zap.String("hash", hash), zap.Error(err))
+	}
+}
+
+func (e *Engine) retryRemovals(ctx context.Context) {
+	e.mu.Lock()
+	if time.Since(e.cleanupAt) < time.Minute {
+		e.mu.Unlock()
+		return
+	}
+	e.cleanupAt = time.Now()
+	hashes := make([]string, 0, 8)
+	for hash := range e.removals {
+		hashes = append(hashes, hash)
+		if len(hashes) >= 8 {
+			break
+		}
+	}
+	e.mu.Unlock()
+	for _, hash := range hashes {
+		if ctx.Err() != nil {
+			return
+		}
+		e.cleanupRemoval(ctx, hash)
+	}
 }
 
 func (e *Engine) GetTorrentInfo(ctx context.Context, torrentID string) (map[string]interface{}, error) {
@@ -401,10 +484,11 @@ func (e *Engine) GetTorrentInfo(ctx context.Context, torrentID string) (map[stri
 	return nil, fmt.Errorf("未找到种子: %s", torrentID)
 }
 
-func (e *Engine) ListTorrents(context.Context) ([]downloader.TorrentSnapshot, error) {
+func (e *Engine) ListTorrents(ctx context.Context) ([]downloader.TorrentSnapshot, error) {
 	e.mu.Lock()
 	e.rebalanceLocked()
 	e.mu.Unlock()
+	e.retryRemovals(ctx)
 
 	e.mu.RLock()
 	entries := make([]*torrentEntry, 0, len(e.entries))
@@ -612,8 +696,14 @@ func (e *Engine) restore(ctx context.Context) error {
 	if saved.Version != manifestVersion {
 		return fmt.Errorf("不支持的 BT 状态版本: %d", saved.Version)
 	}
+	if saved.Removals != nil {
+		e.removals = saved.Removals
+	}
 	var restoreErrors []error
 	for _, item := range saved.Tasks {
+		if _, removing := e.removals[item.InfoHash]; removing {
+			continue
+		}
 		sourceURL := item.URL
 		if cached := e.metainfoPath(item.InfoHash); fileExists(cached) {
 			sourceURL = cached
@@ -625,6 +715,7 @@ func (e *Engine) restore(ctx context.Context) error {
 	if len(restoreErrors) > 0 {
 		return errors.Join(restoreErrors...)
 	}
+	e.retryRemovals(ctx)
 	return nil
 }
 
@@ -691,11 +782,14 @@ func fileExists(path string) bool {
 
 func (e *Engine) persistLocked() error {
 	tasks := make([]manifestEntry, 0, len(e.entries))
-	for _, entry := range e.entries {
+	for hash, entry := range e.entries {
+		if _, removing := e.removals[hash]; removing {
+			continue
+		}
 		tasks = append(tasks, entry.manifestEntry)
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].AddedAt.Before(tasks[j].AddedAt) })
-	raw, err := json.MarshalIndent(manifest{Version: manifestVersion, Tasks: tasks}, "", "  ")
+	raw, err := json.MarshalIndent(manifest{Version: manifestVersion, Tasks: tasks, Removals: e.removals}, "", "  ")
 	if err != nil {
 		return err
 	}

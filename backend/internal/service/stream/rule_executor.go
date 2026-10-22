@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/antchfx/htmlquery"
@@ -222,7 +223,14 @@ func (e *StreamRuleExecutor) fetchWithHTTP(ctx context.Context, rule *model.Stre
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("流媒体站点 HTTP %d，搜索/选集页面不可用", resp.StatusCode)
+	}
+	const maxPageBytes = 8 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPageBytes+1))
+	if len(data) > maxPageBytes {
+		return "", fmt.Errorf("流媒体页面超过大小限制")
+	}
 	if err != nil {
 		return "", fmt.Errorf("读取响应失败: %w", err)
 	}
@@ -243,7 +251,7 @@ func (e *StreamRuleExecutor) fetchWithBrowser(ctx context.Context, rule *model.S
 	if err != nil {
 		return "", fmt.Errorf("创建页面失败: %w", err)
 	}
-	defer page.Close()
+	defer closeStreamPage(page)
 
 	_, _ = page.EvalOnNewDocument(`() => {
 		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -272,6 +280,16 @@ func (e *StreamRuleExecutor) fetchWithBrowser(ctx context.Context, rule *model.S
 		},
 	}.Call(page)
 
+	frames, err := (proto.PageGetFrameTree{}).Call(page)
+	if err != nil {
+		return "", fmt.Errorf("读取主页面状态失败: %w", err)
+	}
+	var documentStatus atomic.Int64
+	go page.EachEvent(func(event *proto.NetworkResponseReceived) {
+		if event.Type == proto.NetworkResourceTypeDocument && event.FrameID == frames.FrameTree.Frame.ID {
+			documentStatus.Store(int64(event.Response.Status))
+		}
+	})()
 	if err := page.Context(opCtx).Navigate(pageURL); err != nil {
 		return "", fmt.Errorf("导航失败: %w", err)
 	}
@@ -283,6 +301,12 @@ func (e *StreamRuleExecutor) fetchWithBrowser(ctx context.Context, rule *model.S
 	case <-opCtx.Done():
 	}
 
+	if status := documentStatus.Load(); status >= 400 {
+		return "", fmt.Errorf("流媒体站点 HTTP %d，搜索/选集页面不可用", status)
+	}
+	if err := opCtx.Err(); err != nil {
+		return "", fmt.Errorf("加载流媒体页面失败: %w", err)
+	}
 	html, err := page.HTML()
 	if err != nil {
 		return "", fmt.Errorf("提取 HTML 失败: %w", err)

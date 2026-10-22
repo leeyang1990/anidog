@@ -236,7 +236,7 @@ func (s *Service) Remove(dlID uint, removeFiles bool) error {
 	exec := s.executors[dl.DownloadType]
 	if exec != nil {
 		if err := exec.Remove(executorTaskID(&dl), removeFiles); err != nil {
-			zap.L().Warn("移除下载文件失败", zap.Error(err))
+			return fmt.Errorf("移除下载失败，保留任务等待重试: %w", err)
 		}
 	}
 
@@ -1011,7 +1011,9 @@ func (s *Service) GetByID(ctx context.Context, id uint) (*model.Download, error)
 	return &dl, nil
 }
 
-// Retry resets a failed download to pending.
+// Retry is an explicit user action. It starts a new execution budget and
+// rebuilds the full task, including torrent/season scope. Background recovery
+// searches never call this path or reset an exhausted candidate's budget.
 func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	var dl model.Download
 	if err := s.db.WithContext(ctx).First(&dl, id).Error; err != nil {
@@ -1020,55 +1022,58 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	if dl.Status != model.DownloadStatusFailed {
 		return nil, fmt.Errorf("只有失败的任务可以重试")
 	}
-
+	if dl.TorrentRemovalPending {
+		return nil, fmt.Errorf("BT 任务清理尚未完成，请等待清理后重新选种")
+	}
 	s.capacityMu.Lock()
 	defer s.capacityMu.Unlock()
-	if err := s.ensureTaskCapacity(ctx, capacityTaskFromDownload(&dl, false), dl.ID); err != nil {
+	task := capacityTaskFromDownload(&dl, false)
+	if err := s.ensureTaskCapacity(ctx, task, dl.ID); err != nil {
 		return nil, fmt.Errorf("媒体存储容量保护: %w", err)
 	}
-
-	// 重置状态与进度
-	s.db.WithContext(ctx).Model(&dl).Updates(map[string]interface{}{
-		"status":           model.DownloadStatusPending,
-		"progress":         0,
-		"downloaded_bytes": nil,
-	})
-	dl.Status = model.DownloadStatusPending
-
-	// 真正重新执行（stream 类型）
+	task.Name, task.SourceTitle, task.URL, task.Source = dl.Name, dl.SourceTitle, dl.URL, dl.Source
+	task.AnimeID, task.EpisodeNumber, task.StreamRuleID = dl.AnimeID, dl.EpisodeNumber, dl.StreamRuleID
+	task.Purpose, task.UpgradeTarget, task.UpgradeReason = dl.Purpose, dl.UpgradeTarget, dl.UpgradeReason
+	task.AnimeName = dl.Name
+	if dl.StreamRoadName != nil {
+		task.StreamRoadName = *dl.StreamRoadName
+	}
+	if dl.StreamDetailURL != nil {
+		task.StreamDetailURL = *dl.StreamDetailURL
+	}
 	if dl.DownloadType == model.DownloadTypeStream {
 		if dl.StreamRuleID == nil {
-			s.updateStatus(dl.ID, model.DownloadStatusFailed, nil)
 			return nil, fmt.Errorf("stream 任务缺少规则")
 		}
 		var rule model.StreamRule
 		if err := s.db.WithContext(ctx).First(&rule, *dl.StreamRuleID).Error; err != nil {
-			s.updateStatus(dl.ID, model.DownloadStatusFailed, nil)
 			return nil, fmt.Errorf("规则不存在")
 		}
-		task := &Task{
-			Name:          dl.Name,
-			SourceTitle:   dl.SourceTitle,
-			URL:           dl.URL,
-			DownloadType:  dl.DownloadType,
-			Source:        dl.Source,
-			AnimeID:       dl.AnimeID,
-			EpisodeNumber: dl.EpisodeNumber,
-			StreamRuleID:  dl.StreamRuleID,
-			StreamRule:    &rule,
-			AnimeName:     dl.Name,
-		}
-		if dl.StreamRoadName != nil {
-			task.StreamRoadName = *dl.StreamRoadName
-		}
-		if dl.StreamDetailURL != nil {
-			task.StreamDetailURL = *dl.StreamDetailURL
-		}
-		if dl.SavePath != nil {
-			task.SavePath = *dl.SavePath
-		}
-		go s.execute(dl.ID, dl.TorrentID, task)
+		task.StreamRule = &rule
 	}
+	if !s.HasExecutor(dl.DownloadType) {
+		return nil, fmt.Errorf("无可用的 %s 下载执行器", dl.DownloadType)
+	}
+	if err := task.Validate(); err != nil {
+		return nil, err
+	}
+	if err := s.validateTaskAirDate(ctx, task); err != nil {
+		return nil, err
+	}
+	update := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ? AND status = ? AND torrent_removal_pending = ?", dl.ID, model.DownloadStatusFailed, false).Updates(map[string]interface{}{
+		"status": model.DownloadStatusPending, "progress": 0, "downloaded_bytes": nil,
+		"retry_count": 0, "failure_kind": "", "last_error": "", "next_retry_at": nil,
+		"verified_languages": "", "quality_note": "",
+	})
+	if update.Error != nil {
+		return nil, update.Error
+	}
+	if update.RowsAffected != 1 {
+		return nil, fmt.Errorf("下载任务状态已变化，请刷新")
+	}
+	dl.Status, dl.RetryCount, dl.FailureKind, dl.LastError, dl.VerifiedLanguages, dl.QualityNote = model.DownloadStatusPending, 0, "", "", "", ""
+	dl.Progress, dl.DownloadedBytes, dl.NextRetryAt = 0, nil, nil
+	go s.execute(dl.ID, dl.TorrentID, task)
 	return &dl, nil
 }
 

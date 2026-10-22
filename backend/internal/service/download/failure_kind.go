@@ -57,6 +57,7 @@ func isRejectedCandidateError(msg string) bool {
 		"剧集不匹配",
 		"episode mismatch",
 		"qbittorrent 中不存在对应任务",
+		"bt 引擎中不存在对应任务",
 	}
 	for _, marker := range markers {
 		if strings.Contains(msg, marker) {

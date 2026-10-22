@@ -2,8 +2,10 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/mediacheck"
 )
 
 // InterceptedVideo 拦截到的视频信息
@@ -25,8 +28,24 @@ type InterceptedVideo struct {
 	URL       string `json:"url"`
 	VideoType string `json:"video_type"` // m3u8 / mp4
 	Referer   string `json:"referer,omitempty"`
-	Headers   string `json:"headers,omitempty"`
+	Headers   string `json:"-"`
 	UserAgent string `json:"user_agent,omitempty"`
+}
+
+// InputArgs is the same request context for probing, OCR and the full transfer.
+func (v *InterceptedVideo) InputArgs(tool string) []string {
+	return mediacheck.MediaRequestArgs(tool, v.URL, v.VideoType, v.RequestHeaders())
+}
+
+func (v *InterceptedVideo) RequestHeaders() http.Header {
+	headers := make(http.Header)
+	if v.Headers != "" {
+		_ = json.Unmarshal([]byte(v.Headers), &headers)
+	} else {
+		headers.Set("Referer", v.Referer)
+		headers.Set("User-Agent", v.UserAgent)
+	}
+	return mediacheck.RequestHeaders(headers)
 }
 
 // 广告域名黑名单
@@ -224,7 +243,7 @@ func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, 
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = page.Context(context.Background()).Close() }()
+	defer closeStreamPage(page)
 	if userAgent != "" {
 		if err := page.SetUserAgent(&proto.NetworkSetUserAgentOverride{UserAgent: userAgent}); err != nil {
 			return nil, err
@@ -234,7 +253,28 @@ func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, 
 	failureCh := make(chan int, 1)
 	// A successful media response is required; requests alone also include broken
 	// manifests, advertising placeholders and 403 responses.
-	go page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
+	type requestContext struct {
+		headers  http.Header
+		extra    http.Header
+		seen     bool
+		response *proto.NetworkResponseReceived
+	}
+	requests := make(map[proto.NetworkRequestID]*requestContext)
+	request := func(id proto.NetworkRequestID) *requestContext {
+		if state := requests[id]; state != nil {
+			return state
+		}
+		if len(requests) >= 512 {
+			clear(requests)
+		}
+		state := &requestContext{}
+		requests[id] = state
+		return state
+	}
+	// CDP permits ExtraInfo before RequestWillBeSent or after the response.
+	// Keep the actual wire headers authoritative, including absent Referer.
+	var capture func(*proto.NetworkResponseReceived) bool
+	capture = func(e *proto.NetworkResponseReceived) bool {
 		r := e.Response
 		if isAsset(r.URL) {
 			return false
@@ -259,26 +299,53 @@ func (v *VideoInterceptor) interceptOnce(ctx context.Context, pageURL, referer, 
 		if r.Status < 200 || r.Status >= 300 {
 			return false
 		}
-		ref := referer
-		agent := userAgent
-		for name, value := range r.RequestHeaders {
-			if strings.EqualFold(name, "Referer") && value.Str() != "" {
-				ref = value.Str()
-			}
-			if strings.EqualFold(name, "User-Agent") && value.Str() != "" {
-				agent = value.Str()
+		state := request(e.RequestID)
+		if e.HasExtraInfo && len(e.Response.RequestHeaders) == 0 && state.extra == nil {
+			state.response = e
+			return false
+		}
+		headers := state.headers.Clone()
+		if state.extra != nil {
+			headers = state.extra.Clone()
+		}
+		if len(r.RequestHeaders) > 0 {
+			headers = make(http.Header)
+			for name, value := range r.RequestHeaders {
+				headers.Set(name, value.Str())
 			}
 		}
-		if ref == "" {
-			ref = pageURL
-		}
-		video := &InterceptedVideo{URL: r.URL, VideoType: kind, Referer: ref, UserAgent: agent, ProxyURL: proxy}
+
+		headers = mediacheck.RequestHeaders(headers)
+		encoded, _ := json.Marshal(headers)
+		video := &InterceptedVideo{URL: r.URL, VideoType: kind, Referer: headers.Get("Referer"), UserAgent: headers.Get("User-Agent"), Headers: string(encoded), ProxyURL: proxy}
 		select {
 		case resultCh <- video:
 		default:
 		}
 		return true
-	})()
+	}
+	go page.EachEvent(func(e *proto.NetworkRequestWillBeSent) {
+		state := request(e.RequestID)
+		if state.seen { // A redirect reuses its request ID, not its credentials.
+			state = &requestContext{}
+			requests[e.RequestID] = state
+		}
+		state.seen = true
+		state.headers = make(http.Header)
+		for name, value := range e.Request.Headers {
+			state.headers.Set(name, value.Str())
+		}
+	}, func(e *proto.NetworkRequestWillBeSentExtraInfo) bool {
+		state := request(e.RequestID)
+		state.extra = make(http.Header)
+		for name, value := range e.Headers {
+			state.extra.Set(name, value.Str())
+		}
+		if state.response != nil {
+			return capture(state.response)
+		}
+		return false
+	}, capture)()
 	if err := page.Navigate(pageURL); err != nil {
 		return nil, fmt.Errorf("导航到播放页失败: %w", err)
 	}
@@ -392,4 +459,12 @@ func isAsset(u string) bool {
 		}
 	}
 	return false
+}
+
+// Cleanup must still work after the request deadline, without waiting forever
+// for an unresponsive browser and retaining an interception slot.
+func closeStreamPage(page *rod.Page) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = page.Context(ctx).Close()
 }

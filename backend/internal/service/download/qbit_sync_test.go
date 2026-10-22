@@ -642,7 +642,7 @@ func TestSyncRejectsMissingQBitTaskAndImmediatelyRecoversEpisode(t *testing.T) {
 			saved.TotalBytes, saved.DownloadedBytes, saved.Progress)
 	}
 	if !strings.Contains(saved.LastError, "季度不匹配") ||
-		!strings.Contains(saved.LastError, "qBittorrent 中不存在") {
+		!strings.Contains(saved.LastError, "BT 引擎中不存在") {
 		t.Fatalf("original cause must be preserved, got %q", saved.LastError)
 	}
 	select {

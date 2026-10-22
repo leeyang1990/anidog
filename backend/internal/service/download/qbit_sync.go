@@ -129,6 +129,7 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 	} else if !s.engine.Health(ctx).Online {
 		return fmt.Errorf("BT 引擎离线")
 	}
+	s.retryTorrentRemovals(ctx)
 	s.ensureQueuePolicy(ctx)
 
 	torrents, err := s.listTorrents(ctx)
@@ -619,7 +620,7 @@ func isRaceMediaExtension(ext string) bool {
 }
 
 func buildOrphanError(previous string) string {
-	const current = "qBittorrent 中不存在对应任务，可能已被删除或下载器状态丢失"
+	const current = "BT 引擎中不存在对应任务，可能已被删除或下载器状态丢失"
 	previous = strings.TrimSpace(previous)
 	if previous == "" || strings.Contains(previous, current) {
 		return current
@@ -1084,47 +1085,27 @@ func (s *QBitSyncer) abandonDeadTorrent(ctx context.Context, dl *model.Download,
 		return false
 	}
 
-	// 1. 从 qBit 删除（带文件）
-	if err := s.deleteFromQBit(ctx, hash); err != nil {
-		// 保留 DB 行，下一轮继续尝试。否则 qBit 中的孤儿种子仍会占槽，
-		// 而数据库已无法再找到并清理它。
-		zap.L().Warn("从 qBit 删除死种失败，保留任务等待下轮巡检",
-			zap.String("hash", hash), zap.Error(err))
+	// Persist abandonment and pending removal together before changing the
+	// engine. A crash or provider error leaves a durable cleanup task, never an
+	// apparently active download whose engine entry has already gone.
+	now := time.Now()
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		update := tx.Model(&model.Download{}).Where("id = ? AND status IN ?", dl.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading, model.DownloadStatusPaused}).Updates(map[string]interface{}{"torrent_removal_pending": true, "status": model.DownloadStatusFailed, "failure_kind": model.FailureKindRejected, "last_error": reason, "next_retry_at": nil})
+		if update.Error != nil {
+			return update.Error
+		}
+		if update.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		row := model.AbandonedTorrent{InfoHash: hash, AnimeID: dl.AnimeID, Title: dl.Name, Reason: reason, Kind: model.FailureKindTransient, AbandonedAt: now}
+		return tx.Where("info_hash = ?", hash).Assign(map[string]interface{}{"anime_id": dl.AnimeID, "title": dl.Name, "reason": reason, "kind": model.FailureKindTransient, "abandoned_at": now}).FirstOrCreate(&row).Error
+	}); err != nil {
+		zap.L().Warn("保存 BT 放弃意图失败，保留引擎任务", zap.Uint("id", dl.ID), zap.Error(err))
 		return false
 	}
 
-	// 2. 写黑名单（先写黑名单再删 download 行：万一删 download 行后宕机，
-	//    黑名单已经在，下一轮还能正确跳过同 hash 候选）
-	row := model.AbandonedTorrent{
-		InfoHash:    hash,
-		AnimeID:     dl.AnimeID,
-		Title:       dl.Name,
-		Reason:      reason,
-		Kind:        model.FailureKindTransient, // 死种判定都是"暂时找不到 peer"，留 TTL 给它复活机会
-		AbandonedAt: time.Now(),
-	}
-	// 同一 hash 半开重试后再次确诊时刷新时间与原因，重新开始冷却。
-	if err := s.db.WithContext(ctx).
-		Where("info_hash = ?", hash).
-		Assign(map[string]interface{}{
-			"anime_id":     dl.AnimeID,
-			"title":        dl.Name,
-			"reason":       reason,
-			"kind":         model.FailureKindTransient,
-			"abandoned_at": row.AbandonedAt,
-		}).
-		FirstOrCreate(&row).Error; err != nil {
-		zap.L().Warn("写黑名单失败", zap.String("hash", hash), zap.Error(err))
-		return false
-	}
-
-	// 3. 删除 download 行
-	if err := s.db.WithContext(ctx).
-		Where("id = ?", dl.ID).
-		Delete(&model.Download{}).Error; err != nil {
-		zap.L().Warn("删除死种 download 行失败",
-			zap.Uint("id", dl.ID), zap.Error(err))
-		// 黑名单已写，允许下一轮再尝试删
+	if err := s.finishTorrentRemoval(ctx, dl); err != nil {
+		zap.L().Warn("BT 放弃已记录，清理等待下轮重试", zap.Uint("id", dl.ID), zap.Error(err))
 	}
 
 	zap.L().Info("永久放弃死种",
@@ -1387,4 +1368,29 @@ func (s *QBitSyncer) listTorrents(ctx context.Context) ([]map[string]interface{}
 		return nil, err
 	}
 	return arr, nil
+}
+
+func (s *QBitSyncer) finishTorrentRemoval(ctx context.Context, dl *model.Download) error {
+	if dl.InfoHash == nil || *dl.InfoHash == "" {
+		return fmt.Errorf("BT 清理任务缺少 info hash")
+	}
+	if err := s.deleteFromQBit(ctx, *dl.InfoHash); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Where("id = ? AND torrent_removal_pending = ?", dl.ID, true).Delete(&model.Download{}).Error
+}
+
+func (s *QBitSyncer) retryTorrentRemovals(ctx context.Context) {
+	var pending []model.Download
+	if err := s.db.WithContext(ctx).Where("torrent_removal_pending = ?", true).Order("id").Limit(20).Find(&pending).Error; err != nil {
+		return
+	}
+	for i := range pending {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := s.finishTorrentRemoval(ctx, &pending[i]); err != nil {
+			zap.L().Warn("重试 BT 清理失败", zap.Uint("id", pending[i].ID), zap.Error(err))
+		}
+	}
 }

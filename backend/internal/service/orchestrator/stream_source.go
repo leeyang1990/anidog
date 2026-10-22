@@ -2,9 +2,12 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
+
+	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/model"
 	dlservice "github.com/anidog/anidog-go/internal/service/download"
@@ -36,6 +39,10 @@ func (o *Orchestrator) tryStream(ctx context.Context, anime *model.Anime, ep, re
 	choice, err := o.resolveStreamSource(ctx, anime, ep)
 	if err != nil {
 		return false, 0, err.Error()
+	}
+	retryCount, err = o.streamCandidateRetryCount(ctx, anime.ID, ep, choice)
+	if err != nil {
+		return false, choice.count, "查询候选重试预算失败：" + err.Error()
 	}
 	task := &dlservice.Task{
 		Name: fmt.Sprintf("%s - 第%02d集", anime.Title, ep),
@@ -82,7 +89,7 @@ func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Ani
 			return nil, err
 		}
 		rule := &rules[i]
-		if isRuleBroken(rule) {
+		if !o.claimStreamRule(ctx, rule) {
 			continue
 		}
 		detail, preferred := "", ""
@@ -151,6 +158,16 @@ func (o *Orchestrator) coolingStreamRoads(ctx context.Context, animeID uint, ep 
 		return nil, fmt.Errorf("查询线路冷却失败: %w", err)
 	}
 	blocked, seen := map[string]bool{}, map[string]bool{}
+	exhausted := map[string]int{}
+	for _, failure := range failures {
+		if failure.FailureKind == model.FailureKindExhausted {
+			road := ""
+			if failure.StreamRoadName != nil {
+				road = *failure.StreamRoadName
+			}
+			exhausted[road]++
+		}
+	}
 	for _, failure := range failures {
 		road := ""
 		if failure.StreamRoadName != nil {
@@ -160,7 +177,14 @@ func (o *Orchestrator) coolingStreamRoads(ctx context.Context, animeID uint, ep 
 			continue
 		}
 		seen[road] = true
-		if now.Before(streamCandidateRetryAt(failure)) {
+		retryAt := streamCandidateRetryAt(failure)
+		if failure.FailureKind == model.FailureKindExhausted {
+			// Recovery probes back off to a week, rather than re-creating an
+			// already exhausted candidate every hour indefinitely.
+			days := 1 << min(max(exhausted[road]-1, 0), 3)
+			retryAt = failure.UpdatedAt.Add(time.Duration(min(days, 7)) * 24 * time.Hour)
+		}
+		if now.Before(retryAt) {
 			if road == "" {
 				blocked["*"] = true
 			} else {
@@ -183,9 +207,48 @@ func streamCandidateRetryAt(failure model.Download) time.Time {
 			delay = time.Hour
 		}
 	case model.FailureKindExhausted:
-		delay = time.Hour
+		delay = 24 * time.Hour
 	case model.FailureKindRejected:
 		delay = 24 * time.Hour
 	}
 	return failure.UpdatedAt.Add(delay)
+}
+
+// HealthAt is also the start of the last broken-rule recovery probe. A CAS
+// claim persists across restarts and competing orchestrations. An unfinished
+// task holds the gate even if a slow download exceeds the one-hour lease.
+func (o *Orchestrator) claimStreamRule(ctx context.Context, rule *model.StreamRule) bool {
+	if rule.HealthStatus == nil || *rule.HealthStatus != "broken" {
+		return true
+	}
+	now := time.Now()
+	if isRuleBroken(rule) {
+		return false
+	}
+	var active int64
+	if err := o.db.WithContext(ctx).Model(&model.Download{}).Where("stream_rule_id = ? AND status IN ?", rule.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading, model.DownloadStatusPaused}).Count(&active).Error; err != nil || active > 0 {
+		return false
+	}
+	claim := o.db.WithContext(ctx).Model(&model.StreamRule{}).Where("id = ? AND health_status = ? AND (health_at IS NULL OR health_at < ?)", rule.ID, "broken", now.Add(-time.Hour)).Update("health_at", now)
+	return claim.Error == nil && claim.RowsAffected == 1
+}
+
+// A fresh road starts its own rapid retry budget. An unrelated failed BT or
+// another stream rule must not exhaust a candidate before it has been tried.
+func (o *Orchestrator) streamCandidateRetryCount(ctx context.Context, animeID uint, ep int, choice *streamChoice) (int, error) {
+	var previous model.Download
+	err := o.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ? AND stream_rule_id = ? AND stream_detail_url = ? AND stream_road_name = ? AND download_type = ?", animeID, ep, choice.rule.ID, choice.detailURL, choice.episode.RoadName, model.DownloadTypeStream).Order("id DESC").Take(&previous).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if previous.Status != model.DownloadStatusFailed {
+		return 0, nil
+	}
+	if previous.FailureKind == model.FailureKindTransient || previous.FailureKind == model.FailureKindExhausted {
+		return min(previous.RetryCount+1, 3), nil
+	}
+	return 0, nil
 }

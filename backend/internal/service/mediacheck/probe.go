@@ -21,6 +21,14 @@ import (
 // Tool availability and deadlines are retryable, not evidence of bad media.
 type toolError struct{ error }
 
+// InputError identifies failure to access a remote input, never a quality
+// mismatch. It permits one validated alternate route for inherited proxies.
+type InputError struct{ Err error }
+
+func (e *InputError) Error() string { return e.Err.Error() }
+func (e *InputError) Unwrap() error { return e.Err }
+func IsInputError(err error) bool   { var e *InputError; return errors.As(err, &e) }
+
 func IsToolError(err error) bool {
 	var target toolError
 	return errors.As(err, &target)
@@ -49,6 +57,7 @@ type Stream struct {
 type Media struct {
 	Streams []Stream `json:"streams"`
 	Format  struct {
+		Name     string `json:"format_name"`
 		Duration string `json:"duration"`
 		BitRate  string `json:"bit_rate"`
 		Size     string `json:"size"`
@@ -122,6 +131,8 @@ func hlsInputArgs(tool, input, kind string, args []string) []string {
 	return append(append([]string{}, hlsOptions(tool)...), clean...)
 }
 
+var diagnosticCredential = regexp.MustCompile(`(?i)(authorization|cookie|set-cookie|proxy-authorization)\s*:[^\r\n]*`)
+
 var diagnosticURL = regexp.MustCompile(`(?i)(?:https?|socks5h?)://[^\s'"<>]+`)
 
 // Tool stderr may contain signed media URLs or proxy credentials.
@@ -131,6 +142,7 @@ func probeDiagnostic(err error) string {
 		return ""
 	}
 	detail := diagnosticURL.ReplaceAllString(string(exit.Stderr), "[URL]")
+	detail = diagnosticCredential.ReplaceAllString(detail, "$1: [REDACTED]")
 	if len(detail) > 1000 {
 		detail = detail[:1000]
 	}
@@ -140,13 +152,20 @@ func probeDiagnostic(err error) string {
 func ProbeInput(ctx context.Context, path string, inputArgs []string) (Media, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	args := []string{"-v", "error", "-rw_timeout", "15000000", "-analyzeduration", "3000000", "-probesize", "3000000", "-show_entries", "stream=codec_type,width,height:stream_tags=language,title:stream_disposition=attached_pic:format=duration,bit_rate,size", "-of", "json"}
+	args := []string{"-v", "error", "-rw_timeout", "15000000", "-analyzeduration", "3000000", "-probesize", "3000000", "-show_entries", "stream=codec_type,width,height:stream_tags=language,title:stream_disposition=attached_pic:format=format_name,duration,bit_rate,size", "-of", "json"}
 	args = append(args, hlsInputArgs("ffprobe", path, "", inputArgs)...)
 	args = append(args, path)
 	out, err := MediaCommand(ctx, "ffprobe", args...).Output()
 	var m Media
 	if err != nil {
-		return m, fmt.Errorf("无法读取成片: %w %s", commandError(ctx, err), probeDiagnostic(err))
+		failure := fmt.Errorf("无法读取成片: %w %s", commandError(ctx, err), probeDiagnostic(err))
+		if u, parseErr := url.Parse(path); parseErr == nil && (u.Scheme == "http" || u.Scheme == "https") {
+			var unavailable *exec.Error
+			if !errors.As(err, &unavailable) && !errors.Is(err, os.ErrPermission) {
+				return m, &InputError{Err: failure}
+			}
+		}
+		return m, failure
 	}
 	if err := json.Unmarshal(out, &m); err != nil {
 		return m, err

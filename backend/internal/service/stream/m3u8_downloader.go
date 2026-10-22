@@ -68,6 +68,14 @@ func NewM3U8Downloader(cfg *config.Config) *M3U8Downloader {
 
 // Download 下载 M3U8/MP4 视频
 func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputPath, videoType, referer string, progressCB func(progress float64, downloadedBytes int64), userAgents ...string) (string, error) {
+	agent := ""
+	if len(userAgents) > 0 {
+		agent = userAgents[0]
+	}
+	return d.DownloadVideo(ctx, taskID, &InterceptedVideo{URL: videoURL, VideoType: videoType, Referer: referer, UserAgent: agent}, outputPath, progressCB)
+}
+
+func (d *M3U8Downloader) DownloadVideo(ctx context.Context, taskID string, video *InterceptedVideo, outputPath string, progressCB func(float64, int64)) (string, error) {
 	// 获取信号量
 	select {
 	case d.semaphore <- struct{}{}:
@@ -77,9 +85,9 @@ func (d *M3U8Downloader) Download(ctx context.Context, taskID, videoURL, outputP
 	defer func() { <-d.semaphore }()
 
 	// 获取总时长（用于进度计算）
-	totalDuration := d.getMediaDuration(ctx, videoURL, videoType, referer, userAgents...)
+	totalDuration := d.getVideoDuration(ctx, video)
 
-	base := d.buildFFmpegCmd(videoURL, outputPath, videoType, referer, userAgents...)
+	base := d.buildVideoCommand(video, outputPath)
 	cmd := mediacheck.MediaCommand(ctx, base.Path, base.Args[1:]...)
 	cmd.WaitDelay = 5 * time.Second
 	d.activeProcs.Store(taskID, cmd)
@@ -222,20 +230,22 @@ func (d *M3U8Downloader) Cancel(taskID string) bool {
 }
 
 func (d *M3U8Downloader) buildFFmpegCmd(videoURL, outputPath, videoType, referer string, userAgents ...string) *exec.Cmd {
-	args := []string{"-y"}
-
 	agent := ""
 	if len(userAgents) > 0 {
 		agent = userAgents[0]
 	}
-	args = append(args, mediacheck.MediaInputArgs(d.cfg.FFMPEGPath, videoURL, videoType, referer, agent)...)
+	return d.buildVideoCommand(&InterceptedVideo{URL: videoURL, VideoType: videoType, Referer: referer, UserAgent: agent}, outputPath)
+}
+
+func (d *M3U8Downloader) buildVideoCommand(video *InterceptedVideo, outputPath string) *exec.Cmd {
+	args := append([]string{"-nostdin", "-y"}, video.InputArgs(d.cfg.FFMPEGPath)...)
 	args = append(args, "-rw_timeout", "15000000")
 
-	args = append(args, "-i", videoURL)
+	args = append(args, "-i", video.URL)
 
 	// 始终使用流复制避免重编码
 	args = append(args, "-c", "copy")
-	if videoType == "m3u8" {
+	if video.VideoType == "m3u8" {
 		args = append(args, "-bsf:a", "aac_adtstoasc")
 	}
 
@@ -286,16 +296,19 @@ func (d *M3U8Downloader) parseFFmpegProgress(line string, totalDuration float64)
 
 // getM3U8Duration 获取视频总时长（m3u8 / mp4 都支持）
 func (d *M3U8Downloader) getMediaDuration(ctx context.Context, videoURL, kind, referer string, userAgents ...string) float64 {
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
-	// 使用 ffprobe 获取时长（对 m3u8 / mp4 都有效）
-	args := []string{"-v", "quiet", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1"}
 	agent := ""
 	if len(userAgents) > 0 {
 		agent = userAgents[0]
 	}
-	args = append(args, mediacheck.MediaInputArgs("ffprobe", videoURL, kind, referer, agent)...)
-	args = append(args, videoURL)
+	return d.getVideoDuration(ctx, &InterceptedVideo{URL: videoURL, VideoType: kind, Referer: referer, UserAgent: agent})
+}
+
+func (d *M3U8Downloader) getVideoDuration(ctx context.Context, video *InterceptedVideo) float64 {
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	args := []string{"-v", "quiet", "-rw_timeout", "15000000", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1"}
+	args = append(args, video.InputArgs("ffprobe")...)
+	args = append(args, video.URL)
 
 	cmd := mediacheck.MediaCommand(ctx, "ffprobe", args...)
 	output, err := cmd.Output()

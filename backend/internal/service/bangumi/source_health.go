@@ -3,7 +3,6 @@ package bangumi
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -70,19 +69,26 @@ func (s *SourceHealthService) updateRuleHealth(ctx context.Context) {
 	for i := range rules {
 		rule := &rules[i]
 		var total int64
-		var failed int64
+		var failed, completed int64
 		// 取最近 24 小时该规则的所有 stream 下载
 		q := s.db.WithContext(ctx).Model(&model.Download{}).
 			Where("stream_rule_id = ?", rule.ID).
 			Where("download_type = ?", "stream").
 			Where("created_at > ?", now.Add(-24*time.Hour))
-		q.Count(&total)
-		q.Where("status = ?", model.DownloadStatusFailed).Count(&failed)
+		// Pending, superseded and legitimate quality rejections are not successful
+		// transfers and do not establish source availability either.
+		if err := q.Where("status = ?", model.DownloadStatusCompleted).Count(&completed).Error; err != nil {
+			continue
+		}
+		q = s.db.WithContext(ctx).Model(&model.Download{}).Where("stream_rule_id = ? AND download_type = ? AND created_at > ?", rule.ID, "stream", now.Add(-24*time.Hour))
+		if err := q.Where("status = ? AND (failure_kind IN ? OR last_error LIKE ?)", model.DownloadStatusFailed, []string{model.FailureKindTransient, model.FailureKindExhausted}, "%播放器已报错%").Count(&failed).Error; err != nil {
+			continue
+		}
+		total = completed + failed
 
 		status := ""
 		note := ""
 		if total > 0 {
-			completed := total - failed
 			rate := float64(failed) / float64(total)
 			note = fmt.Sprintf("24h 内：%d 完成 / %d 失败", completed, failed)
 			switch {
@@ -92,6 +98,16 @@ func (s *SourceHealthService) updateRuleHealth(ctx context.Context) {
 				status = SourceDegraded
 			default:
 				status = SourceHealthy
+			}
+			// A new verified complete transfer proves that the circuit can close.
+			// Old repeated failures must not suppress a repaired source for 24 hours.
+			var latest model.Download
+			if status == SourceBroken {
+				err := s.db.WithContext(ctx).Where("stream_rule_id = ? AND download_type = ? AND (status = ? OR (status = ? AND failure_kind IN ?))", rule.ID, "stream", model.DownloadStatusCompleted, model.DownloadStatusFailed, []string{model.FailureKindTransient, model.FailureKindExhausted}).Order("updated_at DESC").Order("id DESC").Take(&latest).Error
+				if err == nil && latest.Status == model.DownloadStatusCompleted {
+					status = SourceDegraded
+					note += "（最近一次完整下载成功，恢复调度）"
+				}
 			}
 			// 防"翻牌"：之前已是 broken 的规则，至少需要 3 条最近成功才能翻 healthy。
 			// 不然只要清掉失败历史 + 1 条偶发 manual 成功就能让规则被重新调度。
@@ -114,7 +130,7 @@ func (s *SourceHealthService) updateRuleHealth(ctx context.Context) {
 			"health_status": status,
 			"health_note":   note,
 		}
-		// health_at 表示进入当前状态的时间，而不是最后一次统计时间。
+		// health_at 表示进入当前状态或最近一次 broken 恢复探测的时间。
 		// 状态未变化时不能每 3 分钟刷新，否则 broken 熔断永远无法 half-open。
 		oldStatus := ""
 		if rule.HealthStatus != nil {
@@ -190,5 +206,3 @@ func (s *SourceHealthService) ClearHealthStatus(ctx context.Context, animeID uin
 			"source_health_at":     nil,
 		})
 }
-
-var _ = strings.Contains // keep import for future error_message parsing

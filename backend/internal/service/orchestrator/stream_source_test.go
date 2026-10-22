@@ -133,7 +133,7 @@ func TestCandidateCooldownBoundary(t *testing.T) {
 		delay time.Duration
 	}{
 		{model.FailureKindTransient, 0, 10 * time.Minute}, {model.FailureKindTransient, 1, time.Hour},
-		{model.FailureKindTransient, 2, 6 * time.Hour}, {model.FailureKindExhausted, 3, time.Hour},
+		{model.FailureKindTransient, 2, 6 * time.Hour}, {model.FailureKindExhausted, 3, 24 * time.Hour},
 		{model.FailureKindRejected, 0, 24 * time.Hour}, {model.FailureKindPermanent, 0, 6 * time.Hour},
 	} {
 		futurePoll := now.Add(7 * 24 * time.Hour)

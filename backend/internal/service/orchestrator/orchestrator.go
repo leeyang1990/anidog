@@ -669,7 +669,7 @@ func isRuleBroken(rule *model.StreamRule) bool {
 		return false
 	}
 	// broken 规则冷却 1 小时后进入 half-open，由一次真实任务探测是否恢复。
-	return rule.HealthAt == nil || time.Since(*rule.HealthAt) < time.Hour
+	return rule.HealthAt != nil && time.Since(*rule.HealthAt) < time.Hour
 }
 
 func streamRuleHealthScore(rule *model.StreamRule) int {

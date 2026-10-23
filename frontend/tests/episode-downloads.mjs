@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict'
 import { groupEpisodeDownloads } from '../src/utils/episodeDownloads.js'
+import { streamEpisodePayload } from '../src/utils/streamEpisodes.js'
+
+const descending = [4, 3, 2, 1].map(n => ({ name: `第${n}集`, url: `play-${n}.html`, road_name: 'A' }))
+assert.deepEqual(streamEpisodePayload(descending).map(ep => ep.number), [4, 3, 2, 1])
+assert.equal(streamEpisodePayload(descending)[0].road_name, 'A')
+assert.deepEqual(streamEpisodePayload([{ name: 'Return', url: '/return' }, { name: 'Start', url: '/start' }]).map(ep => ep.number), [1, 2])
+assert.deepEqual(streamEpisodePayload([{ name: '第3集', url: '/play' }, { name: 'Unknown', url: '/unknown' }]).map(ep => ep.number), [3])
+assert.equal(streamEpisodePayload([{ name: 'Return', url: '/play-12.html?token=example' }])[0].number, 12)
 
 const pack = { id: 324, scope: 'season', episode_number: 1, episode_start: 1, episode_end: 24, status: 'completed' }
 const episodes = Array.from({ length: 24 }, (_, i) => ({ episode_number: i + 1, status: 'completed', download_id: pack.id }))

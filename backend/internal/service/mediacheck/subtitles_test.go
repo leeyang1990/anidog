@@ -13,6 +13,43 @@ import (
 	"time"
 )
 
+func TestOCRPassTimeoutDoesNotDiscardOtherRead(t *testing.T) {
+	var input bytes.Buffer
+	if err := png.Encode(&input, image.NewGray(image.Rect(0, 0, 20, 20))); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"original timeout", "mask timeout", "both timeout", "empty fallback"} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			caption := "這個國家的故事還沒有結束我們會再見面"
+			got, err := recognizeCaption(context.Background(), input.Bytes(), func(ctx context.Context, _ []byte) (string, error) {
+				calls++
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > 21*time.Second {
+					t.Fatal("one OCR pass can starve its fallback")
+				}
+				if name == "both timeout" || calls == 1 && name != "mask timeout" || calls == 2 && name == "mask timeout" {
+					return "", context.DeadlineExceeded
+				}
+				if name == "empty fallback" {
+					return "", nil
+				}
+				return caption, nil
+			})
+			if calls != 2 {
+				t.Fatal("fallback OCR was skipped")
+			}
+			if name == "both timeout" || name == "empty fallback" {
+				if err == nil || got != "" {
+					t.Fatal("OCR failure was reported as valid evidence", got, err)
+				}
+			} else if err != nil || got != caption {
+				t.Fatal("valid traditional evidence discarded or rewritten", got, err)
+			}
+		})
+	}
+}
+
 func TestConflictingOCRReadsContributeOnlyAgreedGlyphs(t *testing.T) {
 	agreed := combineCaptions("我们已經理解原因", "我们已经完全理解原因")
 	if strings.ContainsAny(agreed, "经經") {

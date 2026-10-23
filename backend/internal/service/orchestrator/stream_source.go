@@ -129,6 +129,9 @@ func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Ani
 		if err != nil {
 			continue
 		}
+		if anime.EpisodeCount != nil {
+			episodes = stream.EpisodeRoadsWithinCount(episodes, *anime.EpisodeCount)
+		}
 		blocked, err := o.coolingStreamRoads(ctx, anime.ID, ep, rule.ID, detail, time.Now())
 		if err != nil {
 			return nil, err

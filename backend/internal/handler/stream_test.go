@@ -4,12 +4,49 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/anidog/anidog-go/internal/config"
+	"github.com/anidog/anidog-go/internal/model"
 	dlservice "github.com/anidog/anidog-go/internal/service/download"
 	streamrulesvc "github.com/anidog/anidog-go/internal/service/streamrule"
-	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/testutil"
 	"github.com/anidog/anidog-go/internal/ws"
 )
+
+func TestStreamDownloadPersistsSourceIdentity(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		db := testutil.InitTestDB()
+		a := model.Anime{Title: "Target"}
+		if err := db.Create(&a).Error; err != nil {
+			t.Fatal(err)
+		}
+		rule := model.StreamRule{Name: "Source"}
+		if err := db.Create(&rule).Error; err != nil {
+			t.Fatal(err)
+		}
+		h := NewStreamHandler(streamrulesvc.NewService(db, nil), nil, dlservice.NewService(db, testutil.TestConfig(), nil))
+		router := testutil.SetupRouter()
+		h.RegisterRoutes(router.Group("/api/v1"))
+		body := map[string]interface{}{"anime_id": a.ID, "anime_name": a.Title, "rule_id": rule.ID, "detail_url": "https://site/detail", "source_title": "Actual catalog title"}
+		path := "/api/v1/stream/download"
+		if batch {
+			path += "/batch"
+			body["episodes"] = []map[string]interface{}{{"url": "https://site/play-3", "number": 3, "road_name": "A"}}
+		} else {
+			body["episode_url"], body["episode_number"], body["road_name"] = "https://site/play-3", 3, "A"
+		}
+		w := testutil.MakeRequest(router, http.MethodPost, path, body, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("batch=%v status=%d body=%s", batch, w.Code, w.Body.String())
+		}
+		var d model.Download
+		if err := db.First(&d).Error; err != nil {
+			t.Fatal(err)
+		}
+		if d.AnimeID == nil || *d.AnimeID != a.ID || d.EpisodeNumber == nil || *d.EpisodeNumber != 3 || d.StreamDetailURL == nil || *d.StreamDetailURL != "https://site/detail" || d.StreamRoadName == nil || *d.StreamRoadName != "A" || d.SourceTitle != "Actual catalog title" {
+			t.Fatalf("batch=%v lost identity: %+v", batch, d)
+		}
+	}
+}
 
 func setupStreamHandler() *StreamHandler {
 	db := testutil.InitTestDB()

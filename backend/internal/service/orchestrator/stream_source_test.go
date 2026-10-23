@@ -11,7 +11,10 @@ import (
 	"github.com/anidog/anidog-go/internal/testutil"
 )
 
-type fakeStreamCatalog struct{ parsed []uint }
+type fakeStreamCatalog struct {
+	parsed   []uint
+	combined bool
+}
 
 func TestDisabledStreamManagerRemainsNil(t *testing.T) {
 	o := New(nil, nil, nil, nil, nil, t.TempDir())
@@ -25,7 +28,23 @@ func (f *fakeStreamCatalog) SearchAnime(_ context.Context, rule *model.StreamRul
 }
 func (f *fakeStreamCatalog) GetEpisodes(_ context.Context, rule *model.StreamRule, _ string) ([]stream.EpisodeInfo, error) {
 	f.parsed = append(f.parsed, rule.ID)
+	if f.combined {
+		return []stream.EpisodeInfo{{Name: "1", URL: "combined-1", RoadName: "A"}, {Name: "19", URL: "combined-19", RoadName: "A"}}, nil
+	}
 	return []stream.EpisodeInfo{{Name: "第01集", URL: "a", RoadName: "A"}, {Name: "第01集", URL: "b", RoadName: "B"}}, nil
+}
+
+func TestMatchingCatalogTitleDoesNotValidateCombinedSeason(t *testing.T) {
+	db := testutil.InitTestDB()
+	if err := db.Create(&model.StreamRule{Name: "combined", Enabled: true, MultiSources: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	count := 8
+	a := model.Anime{Title: "Re：从零开始的异世界生活 第四季 夺还篇", EpisodeCount: &count}
+	o := &Orchestrator{db: db, streamMgr: &fakeStreamCatalog{combined: true}}
+	if _, err := o.resolveStreamSource(context.Background(), &a, 1); err == nil {
+		t.Fatal("matching title admitted a playlist for a different episode range")
+	}
 }
 
 func TestStreamSourceRecoveryPolicy(t *testing.T) {

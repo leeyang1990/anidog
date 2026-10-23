@@ -226,13 +226,13 @@
         v-for="(ep, idx) in selectedRoadEpisodes"
         :key="idx"
         class="aspect-square rounded-md flex flex-col items-center justify-center text-xs font-medium border transition-colors"
-        :class="isDownloaded(idx + 1)
+        :class="isDownloaded(ep.number)
           ? 'bg-green-500/10 border-green-500/30 text-green-600'
           : 'bg-background border-border hover:border-primary hover:bg-accent/30 text-foreground'"
-        @click="downloadSingle(ep, idx + 1)"
+        @click="downloadSingle(ep, ep.number)"
       >
-        <span class="font-mono">{{ String(idx + 1).padStart(2, '0') }}</span>
-        <CheckmarkCircleOutline v-if="isDownloaded(idx + 1)" class="size-3.5 mt-0.5" />
+        <span class="font-mono">{{ String(ep.number).padStart(2, '0') }}</span>
+        <CheckmarkCircleOutline v-if="isDownloaded(ep.number)" class="size-3.5 mt-0.5" />
       </button>
     </div>
   </div>
@@ -244,6 +244,7 @@ import { useToast } from '@/composables/useToast'
 import { AcSpinner } from '@/components/ac'
 import { CheckmarkCircleOutline, RefreshOutline } from '@vicons/ionicons5'
 import { get, post, put } from '@/utils/api'
+import { streamEpisodePayload } from '@/utils/streamEpisodes'
 
 const props = defineProps({
   animeId: { type: Number, default: null },
@@ -289,7 +290,7 @@ const healthStatus = ref('')
 const healthNote = ref('')
 
 const selectedRoadEpisodes = computed(() => {
-  return roads.value[selectedRoadIndex.value]?.episodes || []
+  return streamEpisodePayload(roads.value[selectedRoadIndex.value]?.episodes || [])
 })
 
 const currentRoadName = computed(() => {
@@ -711,18 +712,20 @@ async function confirmAndDownload() {
 
       if (!epsForCand.length) continue
 
-      const payload = epsForCand.map((ep, idx) => ({ url: ep.url, name: ep.name, number: idx + 1 }))
+      const payload = streamEpisodePayload(epsForCand)
       await post('/stream/download/batch', {
         rule_id: ruleId,
         episodes: payload,
         anime_name: props.animeTitle,
         anime_id: props.animeId,
+        detail_url: cand.url,
+        source_title: cand.name || '',
       })
       totalQueued += payload.length
     }
 
     // primary 季度的集数同步到 downloadedSet 显示已下载（UI 打钩）
-    selectedRoadEpisodes.value.forEach((_, i) => downloadedSet.value.add(i + 1))
+    selectedRoadEpisodes.value.forEach(ep => downloadedSet.value.add(ep.number))
 
     // 保存 primary 的源偏好到后端
     if (props.animeId) {
@@ -766,6 +769,9 @@ async function downloadSingle(ep, number) {
       anime_name: props.animeTitle,
       episode_number: number,
       anime_id: props.animeId,
+      detail_url: selectedCandidate.value?.url || appliedConfig.value.detail_url,
+      road_name: ep.road_name || '',
+      source_title: selectedCandidate.value?.name || appliedConfig.value.candidate_name,
     })
     downloadedSet.value = new Set([...downloadedSet.value, number])
     toast.success(`已添加下载: 第${number}集`)

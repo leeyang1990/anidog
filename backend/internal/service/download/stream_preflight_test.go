@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,41 @@ import (
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/stream"
 )
+
+func TestStreamPreflightChecksReferenceBeforeLanguageOrManualFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "short.mkv")
+	if err := os.WriteFile(path, upgradeTestVideo(t), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{SourceStream, SourceManual} {
+		t.Run(source, func(t *testing.T) {
+			s := capacityService(t, 500*gib)
+			a := model.Anime{Title: "Reference episode"}
+			if err := s.db.Create(&a).Error; err != nil {
+				t.Fatal(err)
+			}
+			ep := 1
+			if err := s.db.Create(&model.AnimeEpisode{AnimeID: a.ID, EpisodeNumber: ep, DurationSeconds: 60}).Error; err != nil {
+				t.Fatal(err)
+			}
+			row := model.Download{TorrentID: "short", Name: "short", URL: path, Status: model.DownloadStatusDownloading, VerifiedLanguages: `["simplified"]`}
+			if err := s.db.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+			err := s.streamPreflight(row.ID, &Task{Source: source, AnimeID: &a.ID, EpisodeNumber: &ep})(context.Background(), &stream.InterceptedVideo{URL: path})
+			if err == nil || !strings.Contains(err.Error(), "剧集参考 60 秒") {
+				t.Fatalf("short video passed the reference guard: %v", err)
+			}
+			var saved model.Download
+			if err := s.db.First(&saved, row.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.VerifiedLanguages != "" || saved.TotalBytes != nil {
+				t.Fatal("rejected reference retained old subtitle evidence or reserved payload bytes")
+			}
+		})
+	}
+}
 
 // Run against retained real candidates in an isolated container with a read-only
 // media mount. No production DB, tasks or original media are modified.

@@ -182,6 +182,10 @@ type streamDownloadRequest struct {
 	AnimeName     string `json:"anime_name" binding:"required"`
 	EpisodeNumber int    `json:"episode_number" binding:"required"`
 	SavePath      string `json:"save_path"`
+	AnimeID       *uint  `json:"anime_id"`
+	DetailURL     string `json:"detail_url"`
+	RoadName      string `json:"road_name"`
+	SourceTitle   string `json:"source_title"`
 }
 
 func (h *StreamHandler) Download(c *gin.Context) {
@@ -199,15 +203,19 @@ func (h *StreamHandler) Download(c *gin.Context) {
 
 	epName := fmt.Sprintf("%s - 第%d集", req.AnimeName, req.EpisodeNumber)
 	task := &dlservice.Task{
-		Name:          epName,
-		URL:           req.EpisodeURL,
-		DownloadType:  model.DownloadTypeStream,
-		SavePath:      req.SavePath,
-		Source:        dlservice.SourceStream,
-		AnimeName:     req.AnimeName,
-		StreamRuleID:  &req.RuleID,
-		StreamRule:    rule,
-		EpisodeNumber: &req.EpisodeNumber,
+		Name:            epName,
+		URL:             req.EpisodeURL,
+		DownloadType:    model.DownloadTypeStream,
+		SavePath:        req.SavePath,
+		Source:          dlservice.SourceStream,
+		AnimeName:       req.AnimeName,
+		AnimeID:         req.AnimeID,
+		SourceTitle:     req.SourceTitle,
+		StreamDetailURL: req.DetailURL,
+		StreamRoadName:  req.RoadName,
+		StreamRuleID:    &req.RuleID,
+		StreamRule:      rule,
+		EpisodeNumber:   &req.EpisodeNumber,
 	}
 
 	dl, err := h.dlSvc.Create(c.Request.Context(), task)
@@ -221,17 +229,20 @@ func (h *StreamHandler) Download(c *gin.Context) {
 }
 
 type batchEpisodeInfo struct {
-	URL    string `json:"url" binding:"required"`
-	Name   string `json:"name"`
-	Number int    `json:"number" binding:"required"`
+	URL      string `json:"url" binding:"required"`
+	Name     string `json:"name"`
+	Number   int    `json:"number" binding:"required"`
+	RoadName string `json:"road_name"`
 }
 
 type batchDownloadRequest struct {
-	RuleID    uint               `json:"rule_id" binding:"required"`
-	Episodes  []batchEpisodeInfo `json:"episodes" binding:"required,min=1"`
-	AnimeName string             `json:"anime_name" binding:"required"`
-	SavePath  string             `json:"save_path"`
-	AnimeID   *uint              `json:"anime_id"`
+	RuleID      uint               `json:"rule_id" binding:"required"`
+	Episodes    []batchEpisodeInfo `json:"episodes" binding:"required,min=1"`
+	AnimeName   string             `json:"anime_name" binding:"required"`
+	SavePath    string             `json:"save_path"`
+	AnimeID     *uint              `json:"anime_id"`
+	DetailURL   string             `json:"detail_url"`
+	SourceTitle string             `json:"source_title"`
 }
 
 func (h *StreamHandler) BatchDownload(c *gin.Context) {
@@ -255,18 +266,21 @@ func (h *StreamHandler) BatchDownload(c *gin.Context) {
 		}
 
 		epNum := ep.Number
-			task := &dlservice.Task{
-				Name:          name,
-				URL:           ep.URL,
-				DownloadType:  model.DownloadTypeStream,
-				SavePath:      req.SavePath,
-				Source:        dlservice.SourceStream,
-				AnimeName:     req.AnimeName,
-				AnimeID:       req.AnimeID,
-				StreamRuleID:  &req.RuleID,
-				StreamRule:    rule,
-				EpisodeNumber: &epNum,
-			}
+		task := &dlservice.Task{
+			Name:            name,
+			URL:             ep.URL,
+			DownloadType:    model.DownloadTypeStream,
+			SavePath:        req.SavePath,
+			Source:          dlservice.SourceStream,
+			AnimeName:       req.AnimeName,
+			SourceTitle:     req.SourceTitle,
+			StreamDetailURL: req.DetailURL,
+			StreamRoadName:  ep.RoadName,
+			AnimeID:         req.AnimeID,
+			StreamRuleID:    &req.RuleID,
+			StreamRule:      rule,
+			EpisodeNumber:   &epNum,
+		}
 
 		dl, err := h.dlSvc.Create(c.Request.Context(), task)
 		if err != nil {

@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1032,43 +1030,12 @@ func selectStreamEpisode(episodes []stream.EpisodeInfo, ep int, preferred string
 	return stream.EpisodeInfo{}, "", false
 }
 
-var (
-	episodeNameRe = regexp.MustCompile(`(?i)(?:^|[^0-9])(?:第\s*|EP(?:ISODE)?\s*)?(\d{1,4})(?:\.\d+)?(?:\s*[集话話])?(?:$|[^0-9])`)
-	episodeURLRe  = regexp.MustCompile(`[-_/](\d{1,4})(?:\.html?)?(?:[?#].*)?$`)
-)
-
 func parseEpisodeNumber(item stream.EpisodeInfo) (int, bool) {
-	for _, candidate := range []struct {
-		re *regexp.Regexp
-		s  string
-	}{{episodeNameRe, strings.TrimSpace(item.Name)}, {episodeURLRe, item.URL}} {
-		match := candidate.re.FindStringSubmatch(candidate.s)
-		if len(match) < 2 {
-			continue
-		}
-		n, err := strconv.Atoi(match[1])
-		if err == nil && n > 0 {
-			return n, true
-		}
-	}
-	return 0, false
+	return stream.EpisodeNumber(item)
 }
 
 func findEpisode(items []stream.EpisodeInfo, ep int) (stream.EpisodeInfo, bool) {
-	hasExplicit := false
-	for _, item := range items {
-		if n, ok := parseEpisodeNumber(item); ok {
-			hasExplicit = true
-			if n == ep {
-				return item, true
-			}
-		}
-	}
-	// 只有整条线路完全无法解析集数时才允许按位置兜底，防止倒序列表错集。
-	if !hasExplicit && ep > 0 && ep <= len(items) {
-		return items[ep-1], true
-	}
-	return stream.EpisodeInfo{}, false
+	return stream.FindEpisode(items, ep)
 }
 
 func hasEpisode(episodes []stream.EpisodeInfo, ep int) bool {

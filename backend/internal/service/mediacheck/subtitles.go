@@ -175,7 +175,7 @@ func DetectHardSubtitles(ctx context.Context, input string, inputArgs []string, 
 // at full resolution. A second high-contrast read may recover the caption;
 // it is still judged by the same confidence and script evidence thresholds.
 func recognizeSubtitleFrame(ctx context.Context, frame []byte) (string, error) {
-	read := func(input []byte) (string, error) {
+	return recognizeCaption(ctx, frame, func(ctx context.Context, input []byte) (string, error) {
 		ocr := exec.CommandContext(ctx, "tesseract", "stdin", "stdout", "-l", "chi_tra+chi_sim", "--psm", "6", "-c", "tessedit_create_tsv=1")
 		ocr.Env = append(os.Environ(), "OMP_THREAD_LIMIT=1", "OMP_NUM_THREADS=1")
 		ocr.Stdin = bytes.NewReader(input)
@@ -184,22 +184,39 @@ func recognizeSubtitleFrame(ctx context.Context, frame []byte) (string, error) {
 			return "", err
 		}
 		return subtitleText(string(raw)), nil
+	})
+}
+
+func recognizeCaption(ctx context.Context, frame []byte, read func(context.Context, []byte) (string, error)) (string, error) {
+	// A complex background must not consume both OCR passes' entire budget.
+	// Each pass gets its own 20-second budget; either valid
+	// high-confidence read can still provide evidence when the other times out.
+	bounded := func(input []byte) (string, error) {
+		passCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		return read(passCtx, input)
 	}
-	original, err := read(frame)
-	if err != nil {
-		return "", err
-	}
+	original, originalErr := bounded(frame)
 	originalCount := len([]rune(original))
-	if originalCount >= 8 && !hasScriptMarker(original, traditionalMarkers) {
+	if originalErr == nil && originalCount >= 8 && !hasScriptMarker(original, traditionalMarkers) {
 		return original, nil
 	}
 	mask, err := subtitleMask(frame)
 	if err != nil {
-		return original, nil
+		return original, originalErr
 	}
-	masked, err := read(mask)
+	masked, err := bounded(mask)
 	if err != nil {
+		if originalErr == nil && original != "" {
+			return original, nil
+		}
 		return "", err
+	}
+	if originalErr != nil {
+		if len([]rune(masked)) < 4 {
+			return "", originalErr
+		}
+		return masked, nil
 	}
 	return combineCaptions(original, masked), nil
 }
@@ -309,7 +326,7 @@ func detectHardSubtitles(ctx context.Context, duration float64, extract func(con
 			continue
 		}
 		evidence.Extracted++
-		ocrCtx, stopOCR := context.WithTimeout(ctx, 20*time.Second)
+		ocrCtx, stopOCR := context.WithTimeout(ctx, 40*time.Second)
 		out, err := recognize(ocrCtx, frame)
 		stopOCR()
 		if err != nil {

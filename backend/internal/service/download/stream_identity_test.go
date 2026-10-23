@@ -131,6 +131,17 @@ func TestStreamExecutionDoesNotIgnoreMissingAnime(t *testing.T) {
 	}
 }
 
+func TestUnavailableStreamManagerDoesNotBecomeTypedNilCatalog(t *testing.T) {
+	e := NewStreamExecutor(nil, nil)
+	if e.catalog != nil {
+		t.Fatal("nil manager became a callable catalog")
+	}
+	_, err := e.Execute(context.Background(), &Task{Source: SourceManual, StreamRule: &model.StreamRule{}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "流媒体管理器未就绪") {
+		t.Fatal("unavailable manager was used", err)
+	}
+}
+
 type cancelledIdentityCatalog struct{ entered chan struct{} }
 
 func (c *cancelledIdentityCatalog) SearchAnime(ctx context.Context, _ *model.StreamRule, _ string) ([]stream.SearchResult, error) {

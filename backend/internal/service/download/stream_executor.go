@@ -27,7 +27,11 @@ type streamSourceCatalog interface {
 
 // NewStreamExecutor creates a new stream executor.
 func NewStreamExecutor(mgr *stream.StreamManager, db *gorm.DB) *StreamExecutor {
-	return &StreamExecutor{streamMgr: mgr, db: db, catalog: mgr}
+	executor := &StreamExecutor{streamMgr: mgr, db: db}
+	if mgr != nil {
+		executor.catalog = mgr
+	}
+	return executor
 }
 
 // Execute runs a stream download via the StreamManager pipeline.
@@ -56,6 +60,9 @@ func (e *StreamExecutor) Execute(ctx context.Context, task *Task, progressCB Pro
 	}
 	if err := e.validateSource(ctx, task, anime); err != nil {
 		return nil, err
+	}
+	if e.streamMgr == nil {
+		return nil, fmt.Errorf("流媒体管理器未就绪")
 	}
 
 	episodeNumber := 0

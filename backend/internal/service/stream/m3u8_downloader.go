@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/anidog/anidog-go/internal/config"
+	"github.com/anidog/anidog-go/internal/service/failure"
 	"github.com/anidog/anidog-go/internal/service/mediacheck"
 )
 
@@ -100,7 +101,7 @@ func (d *M3U8Downloader) DownloadVideo(ctx context.Context, taskID string, video
 	}
 
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("启动 ffmpeg 失败: %w", err)
+		return "", failure.Wrap(failure.Transfer, failure.ToolUnavailable, fmt.Errorf("启动 ffmpeg 失败: %w", err))
 	}
 
 	// 读取 stderr 解析进度
@@ -123,6 +124,9 @@ func (d *M3U8Downloader) DownloadVideo(ctx context.Context, taskID string, video
 
 	if err := cmd.Wait(); err != nil {
 		diagnostic := ffmpegFailure(err, lastLines)
+		if ctx.Err() != nil {
+			diagnostic = failure.Wrap(failure.Transfer, failure.SourceUnavailable, ctx.Err())
+		}
 		zap.L().Error("ffmpeg 下载失败",
 			zap.String("output", outputPath),
 			zap.Error(diagnostic))
@@ -131,10 +135,15 @@ func (d *M3U8Downloader) DownloadVideo(ctx context.Context, taskID string, video
 
 	// 下载成功后校验编码和时长。只检查“存在视频流”会把广告、反盗链占位片
 	// 或提前结束的 HLS 当作完整剧集，因此必须在竞速仲裁前拦截。
-	probe, err := d.validateVideo(outputPath, totalDuration)
+	probe, err := d.validateVideoContext(ctx, outputPath, totalDuration)
 	if err != nil {
+		checked := failure.Wrap(failure.Validation, failure.InvalidMedia, fmt.Errorf("流媒体候选无效：%w", err))
+		facts := failure.Describe(checked)
+		if facts.Code == failure.InspectionFailed || facts.Code == failure.ToolUnavailable || facts.Code == failure.StorageUnavailable {
+			return outputPath, checked // Payload exists; inspection failed, not the media.
+		}
 		_ = os.Remove(outputPath)
-		return "", fmt.Errorf("流媒体候选无效：%w", err)
+		return "", checked
 	}
 
 	zap.L().Info("ffmpeg 下载完成",
@@ -147,18 +156,28 @@ func (d *M3U8Downloader) DownloadVideo(ctx context.Context, taskID string, video
 // validateVideo 用 ffprobe 检查输出文件是否为可接受的完整视频。
 // sourceDuration 是下载前从源地址探测到的时长；可用时还会防止成片被截断。
 func (d *M3U8Downloader) validateVideo(path string, sourceDuration float64) (videoProbeResult, error) {
+	return d.validateVideoContext(context.Background(), path, sourceDuration)
+}
+
+func (d *M3U8Downloader) validateVideoContext(ctx context.Context, path string, sourceDuration float64) (videoProbeResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	info, err := os.Stat(path)
 	if err != nil {
-		return videoProbeResult{}, fmt.Errorf("读取成片失败: %w", err)
+		return videoProbeResult{}, failure.Wrap(failure.Validation, failure.StorageUnavailable, fmt.Errorf("读取成片失败: %w", err))
 	}
 
-	cmd := exec.Command("ffprobe", "-v", "error",
+	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "error",
 		"-show_entries", "stream=codec_name,codec_type:format=duration",
 		"-of", "json",
 		path)
+	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.Output()
 	if err != nil {
-		return videoProbeResult{}, fmt.Errorf("ffprobe 无法解析成片: %w", err)
+		if ctx.Err() != nil {
+			return videoProbeResult{}, failure.Wrap(failure.Validation, failure.InspectionFailed, ctx.Err())
+		}
+		return videoProbeResult{}, failure.Wrap(failure.Validation, failure.InvalidMedia, fmt.Errorf("ffprobe 无法解析成片: %w", err))
 	}
 
 	var parsed ffprobeVideoOutput

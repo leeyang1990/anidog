@@ -18,6 +18,7 @@ import (
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/episode"
+	"github.com/anidog/anidog-go/internal/service/failure"
 	"github.com/anidog/anidog-go/internal/service/notification"
 	"github.com/anidog/anidog-go/internal/service/stream"
 	"github.com/anidog/anidog-go/internal/ws"
@@ -36,6 +37,7 @@ type Service struct {
 	capacityMu            sync.Mutex // Check and reserve queued bytes atomically within this process.
 	capacityProbe         capacityProbe
 	capacityVolume        func(string) (string, error)
+	qualityRefresh        qualityRefresh
 }
 
 // NewService creates a new unified download service.
@@ -253,16 +255,8 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	}
 	exec, ok := s.executors[task.DownloadType]
 	if !ok {
-		err := fmt.Errorf("无可用的 %s 下载执行器", task.DownloadType)
-		kind, delay := classifyError(err, task.RetryCount)
-		extra := map[string]interface{}{
-			"failure_kind": kind,
-			"last_error":   err.Error(),
-		}
-		if delay > 0 {
-			nextAt := time.Now().Add(delay)
-			extra["next_retry_at"] = &nextAt
-		}
+		err := failure.Wrap(failure.Engine, failure.ToolUnavailable, fmt.Errorf("无可用的 %s 下载执行器", task.DownloadType))
+		extra, kind, _ := failureFields(err, task.RetryCount)
 		s.updateStatus(dlID, model.DownloadStatusFailed, extra)
 		zap.L().Error("无对应下载执行器", zap.String("type", task.DownloadType), zap.String("failure_kind", kind))
 		return
@@ -314,17 +308,9 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 				zap.Uint("id", dlID), zap.String("name", task.Name))
 			return
 		}
-		kind, delay := classifyError(err, prev.RetryCount)
-		extra := map[string]interface{}{
-			"failure_kind": kind,
-			"last_error":   truncateError(err),
-		}
-		if delay > 0 {
-			nextAt := time.Now().Add(delay)
-			extra["next_retry_at"] = &nextAt
-		} else {
-			// permanent / 已用尽重试次数 → 清空 next_retry_at
-			extra["next_retry_at"] = nil
+		extra, kind, delay := failureFields(err, prev.RetryCount)
+		if result != nil && result.FilePath != "" {
+			extra["file_path"] = result.FilePath
 		}
 		if !s.updateStatus(dlID, model.DownloadStatusFailed, extra) {
 			return
@@ -346,6 +332,8 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	if task.DownloadType == model.DownloadTypeTorrent {
 		extra := map[string]interface{}{
 			"failure_kind":  "",
+			"failure_code":  "",
+			"failure_stage": "",
 			"last_error":    "",
 			"next_retry_at": nil,
 		}
@@ -363,16 +351,13 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	}
 	if task.DownloadType == model.DownloadTypeStream && stagingPath != "" {
 		if err := s.validateStreamDurationConsistency(ctx, task, stagingPath); err != nil {
-			candidateErr := fmt.Errorf("流媒体候选无效：%w", err)
-			if !s.updateStatus(dlID, model.DownloadStatusFailed, map[string]interface{}{
-				"failure_kind":  model.FailureKindRejected,
-				"last_error":    truncateError(candidateErr),
-				"quality_note":  truncateError(candidateErr),
-				"file_path":     stagingPath,
-				"next_retry_at": nil,
-			}) {
+			candidateErr := failure.Wrap(failure.Validation, failure.InvalidMedia, fmt.Errorf("流媒体候选无效：%w", err))
+			fields, _, _ := failureFields(candidateErr, task.RetryCount)
+			fields["quality_note"], fields["file_path"] = truncateError(candidateErr), stagingPath
+			if !s.updateStatus(dlID, model.DownloadStatusFailed, fields) {
 				return
 			}
+
 			s.triggerRejectedStreamRecovery(task)
 			zap.L().Warn("流媒体候选未通过同番时长校验",
 				zap.Uint("id", dlID), zap.String("name", task.Name), zap.Error(candidateErr))
@@ -494,6 +479,8 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 			"progress":            100.0,
 			"completed_at":        &now,
 			"failure_kind":        "",
+			"failure_code":        "",
+			"failure_stage":       "",
 			"last_error":          "",
 			"next_retry_at":       nil,
 			"seeking_alternative": false,
@@ -675,6 +662,8 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 			"completed_at":        &now,
 			"file_path":           filepath.Dir(plans[0].to),
 			"failure_kind":        "",
+			"failure_code":        "",
+			"failure_stage":       "",
 			"last_error":          "",
 			"next_retry_at":       nil,
 			"seeking_alternative": false,
@@ -694,12 +683,13 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 				Downloaded: true, DownloadID: &downloadID, FilePath: &path, FileSize: &size,
 				UpdatedAt: now,
 			}
+			qualityUpdates := map[string]interface{}{
+				"downloaded": true, "download_id": downloadID, "file_path": path, "file_size": size, "updated_at": now,
+			}
+			invalidateChangedAsset(qualityUpdates, downloadID, path)
 			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "anime_id"}, {Name: "episode_number"}},
-				DoUpdates: clause.Assignments(map[string]interface{}{
-					"downloaded": true, "download_id": downloadID,
-					"file_path": path, "file_size": size, "updated_at": now,
-				}),
+				Columns:   []clause.Column{{Name: "anime_id"}, {Name: "episode_number"}},
+				DoUpdates: clause.Assignments(qualityUpdates),
 			}).Create(&row).Error; err != nil {
 				return err
 			}
@@ -727,6 +717,7 @@ func (s *Service) CompleteSeasonPack(ctx context.Context, dlID uint, stagingFile
 		}
 	}
 	s.updateAnimeProgressFromEpisodeTable(ctx, *candidate.AnimeID)
+	s.requestQualityRefresh(*candidate.AnimeID)
 	s.notifyCompletion(candidate.ID)
 	zap.L().Info("整季合集归档完成", zap.Uint("id", candidate.ID), zap.String("name", candidate.Name), zap.Int("episodes", len(plans)))
 	return true
@@ -1062,7 +1053,9 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	}
 	update := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ? AND status = ? AND torrent_removal_pending = ?", dl.ID, model.DownloadStatusFailed, false).Updates(map[string]interface{}{
 		"status": model.DownloadStatusPending, "progress": 0, "downloaded_bytes": nil,
-		"retry_count": 0, "failure_kind": "", "last_error": "", "next_retry_at": nil,
+		"retry_count": 0, "failure_kind": "",
+		"failure_code":  "",
+		"failure_stage": "", "last_error": "", "next_retry_at": nil,
 		"verified_languages": "", "quality_note": "",
 	})
 	if update.Error != nil {
@@ -1073,6 +1066,7 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	}
 	dl.Status, dl.RetryCount, dl.FailureKind, dl.LastError, dl.VerifiedLanguages, dl.QualityNote = model.DownloadStatusPending, 0, "", "", "", ""
 	dl.Progress, dl.DownloadedBytes, dl.NextRetryAt = 0, nil, nil
+	dl.FailureCode, dl.FailureStage = "", ""
 	go s.execute(dl.ID, dl.TorrentID, task)
 	return &dl, nil
 }
@@ -1172,7 +1166,7 @@ func (s *Service) RecoverPending(ctx context.Context) {
 func (s *Service) normalizeHistoricalFailureKinds(ctx context.Context) {
 	var rows []model.Download
 	if err := s.db.WithContext(ctx).
-		Where("status = ? AND last_error <> ''", model.DownloadStatusFailed).
+		Where("status = ? AND last_error <> '' AND (failure_code = '' OR failure_code IS NULL)", model.DownloadStatusFailed).
 		Where("failure_kind IN ? OR failure_kind = ''", []string{model.FailureKindTransient}).
 		Find(&rows).Error; err != nil {
 		zap.L().Warn("查询历史失败分类失败", zap.Error(err))
@@ -1391,6 +1385,7 @@ func (s *Service) syncCompletedEpisodeState(ctx context.Context, dl *model.Downl
 		AnimeID:       *dl.AnimeID,
 		EpisodeNumber: *dl.EpisodeNumber,
 		Downloaded:    true,
+		QualityStatus: model.QualityUnknown,
 		DownloadID:    &downloadID,
 		UpdatedAt:     now,
 	}
@@ -1413,10 +1408,19 @@ func (s *Service) syncCompletedEpisodeState(ctx context.Context, dl *model.Downl
 			updates["file_size"] = size
 		}
 	}
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	path := ""
+	if row.FilePath != nil {
+		path = *row.FilePath
+	}
+	invalidateChangedAsset(updates, downloadID, path)
+	err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "anime_id"}, {Name: "episode_number"}},
 		DoUpdates: clause.Assignments(updates),
 	}).Create(&row).Error
+	if err == nil {
+		s.requestQualityRefresh(*dl.AnimeID)
+	}
+	return err
 }
 
 // updateAnimeProgress 在下载完成时更新 anime.current_episode（所有源类型通用）

@@ -108,8 +108,7 @@ func (h *OrchestratorHandler) RunOne(c *gin.Context) {
 
 	go func() {
 		ctx := context.Background()
-		global := orchestrator.LoadGlobal(ctx, h.settingSvc)
-		h.orch.CheckAnime(ctx, &anime, global)
+		h.orch.CheckAnimeWithSettings(ctx, &anime)
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{"detail": "已触发检查"})

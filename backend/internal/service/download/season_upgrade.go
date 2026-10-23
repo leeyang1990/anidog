@@ -420,6 +420,7 @@ func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Do
 	if e := s.executors[candidate.DownloadType]; e != nil {
 		_ = e.Remove(executorTaskID(candidate), false)
 	}
+	s.requestQualityRefresh(*candidate.AnimeID)
 	s.notifyCompletion(candidate.ID)
 	return true
 }

@@ -2,11 +2,11 @@
 package download
 
 import (
-	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 )
 
 // classifyError distinguishes local repair, candidate replacement and transient
@@ -15,20 +15,9 @@ func classifyError(err error, retryCount int) (string, time.Duration) {
 	if err == nil {
 		return "", 0
 	}
-	msg := strings.ToLower(err.Error())
-	// Local failures do not become remote-source exhaustion merely because the
-	// attempt budget ran out. Keep their actionable cause and longer cooldown.
-	for _, marker := range []string{
-		"no space left", "permission denied", "read-only file system",
-		"invalid data found", "invalid argument", "unsupported codec",
-		"unknown format", "unknown encoder",
-	} {
-		if strings.Contains(msg, marker) {
-			return model.FailureKindPermanent, 0
-		}
-	}
-	if isRejectedCandidateError(msg) {
-		return model.FailureKindRejected, 0
+	facts := failure.Describe(err)
+	if facts.Kind != model.FailureKindTransient {
+		return facts.Kind, 0
 	}
 	if retryCount >= 3 {
 		return model.FailureKindExhausted, 0
@@ -38,33 +27,18 @@ func classifyError(err error, retryCount int) (string, time.Duration) {
 	return model.FailureKindTransient, RetryDelay(retryCount)
 }
 
-// isRejectedCandidateError 判断错误是否只说明“这一个候选不适合当前剧集”。
-// 这类错误与网络抖动不同：重复提交同一个候选没有意义，但应允许编排器
-// 立刻尝试下一候选，所以使用 rejected，而不是 transient/permanent。
-func isRejectedCandidateError(msg string) bool {
-	markers := []string{
-		"播放器已报错",
-		"流媒体预检不符合要求",
-		"流媒体候选无效",
-		"视频时长过短",
-		"视频疑似下载截断",
-		"季度不匹配",
-		"季数不匹配",
-		"错误选中",
-		"season mismatch",
-		"wrong season",
-		"集数不匹配",
-		"剧集不匹配",
-		"episode mismatch",
-		"qbittorrent 中不存在对应任务",
-		"bt 引擎中不存在对应任务",
+func failureFields(err error, retryCount int) (map[string]interface{}, string, time.Duration) {
+	facts := failure.Describe(err)
+	kind, delay := classifyError(err, retryCount)
+	fields := map[string]interface{}{
+		"failure_kind": kind, "failure_code": string(facts.Code), "failure_stage": string(facts.Stage),
+		"last_error": truncateError(err), "next_retry_at": nil,
 	}
-	for _, marker := range markers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
+	if delay > 0 {
+		next := time.Now().Add(delay)
+		fields["next_retry_at"] = &next
 	}
-	return false
+	return fields, kind, delay
 }
 
 // RetryDelay is the shared rapid-retry delay for execution and candidate selection.

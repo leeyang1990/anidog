@@ -263,7 +263,11 @@ func (o *Orchestrator) Run(ctx context.Context) {
 // CheckAllSubscribed 遍历所有订阅番剧，逐个检查并填坑。
 // 同时满足 scheduler.BangumiChecker 接口，可直接替换旧的 bangumi.AutoDownloader。
 func (o *Orchestrator) CheckAllSubscribed(ctx context.Context) {
-	global := LoadGlobal(ctx, o.settingSvc)
+	global, err := LoadGlobal(ctx, o.settingSvc)
+	if err != nil {
+		zap.L().Error("读取下载策略失败，停止调度", zap.Error(err))
+		return
+	}
 
 	var animes []model.Anime
 	if err := o.db.WithContext(ctx).Where("is_subscribed = ?", true).Find(&animes).Error; err != nil {
@@ -301,7 +305,17 @@ func (o *Orchestrator) triggerAnimeCheck(ctx context.Context, animeID uint) {
 		zap.L().Warn("orchestrator: 即时检查读取番剧失败", zap.Uint("anime_id", animeID), zap.Error(err))
 		return
 	}
-	o.CheckAnime(ctx, &anime, LoadGlobal(ctx, o.settingSvc))
+	o.CheckAnimeWithSettings(ctx, &anime)
+}
+
+// CheckAnimeWithSettings loads one consistent settings snapshot before planning.
+func (o *Orchestrator) CheckAnimeWithSettings(ctx context.Context, anime *model.Anime) {
+	global, err := LoadGlobal(ctx, o.settingSvc)
+	if err != nil {
+		zap.L().Error("读取下载策略失败，停止调度", zap.Error(err))
+		return
+	}
+	o.CheckAnime(ctx, anime, global)
 }
 
 // CheckAnime 检查单个番剧，对缺失集按优先级尝试各源下载。
@@ -316,7 +330,11 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 	if ctx.Err() != nil {
 		return
 	}
-	pref := MergeWithAnime(global, anime)
+	pref, err := MergeWithAnime(global, anime)
+	if err != nil {
+		zap.L().Error("读取番剧下载策略失败，停止调度", zap.Uint("anime_id", anime.ID), zap.Error(err))
+		return
+	}
 
 	// 期望集数
 	expected := 0
@@ -998,13 +1016,11 @@ func selectStreamEpisode(episodes []stream.EpisodeInfo, ep int, preferred string
 	}
 	byRoad := make(map[string][]stream.EpisodeInfo)
 	order := make([]string, 0)
-	for _, item := range episodes {
-		road := item.RoadName
-		if _, exists := byRoad[road]; !exists {
-			order = append(order, road)
-		}
-		byRoad[road] = append(byRoad[road], item)
+	for _, road := range stream.EpisodeRoads(episodes, 0) {
+		order = append(order, road.Name)
+		byRoad[road.Name] = road.Episodes
 	}
+
 	if preferred != "" {
 		for i, road := range order {
 			if road == preferred {

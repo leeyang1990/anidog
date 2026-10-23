@@ -113,12 +113,10 @@ func (o *Orchestrator) resolveStreamSource(ctx context.Context, anime *model.Ani
 		if best == nil {
 			continue
 		}
-		for j := range results {
-			if results[j].URL == detail && stream.IsConfidentMatch(anime.Title, results[j].Name) {
-				best = &results[j]
-				break
-			}
+		if preferredSource := stream.MatchingCatalogSource(anime.Title, detail, results); preferredSource != nil {
+			best = preferredSource
 		}
+
 		if detail != best.URL {
 			preferred = ""
 		}

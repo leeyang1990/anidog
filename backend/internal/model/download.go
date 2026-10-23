@@ -14,7 +14,8 @@ const (
 //   - transient：临时故障，由 RetryFailedJob 按退避节奏自动重试
 //     例：流媒体 m3u8 签名链接过期（IO error: End of file / 403）
 //     BT 死种：DHT 短期找不到 peer（meta_dl 超时）—— 等下一轮新 hash
-//   - permanent：永久失败，不再重试
+//   - permanent：需要本地或配置修复，不进入快速自动重试；流媒体候选
+//     仍可在本地故障冷却结束后有限探测
 //     例：磁盘满、文件 IO 错、格式不支持
 //   - rejected：当前候选本身无效或已经消失，不重试这条记录，但允许同集立即换源
 //     例：季度/集数不匹配、qBittorrent 中的对应任务被删除
@@ -121,12 +122,14 @@ type Download struct {
 	// 失败重试相关（参见 FailureKindTransient/Permanent）。
 	// RetryCount：已经尝试重试的次数（不含首次执行）。
 	// LastError：最近一次失败的 stderr 摘要或错误消息，给前端展示。
-	// FailureKind：'transient' 可重试 / 'permanent' 放弃 / ''（旧逻辑）。
-	// NextRetryAt：下一次允许重试的最早时间；RetryFailedJob 会扫这个字段。
-	RetryCount  int        `gorm:"default:0" json:"retry_count"`
-	LastError   string     `gorm:"type:text" json:"last_error"`
-	FailureKind string     `gorm:"index;type:varchar(20)" json:"failure_kind"`
-	NextRetryAt *time.Time `gorm:"index" json:"next_retry_at"`
+	// FailureKind：参见文件顶部的 transient/permanent/rejected/exhausted 定义。
+	// NextRetryAt：恢复搜索的最早时间；不替代候选基于实际失败时间的冷却。
+	RetryCount   int        `gorm:"default:0" json:"retry_count"`
+	LastError    string     `gorm:"type:text" json:"last_error"`
+	FailureKind  string     `gorm:"index;type:varchar(20)" json:"failure_kind"`
+	FailureCode  string     `gorm:"type:varchar(40);default:''" json:"failure_code,omitempty"`
+	FailureStage string     `gorm:"type:varchar(20);default:''" json:"failure_stage,omitempty"`
+	NextRetryAt  *time.Time `gorm:"index" json:"next_retry_at"`
 }
 
 func (Download) TableName() string { return "download" }

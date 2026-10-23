@@ -14,6 +14,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/indexer"
+	"github.com/anidog/anidog-go/internal/service/mediapolicy"
 	"github.com/anidog/anidog-go/internal/service/setting"
 )
 
@@ -73,9 +74,9 @@ func (p Preference) ToIndexerPref() indexer.DownloadPreference {
 // Defaults 默认全局偏好（用户没配置时）
 func Defaults() Preference {
 	return Preference{
-		Quality:         "1080p",
+		Quality:         mediapolicy.Default().Quality,
 		Groups:          []string{"LoliHouse", "桜都字幕组", "ANi", "喵萌奶茶屋", "北宇治字幕组"},
-		Languages:       []string{"simplified"},
+		Languages:       mediapolicy.Default().Languages,
 		MinSizeMB:       100,
 		MaxSizeMB:       0, // 0 = 不限
 		StreamEnabled:   true,
@@ -88,33 +89,27 @@ func Defaults() Preference {
 }
 
 // LoadGlobal 从 setting 表加载全局偏好，未设置的字段用 Defaults。
-func LoadGlobal(ctx context.Context, svc *setting.Service) Preference {
+func LoadGlobal(ctx context.Context, svc *setting.Service) (Preference, error) {
 	p := Defaults()
 	if svc == nil {
-		return p
+		return p, nil
 	}
 
-	get := func(key string) string {
-		v, ok, _ := svc.Get(ctx, key)
-		if !ok {
-			return ""
-		}
-		return v
+	values, err := svc.GetAll(ctx)
+	if err != nil {
+		return Preference{}, err
 	}
+	goal, err := mediapolicy.Resolve(values, nil)
+	if err != nil {
+		return Preference{}, err
+	}
+	p.Quality, p.Languages, p.AllowPreferenceFallback = goal.Quality, goal.Languages, goal.AllowFallback
+	get := func(key string) string { return values[key] }
 
-	if v := get("download.quality"); v != "" {
-		p.Quality = v
-	}
 	if v := get("download.groups"); v != "" {
 		var arr []string
 		if err := json.Unmarshal([]byte(v), &arr); err == nil {
 			p.Groups = arr
-		}
-	}
-	if v := get("download.languages"); v != "" {
-		var arr []string
-		if err := json.Unmarshal([]byte(v), &arr); err == nil {
-			p.Languages = arr
 		}
 	}
 	if v := get("download.min_size_mb"); v != "" {
@@ -128,7 +123,6 @@ func LoadGlobal(ctx context.Context, svc *setting.Service) Preference {
 		}
 	}
 
-	p.AllowPreferenceFallback = get("download.allow_preference_fallback") == "true"
 	// 源启用（默认 true）
 	p.StreamEnabled = !isFalsy(get("download.source_enabled.stream"), true)
 	p.BTEnabled = !isFalsy(get("download.source_enabled.bt"), true)
@@ -195,7 +189,7 @@ func LoadGlobal(ctx context.Context, svc *setting.Service) Preference {
 		}
 	}
 
-	return p
+	return p, nil
 }
 
 func containsSource(sources []string, target string) bool {
@@ -209,26 +203,21 @@ func containsSource(sources []string, target string) bool {
 
 // MergeWithAnime 把全局偏好与 anime.Override* 字段合并。
 // 非空的 Override 覆盖全局；DisabledSources 追加到 DisabledForAnime。
-func MergeWithAnime(global Preference, anime *model.Anime) Preference {
+func MergeWithAnime(global Preference, anime *model.Anime) (Preference, error) {
 	out := global
 
-	if anime == nil {
-		return out
+	goal, err := mediapolicy.Apply(mediapolicy.Goal{Quality: global.Quality, Languages: global.Languages, AllowFallback: global.AllowPreferenceFallback}, anime)
+	if err != nil {
+		return Preference{}, err
 	}
-
-	if anime.OverrideQuality != nil && *anime.OverrideQuality != "" {
-		out.Quality = *anime.OverrideQuality
+	out.Quality, out.Languages, out.AllowPreferenceFallback = goal.Quality, goal.Languages, goal.AllowFallback
+	if anime == nil {
+		return out, nil
 	}
 	if anime.OverrideGroups != nil && *anime.OverrideGroups != "" {
 		var arr []string
 		if err := json.Unmarshal([]byte(*anime.OverrideGroups), &arr); err == nil && len(arr) > 0 {
 			out.Groups = arr
-		}
-	}
-	if anime.OverrideLanguages != nil && *anime.OverrideLanguages != "" {
-		var arr []string
-		if err := json.Unmarshal([]byte(*anime.OverrideLanguages), &arr); err == nil && len(arr) > 0 {
-			out.Languages = arr
 		}
 	}
 	if anime.DisabledSources != nil && *anime.DisabledSources != "" {
@@ -238,7 +227,7 @@ func MergeWithAnime(global Preference, anime *model.Anime) Preference {
 		}
 	}
 
-	return out
+	return out, nil
 }
 
 // isFalsy 返回 val 是否明确为 false；defaultTrue 指示为空时返回 false（不为 falsy）
@@ -249,4 +238,10 @@ func isFalsy(val string, defaultTrue bool) bool {
 		return !defaultTrue
 	}
 	return v == "false" || v == "0" || v == "off" || v == "no"
+}
+
+// RSSRefreshEnabled reads only the RSS switch, independently of media goals.
+func RSSRefreshEnabled(ctx context.Context, svc *setting.Service) bool {
+	value, _, err := svc.Get(ctx, "download.source_enabled.rss")
+	return err == nil && !isFalsy(value, true)
 }

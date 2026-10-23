@@ -21,6 +21,8 @@ import (
 // Tool availability and deadlines are retryable, not evidence of bad media.
 type toolError struct{ error }
 
+func (e toolError) Unwrap() error { return e.error }
+
 // InputError identifies failure to access a remote input, never a quality
 // mismatch. It permits one validated alternate route for inherited proxies.
 type InputError struct{ Err error }

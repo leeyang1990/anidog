@@ -3,14 +3,18 @@ package download
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"gorm.io/gorm"
 	"math"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 )
 
 const (
@@ -41,13 +45,17 @@ func (s *Service) validateStreamDurationConsistency(ctx context.Context, task *T
 		return nil
 	}
 
-	candidateDuration, err := ProbeMediaDuration(stagingPath)
+	candidateDuration, err := probeMediaDuration(ctx, stagingPath)
 	if err != nil {
 		return fmt.Errorf("无法复核流媒体成片时长: %w", err)
 	}
 
 	var reference model.AnimeEpisode
-	if err := s.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ?", *task.AnimeID, *task.EpisodeNumber).First(&reference).Error; err == nil && reference.DurationSeconds > 0 {
+	lookupErr := s.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ?", *task.AnimeID, *task.EpisodeNumber).First(&reference).Error
+	if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		return failure.Wrap(failure.Validation, failure.StateUnavailable, lookupErr)
+	}
+	if lookupErr == nil && reference.DurationSeconds > 0 {
 		return ValidateReferenceDuration(candidateDuration, reference.DurationSeconds)
 	}
 	var peers []peerMediaPath
@@ -59,12 +67,12 @@ func (s *Service) validateStreamDurationConsistency(ctx context.Context, task *T
 		Order("completed_at DESC").
 		Limit(maxStreamPeerSamples).
 		Scan(&peers).Error; err != nil {
-		return fmt.Errorf("查询同番时长基线失败: %w", err)
+		return failure.Wrap(failure.Validation, failure.StateUnavailable, fmt.Errorf("查询同番时长基线失败: %w", err))
 	}
 
 	peerDurations := make([]float64, 0, len(peers))
 	for _, peer := range peers {
-		duration, probeErr := ProbeMediaDuration(peer.FilePath)
+		duration, probeErr := probeMediaDuration(ctx, peer.FilePath)
 		if probeErr == nil {
 			peerDurations = append(peerDurations, duration)
 		}
@@ -103,18 +111,29 @@ func validateDurationAgainstPeers(candidateDuration float64, peerDurations []flo
 
 // ProbeMediaDuration 读取本地媒体时长，供下载候选校验和历史媒体巡检复用。
 func ProbeMediaDuration(path string) (float64, error) {
-	out, err := exec.Command("ffprobe", "-v", "error",
-		"-show_entries", "format=duration", "-of", "json", path).Output()
+	return probeMediaDuration(context.Background(), path)
+}
+
+func probeMediaDuration(ctx context.Context, path string) (float64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "error",
+		"-show_entries", "format=duration", "-of", "json", path)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.Output()
 	if err != nil {
-		return 0, err
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return 0, failure.Wrap(failure.Validation, failure.InspectionFailed, err)
 	}
 	var parsed durationProbeOutput
 	if err := json.Unmarshal(out, &parsed); err != nil {
-		return 0, err
+		return 0, failure.Wrap(failure.Validation, failure.InspectionFailed, err)
 	}
 	duration, err := strconv.ParseFloat(strings.TrimSpace(parsed.Format.Duration), 64)
 	if err != nil || duration <= 0 || math.IsNaN(duration) || math.IsInf(duration, 0) {
-		return 0, fmt.Errorf("无效时长 %q", parsed.Format.Duration)
+		return 0, failure.Wrap(failure.Validation, failure.InvalidMedia, fmt.Errorf("无效时长 %q", parsed.Format.Duration))
 	}
 	return duration, nil
 }

@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 	"github.com/anidog/anidog-go/internal/service/mediacheck"
 	"github.com/anidog/anidog-go/internal/service/network"
 )
@@ -93,7 +95,12 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, epis
 
 	video, err := m.interceptor.InterceptVideoURL(ctx, episode.URL, referer, userAgent, rule.ProxyMode)
 	if err != nil {
-		return "", "", fmt.Errorf("拦截视频 URL 失败: %w", err)
+		code := failure.SourceUnavailable
+		var playerErr *playerFailure
+		if errors.As(err, &playerErr) {
+			code = failure.PlayerUnavailable
+		}
+		return "", "", failure.Wrap(failure.Player, code, fmt.Errorf("拦截视频 URL 失败: %w", err))
 	}
 	ctx, closeTransport, err := m.preflightVideo(ctx, video, rule, preflights)
 	if err != nil {
@@ -128,6 +135,9 @@ func (m *StreamManager) DownloadEpisode(ctx context.Context, taskID string, epis
 	stagingPath := buildRaceStagingPath(outputPath, taskID)
 	resultPath, err := m.downloader.DownloadVideo(ctx, taskID, video, stagingPath, progressCB)
 	if err != nil {
+		if resultPath != "" {
+			return resultPath, outputPath, fmt.Errorf("ffmpeg 下载失败: %w", err)
+		}
 		_ = os.Remove(stagingPath)
 		return "", "", fmt.Errorf("ffmpeg 下载失败: %w", err)
 	}

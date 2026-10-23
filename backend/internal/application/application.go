@@ -143,6 +143,7 @@ func New(cfg *config.Config) (*Runtime, error) {
 	// 5d2. Orchestrator：多源剧集填坑调度器（替代旧的 bangumi.CheckAllSubscribed）
 	orch := orchestrator.New(db, dlSvc, streamManager, settingSvc, nil, mediaRoot, httpClient.Client())
 	dlSvc.SetRejectedStreamHandler(orch.RetryEpisodeAfterCandidateFailure)
+	dlSvc.SetMediaCompletedHandler(orch.RefreshLibraryQuality)
 
 	// 5d3. Episode 同步：从 Bangumi 拉取每集的播出时间，让前端能区分
 	// "未下载" 和 "待发布"，让 Orchestrator 不去搜未播出的集
@@ -161,10 +162,8 @@ func New(cfg *config.Config) (*Runtime, error) {
 	}
 	// RSS 是否启用：每轮 Run 之前从 setting 读取 download.source_enabled.rss，
 	// 关闭时直接跳过 RefreshAll（实现"动森设置 → RSS 开关"的纯被动语义）。
-	rssEnabled := func(ctx context.Context) bool {
-		pref := orchestrator.LoadGlobal(ctx, settingSvc)
-		return pref.RSSEnabled
-	}
+	rssEnabled := func(ctx context.Context) bool { return orchestrator.RSSRefreshEnabled(ctx, settingSvc) }
+
 	sched.Register(scheduler.NewRSSRefreshJob(rssEngine, rssEnabled), rssInterval, true)
 	// 追番更新检查（每 30 分钟）
 	// 番剧更新检查：改为由 Orchestrator 驱动多源下载
@@ -173,7 +172,7 @@ func New(cfg *config.Config) (*Runtime, error) {
 	sched.Register(episodeSvc, 6*time.Hour, true)
 	// 失败重试（每 5min）：扫 transient 失败行，到点触发对应 anime 的 orchestrator 重排
 	retryConductor := func(ctx context.Context, anime *model.Anime) {
-		orch.CheckAnime(ctx, anime, orchestrator.LoadGlobal(ctx, settingSvc))
+		orch.CheckAnimeWithSettings(ctx, anime)
 	}
 	sched.Register(scheduler.NewRetryFailedJob(db, retryConductor), 5*time.Minute, false)
 	// 死种黑名单 TTL 清理（每 6h 一次，14 天过期）

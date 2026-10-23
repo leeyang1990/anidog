@@ -2,6 +2,8 @@ package stream
 
 import (
 	"fmt"
+	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 	"regexp"
 	"strings"
 )
@@ -29,10 +31,16 @@ func ffmpegFailure(err error, lines []string) error {
 		useful = append(useful, line)
 	}
 	if len(useful) == 0 {
-		return fmt.Errorf("ffmpeg 退出: %w", err)
+		return failure.Wrap(failure.Transfer, failure.SourceUnavailable, fmt.Errorf("ffmpeg 退出: %w", err))
 	}
 	if len(useful) > 4 {
 		useful = useful[len(useful)-4:]
 	}
-	return fmt.Errorf("ffmpeg 退出: %w; %s", err, strings.Join(useful, "; "))
+	diagnostic := fmt.Errorf("ffmpeg 退出: %w; %s", err, strings.Join(useful, "; "))
+	code := failure.SourceUnavailable
+	// ffmpeg exposes no structured cause; interpret its stderr only at this tool boundary.
+	if failure.Describe(diagnostic).Kind == model.FailureKindPermanent {
+		code = failure.StorageUnavailable
+	}
+	return failure.Wrap(failure.Transfer, code, diagnostic)
 }

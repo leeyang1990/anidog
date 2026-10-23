@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 	"github.com/anidog/anidog-go/internal/service/mediacheck"
 	"github.com/anidog/anidog-go/internal/service/stream"
 )
@@ -20,22 +21,26 @@ func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *
 	return func(ctx context.Context, video *stream.InterceptedVideo) error {
 		// Old evidence belongs to the previous execution, never to a refreshed URL.
 		if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Update("verified_languages", "").Error; err != nil {
-			return err
+			return failure.Wrap(failure.Probe, failure.StateUnavailable, err)
 		}
 		args := video.InputArgs("ffprobe")
 		media, err := mediacheck.ProbeInput(ctx, video.URL, args)
 		if err != nil {
-			return fmt.Errorf("流媒体预检探测失败: %w", err)
+			code := failure.InspectionFailed
+			if mediacheck.IsInputError(err) {
+				code = failure.SourceUnavailable
+			}
+			return failure.Wrap(failure.Probe, code, fmt.Errorf("流媒体预检探测失败: %w", err))
 		}
 		if task.AnimeID != nil && task.EpisodeNumber != nil {
 			var episode model.AnimeEpisode
 			lookupErr := s.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ?", *task.AnimeID, *task.EpisodeNumber).Take(&episode).Error
 			if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
-				return lookupErr
+				return failure.Wrap(failure.Probe, failure.StateUnavailable, lookupErr)
 			}
 			if lookupErr == nil {
 				if err := ValidateReferenceDuration(media.Duration(), episode.DurationSeconds); err != nil {
-					return fmt.Errorf("流媒体预检不符合要求：%w", err)
+					return failure.Wrap(failure.Probe, failure.InvalidMedia, fmt.Errorf("流媒体预检不符合要求：%w", err))
 				}
 			}
 		}
@@ -55,14 +60,14 @@ func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *
 		if assessment.Status == model.QualityUnknown {
 			evidence := mediacheck.DetectHardSubtitles(ctx, video.URL, args, media.Duration())
 			if evidence.Retryable {
-				return fmt.Errorf("字幕检测暂时不可用：%s", evidence.Reason)
+				return failure.Wrap(failure.Subtitles, failure.InspectionFailed, fmt.Errorf("字幕检测暂时不可用：%s", evidence.Reason))
 			}
 			if evidence.Language != "" {
 				withVerifiedLanguages(&media, []string{evidence.Language})
 				assessment = AssessMediaPreferences(media, "", task.SourceTitle, quality, languages)
 				if assessment.Status == model.QualityMeetsTarget {
 					raw, _ := json.Marshal([]string{evidence.Language})
-					return s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Updates(map[string]interface{}{"verified_languages": string(raw), "quality_note": "预检通过：" + evidence.Reason}).Error
+					return failure.Wrap(failure.Subtitles, failure.StateUnavailable, s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Updates(map[string]interface{}{"verified_languages": string(raw), "quality_note": "预检通过：" + evidence.Reason}).Error)
 				}
 				assessment.Reason = evidence.Reason + "，不符合所选字幕语言"
 			} else {
@@ -70,7 +75,7 @@ func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *
 			}
 		}
 		if assessment.Status != model.QualityMeetsTarget {
-			return fmt.Errorf("流媒体预检不符合要求：%s", assessment.Reason)
+			return failure.Wrap(failure.Probe, failure.PreferenceMismatch, fmt.Errorf("流媒体预检不符合要求：%s", assessment.Reason))
 		}
 		return nil
 	}
@@ -114,7 +119,7 @@ func (s *Service) reserveStreamBytes(ctx context.Context, dlID uint, task *Task,
 	defer s.capacityMu.Unlock()
 	task.EstimatedBytes = bytes
 	if err := s.ensureTaskCapacity(ctx, task, dlID); err != nil {
-		return fmt.Errorf("媒体存储容量保护: %w", err)
+		return failure.Wrap(failure.Probe, failure.StorageUnavailable, fmt.Errorf("媒体存储容量保护: %w", err))
 	}
-	return s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Update("total_bytes", bytes).Error
+	return failure.Wrap(failure.Probe, failure.StateUnavailable, s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Update("total_bytes", bytes).Error)
 }

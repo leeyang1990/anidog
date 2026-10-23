@@ -303,7 +303,7 @@ func (o *Orchestrator) RetryEpisodeAfterCandidateFailure(ctx context.Context, an
 
 	zap.L().Warn("下载质量巡检：立即重新规划来源",
 		zap.Uint("anime_id", animeID), zap.String("anime", anime.Title), zap.Int("episode", episode))
-	o.CheckAnime(ctx, &anime, LoadGlobal(ctx, o.settingSvc))
+	o.CheckAnimeWithSettings(ctx, &anime)
 }
 
 func scanEpisodeFiles(seasonDir string, expectedSeason int) (map[int]bool, int, error) {

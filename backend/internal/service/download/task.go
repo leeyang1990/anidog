@@ -65,8 +65,9 @@ type Task struct {
 	// Stream-specific: anime name for file naming.
 	AnimeName string
 
-	// RetryCount 是同一番剧/集数失败链已经消耗的重试次数。
-	// Orchestrator 换源创建新记录时必须继承它。
+	// RetryCount 是执行失败链已经消耗的快速重试次数，不含首次执行。
+	// 流媒体按规则/详情页/线路/目标剧集继承候选预算；换到不同候选
+	// 不能沿用其他候选的耗尽次数，刷新同一候选的 CDN 签名也不能重置它。
 	RetryCount int
 }
 

@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 	"github.com/anidog/anidog-go/internal/service/stream"
 )
 
@@ -54,7 +55,7 @@ func (e *StreamExecutor) Execute(ctx context.Context, task *Task, progressCB Pro
 	if task.AnimeID != nil && e.db != nil {
 		var a model.Anime
 		if err := e.db.WithContext(ctx).First(&a, *task.AnimeID).Error; err != nil {
-			return nil, fmt.Errorf("读取流媒体目标番剧失败: %w", err)
+			return nil, failure.Wrap(failure.Identity, failure.StateUnavailable, fmt.Errorf("读取流媒体目标番剧失败: %w", err))
 		}
 		anime = &a
 	}
@@ -62,7 +63,7 @@ func (e *StreamExecutor) Execute(ctx context.Context, task *Task, progressCB Pro
 		return nil, err
 	}
 	if e.streamMgr == nil {
-		return nil, fmt.Errorf("流媒体管理器未就绪")
+		return nil, failure.Wrap(failure.Player, failure.ToolUnavailable, fmt.Errorf("流媒体管理器未就绪"))
 	}
 
 	episodeNumber := 0
@@ -81,9 +82,11 @@ func (e *StreamExecutor) Execute(ctx context.Context, task *Task, progressCB Pro
 		ctx, task.RuntimeID, &ep, task.StreamRule, task.SavePath,
 		task.AnimeName, anime, episodeNumber, streamCB, task.Preflight)
 	if err != nil {
+		if filePath != "" {
+			return &Result{FilePath: filePath, FinalPath: finalPath}, err
+		}
 		return nil, err
 	}
-
 	return &Result{FilePath: filePath, FinalPath: finalPath}, nil
 }
 
@@ -95,49 +98,42 @@ func (e *StreamExecutor) validateSource(ctx context.Context, task *Task, anime *
 		return nil
 	}
 	if anime == nil || task.EpisodeNumber == nil || *task.EpisodeNumber <= 0 || task.StreamDetailURL == "" {
-		return fmt.Errorf("流媒体候选无效：缺少源身份信息，请重新选源")
+		return failure.Wrap(failure.Identity, failure.IdentityMismatch, fmt.Errorf("流媒体候选无效：缺少源身份信息，请重新选源"))
 	}
 	if e.catalog == nil {
-		return fmt.Errorf("流媒体源身份复核失败：目录服务不可用")
+		return failure.Wrap(failure.Catalog, failure.ToolUnavailable, fmt.Errorf("流媒体源身份复核失败：目录服务不可用"))
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	results, err := e.catalog.SearchAnime(ctx, task.StreamRule, anime.Title)
 	if err != nil {
-		return fmt.Errorf("流媒体源身份复核失败：%w", err)
+		return failure.Wrap(failure.Catalog, failure.SourceUnavailable, fmt.Errorf("流媒体源身份复核失败：%w", err))
 	}
 	if len(results) == 0 {
-		return fmt.Errorf("流媒体源身份复核失败：目录暂未返回候选，等待重新搜索")
+		return failure.Wrap(failure.Catalog, failure.SourceUnavailable, fmt.Errorf("流媒体源身份复核失败：目录暂未返回候选，等待重新搜索"))
 	}
-	matched := false
-	for _, result := range results {
-		if result.URL == task.StreamDetailURL && stream.IsConfidentMatch(anime.Title, result.Name) {
-			matched = true
-			break
-		}
+	if stream.MatchingCatalogSource(anime.Title, task.StreamDetailURL, results) == nil {
+		return failure.Wrap(failure.Identity, failure.IdentityMismatch, fmt.Errorf("流媒体候选无效：目录标题无法确认目标季度/篇章，请重新选源"))
 	}
-	if !matched {
-		return fmt.Errorf("流媒体候选无效：目录标题无法确认目标季度/篇章，请重新选源")
-	}
+
 	episodes, err := e.catalog.GetEpisodes(ctx, task.StreamRule, task.StreamDetailURL)
 	if err != nil {
-		return fmt.Errorf("流媒体源身份复核失败：%w", err)
+		return failure.Wrap(failure.Catalog, failure.SourceUnavailable, fmt.Errorf("流媒体源身份复核失败：%w", err))
 	}
+	count := 0
 	if anime.EpisodeCount != nil {
-		episodes = stream.EpisodeRoadsWithinCount(episodes, *anime.EpisodeCount)
+		count = *anime.EpisodeCount
 	}
-	roads := make(map[string][]stream.EpisodeInfo)
-	for _, episode := range episodes {
-		if task.StreamRoadName == "" || episode.RoadName == task.StreamRoadName {
-			roads[episode.RoadName] = append(roads[episode.RoadName], episode)
+	for _, road := range stream.EpisodeRoads(episodes, count) {
+		if task.StreamRoadName != "" && road.Name != task.StreamRoadName {
+			continue
 		}
-	}
-	for _, road := range roads {
-		if episode, ok := stream.FindEpisode(road, *task.EpisodeNumber); ok && episode.URL == task.URL {
+		if episode, ok := stream.FindEpisode(road.Episodes, *task.EpisodeNumber); ok && episode.URL == task.URL {
 			return nil
 		}
 	}
-	return fmt.Errorf("流媒体候选无效：播放列表编号超出目标总集数，或播放页与目标集数不匹配，请重新选源")
+
+	return failure.Wrap(failure.Identity, failure.IdentityMismatch, fmt.Errorf("流媒体候选无效：播放列表编号超出目标总集数，或播放页与目标集数不匹配，请重新选源"))
 }
 
 // Cancel cancels an in-progress stream download.

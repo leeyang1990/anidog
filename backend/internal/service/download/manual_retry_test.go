@@ -24,7 +24,7 @@ func TestExplicitRetryResetsEvidenceAndActuallyRequeuesTorrent(t *testing.T) {
 	s.RegisterExecutor(model.DownloadTypeTorrent, executor)
 	start, end := 1, 12
 	next := time.Now().Add(24 * time.Hour)
-	row := model.Download{TorrentID: "retry", Name: "retry", URL: "magnet:retry", Source: SourceBT, SourceTitle: "original", DownloadType: model.DownloadTypeTorrent, Status: model.DownloadStatusFailed, FailureKind: model.FailureKindExhausted, RetryCount: 3, NextRetryAt: &next, LastError: "old failure", VerifiedLanguages: `["traditional"]`, Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end}
+	row := model.Download{TorrentID: "retry", Name: "retry", URL: "magnet:retry", Source: SourceBT, SourceTitle: "original", DownloadType: model.DownloadTypeTorrent, Status: model.DownloadStatusFailed, FailureKind: model.FailureKindExhausted, FailureCode: "inspection_failed", FailureStage: "subtitles", RetryCount: 3, NextRetryAt: &next, LastError: "old failure", VerifiedLanguages: `["traditional"]`, Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end}
 	if err := s.db.Create(&row).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestExplicitRetryResetsEvidenceAndActuallyRequeuesTorrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RetryCount != 0 || result.FailureKind != "" || result.NextRetryAt != nil || result.VerifiedLanguages != "" {
+	if result.RetryCount != 0 || result.FailureKind != "" || result.FailureCode != "" || result.FailureStage != "" || result.NextRetryAt != nil || result.VerifiedLanguages != "" {
 		t.Fatal("explicit retry retained stale failure/evidence", result)
 	}
 	select {

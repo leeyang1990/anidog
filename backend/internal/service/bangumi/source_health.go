@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 )
 
 // SourceHealthStatus 源健康状态枚举
@@ -41,7 +42,11 @@ func (s *SourceHealthService) CheckAllSubscribed(ctx context.Context) {
 	now := time.Now()
 	for i := range animes {
 		anime := &animes[i]
-		status, note := s.evaluate(ctx, anime)
+		status, note, err := s.evaluate(ctx, anime)
+		if err != nil {
+			zap.L().Warn("读取源健康样本失败", zap.Uint("anime_id", anime.ID), zap.Error(err))
+			continue
+		}
 		updates := map[string]interface{}{
 			"source_health_status": status,
 			"source_health_note":   note,
@@ -68,23 +73,16 @@ func (s *SourceHealthService) updateRuleHealth(ctx context.Context) {
 	now := time.Now()
 	for i := range rules {
 		rule := &rules[i]
-		var total int64
-		var failed, completed int64
-		// 取最近 24 小时该规则的所有 stream 下载
-		q := s.db.WithContext(ctx).Model(&model.Download{}).
-			Where("stream_rule_id = ?", rule.ID).
-			Where("download_type = ?", "stream").
-			Where("created_at > ?", now.Add(-24*time.Hour))
-		// Pending, superseded and legitimate quality rejections are not successful
-		// transfers and do not establish source availability either.
-		if err := q.Where("status = ?", model.DownloadStatusCompleted).Count(&completed).Error; err != nil {
+		var samples []model.Download
+		if err := s.db.WithContext(ctx).
+			Select("id", "status", "failure_kind", "failure_code", "failure_stage", "last_error").
+			Where("stream_rule_id = ? AND download_type = ? AND created_at > ?", rule.ID, model.DownloadTypeStream, now.Add(-24*time.Hour)).
+			Where("status IN ?", []string{model.DownloadStatusCompleted, model.DownloadStatusFailed}).
+			Order("updated_at DESC").Order("id DESC").Find(&samples).Error; err != nil {
 			continue
 		}
-		q = s.db.WithContext(ctx).Model(&model.Download{}).Where("stream_rule_id = ? AND download_type = ? AND created_at > ?", rule.ID, "stream", now.Add(-24*time.Hour))
-		if err := q.Where("status = ? AND (failure_kind IN ? OR last_error LIKE ?)", model.DownloadStatusFailed, []string{model.FailureKindTransient, model.FailureKindExhausted}, "%播放器已报错%").Count(&failed).Error; err != nil {
-			continue
-		}
-		total = completed + failed
+		completed, failed, latestCompleted := healthCounts(samples)
+		total := completed + failed
 
 		status := ""
 		note := ""
@@ -101,13 +99,9 @@ func (s *SourceHealthService) updateRuleHealth(ctx context.Context) {
 			}
 			// A new verified complete transfer proves that the circuit can close.
 			// Old repeated failures must not suppress a repaired source for 24 hours.
-			var latest model.Download
-			if status == SourceBroken {
-				err := s.db.WithContext(ctx).Where("stream_rule_id = ? AND download_type = ? AND (status = ? OR (status = ? AND failure_kind IN ?))", rule.ID, "stream", model.DownloadStatusCompleted, model.DownloadStatusFailed, []string{model.FailureKindTransient, model.FailureKindExhausted}).Order("updated_at DESC").Order("id DESC").Take(&latest).Error
-				if err == nil && latest.Status == model.DownloadStatusCompleted {
-					status = SourceDegraded
-					note += "（最近一次完整下载成功，恢复调度）"
-				}
+			if status == SourceBroken && latestCompleted {
+				status = SourceDegraded
+				note += "（最近一次完整下载成功，恢复调度）"
 			}
 			// 防"翻牌"：之前已是 broken 的规则，至少需要 3 条最近成功才能翻 healthy。
 			// 不然只要清掉失败历史 + 1 条偶发 manual 成功就能让规则被重新调度。
@@ -144,9 +138,9 @@ func (s *SourceHealthService) updateRuleHealth(ctx context.Context) {
 }
 
 // evaluate 根据下载历史计算某部番的健康状态
-func (s *SourceHealthService) evaluate(ctx context.Context, anime *model.Anime) (string, string) {
+func (s *SourceHealthService) evaluate(ctx context.Context, anime *model.Anime) (string, string, error) {
 	if anime.StreamDetailURL == nil {
-		return "", ""
+		return "", "", nil
 	}
 
 	// 查询该 anime + 当前源偏好的下载记录
@@ -154,46 +148,64 @@ func (s *SourceHealthService) evaluate(ctx context.Context, anime *model.Anime) 
 	q := s.db.WithContext(ctx).
 		Where("anime_id = ?", anime.ID).
 		Where("stream_detail_url = ?", *anime.StreamDetailURL)
+	if anime.StreamRuleID != nil {
+		q = q.Where("stream_rule_id = ?", *anime.StreamRuleID)
+	}
 	if anime.StreamRoadName != nil {
 		q = q.Where("stream_road_name = ?", *anime.StreamRoadName)
 	}
-	q.Order("created_at DESC").Limit(20).Find(&downloads)
+	if err := q.Where("download_type = ?", model.DownloadTypeStream).Order("updated_at DESC").Order("id DESC").Limit(20).Find(&downloads).Error; err != nil {
+		return "", "", err
+	}
 
 	if len(downloads) == 0 {
-		return "", ""
+		return "", "", nil
 	}
 
-	completed, failed, disguised := 0, 0, 0
-	for _, d := range downloads {
-		switch d.Status {
-		case model.DownloadStatusCompleted:
-			completed++
-		case model.DownloadStatusFailed:
-			failed++
-			// TODO: 如果 download 表里记了 error_message，可以检测"伪装流"关键字
-		}
-	}
-	_ = disguised
+	completed, failed, _ := healthCounts(downloads)
 
 	total := completed + failed
 	if total == 0 {
 		// 还在下载中，无法判断
-		return "", ""
+		return "", "", nil
 	}
 
 	failRate := float64(failed) / float64(total)
 	note := fmt.Sprintf("最近 %d 条：%d 完成 / %d 失败", total, completed, failed)
 
 	if failed == 0 {
-		return SourceHealthy, note
+		return SourceHealthy, note, nil
 	}
 	if failRate >= 0.8 {
-		return SourceBroken, note + "，建议切换源"
+		return SourceBroken, note + "，建议切换源", nil
 	}
 	if failRate >= 0.3 {
-		return SourceDegraded, note
+		return SourceDegraded, note, nil
 	}
-	return SourceHealthy, note
+	return SourceHealthy, note, nil
+}
+
+// healthCounts consumes only completed transfers and failures that establish
+// source availability. Callers order newest first; ignored local/quality events
+// cannot reopen or prolong a source circuit.
+func healthCounts(rows []model.Download) (completed, failed int, latestCompleted bool) {
+	seen := false
+	for _, row := range rows {
+		success := row.Status == model.DownloadStatusCompleted
+		outage := row.Status == model.DownloadStatusFailed && failure.FromRecord(row).AvailabilityFailure
+		if !success && !outage {
+			continue
+		}
+		if !seen {
+			latestCompleted, seen = success, true
+		}
+		if success {
+			completed++
+		} else {
+			failed++
+		}
+	}
+	return
 }
 
 // ClearHealthStatus 当用户主动切换源时调用，清空状态等待新一轮评估

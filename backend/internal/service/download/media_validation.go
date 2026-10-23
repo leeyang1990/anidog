@@ -11,13 +11,19 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 	"github.com/anidog/anidog-go/internal/service/indexer"
 	"github.com/anidog/anidog-go/internal/service/mediacheck"
+	"github.com/anidog/anidog-go/internal/service/mediapolicy"
 	"github.com/anidog/anidog-go/internal/service/titleparse"
 )
 
 type candidateMediaError struct{ error }
+
+func (e candidateMediaError) Unwrap() error { return e.error }
 
 func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download, ep int, path string) error {
 	if (s.cfg == nil || !s.cfg.VerifyDownloadedMedia) && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
@@ -26,13 +32,17 @@ func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download
 	m, err := mediacheck.Probe(ctx, path)
 	if err != nil {
 		if mediacheck.IsToolError(err) {
-			return err
+			return failure.Wrap(failure.Validation, failure.InspectionFailed, err)
 		}
 		return candidateMediaError{err}
 	}
 	if dl.AnimeID != nil {
 		var reference model.AnimeEpisode
-		if err := s.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ?", *dl.AnimeID, ep).First(&reference).Error; err == nil {
+		err := s.db.WithContext(ctx).Where("anime_id = ? AND episode_number = ?", *dl.AnimeID, ep).First(&reference).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return failure.Wrap(failure.Validation, failure.StateUnavailable, err)
+		}
+		if err == nil {
 			if err := ValidateReferenceDuration(m.Duration(), reference.DurationSeconds); err != nil {
 				return candidateMediaError{err}
 			}
@@ -40,7 +50,7 @@ func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download
 	}
 	if err := mediacheck.CheckTail(ctx, path, m.Duration()); err != nil {
 		if mediacheck.IsToolError(err) {
-			return err
+			return failure.Wrap(failure.Validation, failure.InspectionFailed, err)
 		}
 		return candidateMediaError{err}
 	}
@@ -79,38 +89,11 @@ func QualityGoalKey(quality string, languages []string) string {
 }
 
 func (s *Service) mediaGoal(ctx context.Context, animeID *uint) (string, []string, bool, error) {
-	var settings []model.Setting
-	if err := s.db.WithContext(ctx).Where("key IN ?", []string{"download.quality", "download.languages", "download.allow_preference_fallback"}).Find(&settings).Error; err != nil {
-		return "", nil, false, err
+	goal, err := mediapolicy.Load(ctx, s.db, animeID)
+	if err != nil {
+		return "", nil, false, failure.Wrap(failure.Validation, failure.StateUnavailable, err)
 	}
-	quality, languages, fallback := "1080p", []string{"simplified"}, false
-	for _, row := range settings {
-		switch row.Key {
-		case "download.quality":
-			quality = row.Value
-		case "download.languages":
-			if err := json.Unmarshal([]byte(row.Value), &languages); err != nil {
-				return "", nil, false, err
-			}
-		case "download.allow_preference_fallback":
-			fallback = row.Value == "true"
-		}
-	}
-	if animeID != nil {
-		var a model.Anime
-		if err := s.db.WithContext(ctx).First(&a, *animeID).Error; err != nil {
-			return "", nil, false, err
-		}
-		if a.OverrideQuality != nil && *a.OverrideQuality != "" {
-			quality = *a.OverrideQuality
-		}
-		if a.OverrideLanguages != nil && *a.OverrideLanguages != "" {
-			if err := json.Unmarshal([]byte(*a.OverrideLanguages), &languages); err != nil {
-				return "", nil, false, err
-			}
-		}
-	}
-	return quality, languages, fallback, nil
+	return goal.Quality, goal.Languages, goal.AllowFallback, nil
 }
 
 type QualityAssessment struct {
@@ -207,10 +190,12 @@ func (s *Service) rejectMediaCandidate(ctx context.Context, dl *model.Download, 
 	message := "成片校验未通过：" + err.Error()
 	var rejected candidateMediaError
 	if !errors.As(err, &rejected) {
-		s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dl.ID).Updates(map[string]interface{}{"last_error": message, "quality_note": message})
+		facts := failure.Describe(err)
+		s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ? AND status IN ?", dl.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Updates(map[string]interface{}{"last_error": message, "quality_note": message, "failure_code": string(facts.Code), "failure_stage": string(facts.Stage)})
 		return
 	}
-	updates := map[string]interface{}{"failure_kind": model.FailureKindRejected, "last_error": message, "quality_note": message, "next_retry_at": nil, "seeking_alternative": false}
+	updates, _, _ := failureFields(failure.Wrap(failure.Validation, failure.InvalidMedia, err), dl.RetryCount)
+	updates["last_error"], updates["quality_note"], updates["seeking_alternative"] = message, message, false
 	if dl.FilePath != nil {
 		updates["file_path"] = *dl.FilePath
 	}

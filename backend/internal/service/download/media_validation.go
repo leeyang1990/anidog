@@ -26,7 +26,7 @@ type candidateMediaError struct{ error }
 func (e candidateMediaError) Unwrap() error { return e.error }
 
 func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download, ep int, path string) error {
-	if (s.cfg == nil || !s.cfg.VerifyDownloadedMedia) && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
+	if (s.cfg == nil || (!s.cfg.VerifyDownloadedMedia && dl.Source != SourceStream)) && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
 		return nil
 	}
 	m, err := mediacheck.Probe(ctx, path)
@@ -72,8 +72,37 @@ func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download
 			withVerifiedLanguages(&m, verified)
 		}
 	}
-	if err := validateMediaPreferences(m, path, dl.SourceTitle, quality, languages); err != nil {
-		return candidateMediaError{err}
+	title := dl.SourceTitle
+	isStream := dl.DownloadType == model.DownloadTypeStream || dl.Source == SourceStream
+	if isStream {
+		// Catalog labels do not establish the script burned into the payload.
+		title = ""
+	}
+	assessment := AssessMediaPreferences(m, path, title, quality, languages)
+	if isStream && assessment.Status == model.QualityUnknown {
+		inspect := s.subtitleInspector
+		if inspect == nil {
+			inspect = mediacheck.DetectHardSubtitles
+		}
+		evidence := inspect(ctx, path, nil, m.Duration())
+		if evidence.Retryable {
+			return failure.Wrap(failure.Subtitles, failure.InspectionFailed, fmt.Errorf("成片字幕检查暂时不可用：%s", evidence.Reason))
+		}
+		if evidence.Language != "" {
+			withVerifiedLanguages(&m, []string{evidence.Language})
+			assessment = AssessMediaPreferences(m, path, "", quality, languages)
+		}
+		if assessment.Status == model.QualityMeetsTarget {
+			raw, _ := json.Marshal([]string{evidence.Language})
+			updates := map[string]interface{}{"verified_languages": string(raw), "quality_note": "成片本地验收通过：" + evidence.Reason}
+			if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dl.ID).Updates(updates).Error; err != nil {
+				return failure.Wrap(failure.Validation, failure.StateUnavailable, err)
+			}
+			dl.VerifiedLanguages = string(raw)
+		}
+	}
+	if assessment.Status != model.QualityMeetsTarget {
+		return candidateMediaError{failure.Wrap(failure.Validation, failure.PreferenceMismatch, fmt.Errorf("%s", assessment.Reason))}
 	}
 	return nil
 }
@@ -190,12 +219,17 @@ func (s *Service) rejectMediaCandidate(ctx context.Context, dl *model.Download, 
 	message := "成片校验未通过：" + err.Error()
 	var rejected candidateMediaError
 	if !errors.As(err, &rejected) {
-		facts := failure.Describe(err)
-		s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ? AND status IN ?", dl.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Updates(map[string]interface{}{"last_error": message, "quality_note": message, "failure_code": string(facts.Code), "failure_stage": string(facts.Stage)})
+		updates, _, _ := failureFields(err, dl.RetryCount)
+		updates["last_error"], updates["quality_note"] = message, message
+		if dl.FilePath != nil {
+			updates["file_path"] = *dl.FilePath
+		}
+		s.updateStatus(dl.ID, model.DownloadStatusFailed, updates)
 		return
 	}
 	updates, _, _ := failureFields(failure.Wrap(failure.Validation, failure.InvalidMedia, err), dl.RetryCount)
 	updates["last_error"], updates["quality_note"], updates["seeking_alternative"] = message, message, false
+	updates["validation_pending"], updates["validation_final_path"] = false, ""
 	if dl.FilePath != nil {
 		updates["file_path"] = *dl.FilePath
 	}

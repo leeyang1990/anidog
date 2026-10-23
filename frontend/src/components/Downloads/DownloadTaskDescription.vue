@@ -6,6 +6,7 @@ const diagnostic = computed(() => ['failed', 'paused'].includes(props.task.statu
 </script>
 
 <template>
+  <div v-if="task.validation_pending && task.status === 'downloading'" class="text-xs text-ac-sky-dark mt-0.5" role="status">{{ t('pages.downloads.validatingMedia') }}</div>
   <div v-if="diagnostic" class="text-xs text-ac-heart-dark truncate mt-0.5" :title="diagnostic" role="status">{{ diagnostic }}</div>
   <div v-if="task.purpose === 'season_upgrade'" class="text-xs text-ac-sky-dark mt-0.5" :title="task.upgrade_reason">
     {{ task.upgrade_reason || t('pages.downloads.seasonUpgrade') }}

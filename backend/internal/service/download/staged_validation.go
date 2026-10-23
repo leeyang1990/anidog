@@ -1,0 +1,175 @@
+package download
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
+	"go.uber.org/zap"
+)
+
+// retainStreamResult records the payload before any slow local acceptance. A
+// restart, expiring URL, or inspection outage must not force another transfer.
+func (s *Service) retainStreamResult(ctx context.Context, id uint, result *Result) error {
+	if result == nil || result.FilePath == "" || result.FinalPath == "" {
+		return nil
+	}
+	stat, err := os.Stat(existingCompletionPath(result.FilePath, result.FinalPath))
+	if err != nil {
+		return failure.Wrap(failure.Validation, failure.StorageUnavailable, err)
+	}
+	updates := map[string]interface{}{"file_path": result.FilePath, "validation_final_path": result.FinalPath, "validation_pending": true,
+		"downloaded_bytes": stat.Size(), "total_bytes": stat.Size(), "progress": 100.0, "download_speed": 0}
+	q := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ? AND status IN ?", id, []string{model.DownloadStatusPending, model.DownloadStatusDownloading, model.DownloadStatusFailed}).Updates(updates)
+	if q.Error != nil {
+		return failure.Wrap(failure.Validation, failure.StateUnavailable, q.Error)
+	}
+	if q.RowsAffected != 1 {
+		return failure.Wrap(failure.Validation, failure.Canceled, fmt.Errorf("暂存成片所属任务已结束"))
+	}
+	return nil
+}
+
+func (s *Service) retainedValidationResult(dl *model.Download) (*Result, error) {
+	if dl.DownloadType != model.DownloadTypeStream || !dl.ValidationPending {
+		return nil, nil
+	}
+	if dl.FilePath == nil || *dl.FilePath == "" || dl.ValidationFinalPath == "" {
+		return nil, failure.Wrap(failure.Validation, failure.StateUnavailable, fmt.Errorf("暂存成片缺少验收路径"))
+	}
+	root := ""
+	if dl.SavePath != nil {
+		root = *dl.SavePath
+	}
+	if root == "" && s.cfg != nil {
+		root = s.cfg.MediaRoot
+	}
+	if root == "" || !pathWithin(*dl.FilePath, root) || !pathWithin(dl.ValidationFinalPath, root) || filepath.Dir(*dl.FilePath) != filepath.Dir(dl.ValidationFinalPath) {
+		return nil, failure.Wrap(failure.Validation, failure.StorageUnavailable, fmt.Errorf("暂存成片路径超出下载目录"))
+	}
+	path := existingCompletionPath(*dl.FilePath, dl.ValidationFinalPath)
+	stat, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, failure.Wrap(failure.Validation, failure.StorageUnavailable, err)
+	}
+	if !stat.Mode().IsRegular() || stat.Size() == 0 {
+		return nil, failure.Wrap(failure.Validation, failure.InvalidMedia, fmt.Errorf("暂存成片不是完整的普通文件"))
+	}
+	return &Result{FilePath: *dl.FilePath, FinalPath: dl.ValidationFinalPath}, nil
+}
+
+type validationRun struct{ cancel context.CancelFunc }
+
+func (s *Service) cancelValidation(id uint) {
+	if cancel, ok := s.validationCancels.Load(id); ok {
+		cancel.(*validationRun).cancel()
+	}
+}
+
+func (s *Service) finishStreamResult(ctx context.Context, id uint, task *Task, result *Result) {
+	ctx, cancel := context.WithCancel(ctx)
+	run := &validationRun{cancel: cancel}
+	s.validationCancels.Store(id, run)
+	defer func() { cancel(); s.validationCancels.CompareAndDelete(id, run) }()
+	if s.validationSlots != nil {
+		select {
+		case s.validationSlots <- struct{}{}:
+			defer func() { <-s.validationSlots }()
+		case <-ctx.Done():
+			return
+		}
+	}
+	var row model.Download
+	if err := s.db.WithContext(ctx).First(&row, id).Error; err != nil {
+		return
+	}
+	if row.Status != model.DownloadStatusDownloading && row.Status != model.DownloadStatusPending {
+		return
+	}
+	path := existingCompletionPath(result.FilePath, result.FinalPath)
+	if err := s.validateStreamDurationConsistency(ctx, task, path); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return
+		}
+		err = failure.Wrap(failure.Validation, failure.InvalidMedia, fmt.Errorf("流媒体成片时长检查失败：%w", err))
+		row.FilePath = &path
+		if failure.Describe(err).Kind == model.FailureKindRejected {
+			err = candidateMediaError{err}
+		}
+		s.rejectMediaCandidate(ctx, &row, err)
+		return
+	}
+	if s.CompleteEpisodeRace(ctx, id, result.FilePath, result.FinalPath) && s.hub != nil {
+		s.hub.BroadcastDownloadComplete(task.RuntimeID, task.Name)
+	}
+}
+
+// ResumeMediaValidation is called before searching missing episodes. It claims
+// retained payloads with a CAS and spends the same bounded attempt budget, but
+// never resets it, fetches a playback page, or creates another download row.
+func (s *Service) ResumeMediaValidation(ctx context.Context, animeID uint) error {
+	var rows []model.Download
+	err := s.db.WithContext(ctx).Where("anime_id = ? AND download_type = ? AND validation_pending = ? AND status = ? AND retry_count < ?", animeID, model.DownloadTypeStream, true, model.DownloadStatusFailed, 3).
+		Where("failure_code <> ? AND failure_kind <> ?", string(failure.Canceled), model.FailureKindRejected).
+		Where("next_retry_at IS NULL OR next_retry_at <= ?", time.Now()).
+		Where("episode_number IS NOT NULL").
+		Where(`NOT EXISTS (SELECT 1 FROM download newer WHERE newer.anime_id = download.anime_id AND newer.episode_number = download.episode_number AND newer.id > download.id AND newer.validation_pending = ? AND newer.status = ?)`, true, model.DownloadStatusFailed).
+		Where(`NOT EXISTS (SELECT 1 FROM download active WHERE active.anime_id = download.anime_id AND active.episode_number = download.episode_number AND active.id <> download.id AND (active.status IN ? OR (active.status = ? AND active.media_missing = ?)))`, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}, model.DownloadStatusCompleted, false).
+		Order("id DESC").Limit(24).Find(&rows).Error
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		row := &rows[i]
+		retained, err := s.retainedValidationResult(row)
+		if err != nil {
+			return err
+		}
+		if retained == nil {
+			if err := s.db.WithContext(ctx).Model(row).Updates(map[string]interface{}{"validation_pending": false, "validation_final_path": "", "file_path": nil}).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		if !s.HasExecutor(model.DownloadTypeStream) {
+			continue
+		}
+		updates := map[string]interface{}{"status": model.DownloadStatusPending, "retry_count": row.RetryCount + 1, "failure_kind": "", "failure_code": "", "failure_stage": "", "last_error": "", "next_retry_at": nil}
+		q := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ? AND status = ? AND retry_count = ? AND validation_pending = ?", row.ID, model.DownloadStatusFailed, row.RetryCount, true).Updates(updates)
+		if q.Error != nil {
+			return q.Error
+		}
+		if q.RowsAffected != 1 {
+			continue
+		}
+		task := validationTask(row)
+		task.RetryCount = row.RetryCount + 1
+		go s.execute(row.ID, row.TorrentID, task)
+		zap.L().Info("恢复暂存成片本地验收", zap.Uint("download_id", row.ID))
+	}
+	return nil
+}
+
+func validationTask(row *model.Download) *Task {
+	task := capacityTaskFromDownload(row, false)
+	task.Name, task.AnimeName, task.SourceTitle = row.Name, row.Name, row.SourceTitle
+	task.URL, task.Source = row.URL, row.Source
+	task.AnimeID, task.EpisodeNumber = row.AnimeID, row.EpisodeNumber
+	task.Purpose, task.UpgradeTarget, task.UpgradeReason = row.Purpose, row.UpgradeTarget, row.UpgradeReason
+	task.StreamRuleID = row.StreamRuleID
+	if row.StreamDetailURL != nil {
+		task.StreamDetailURL = *row.StreamDetailURL
+	}
+	if row.StreamRoadName != nil {
+		task.StreamRoadName = *row.StreamRoadName
+	}
+	return task
+}

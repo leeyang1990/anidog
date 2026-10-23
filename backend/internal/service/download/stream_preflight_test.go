@@ -67,11 +67,16 @@ func TestStreamPreflightFixtures(t *testing.T) {
 			if err := s.db.Create(&row).Error; err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 			defer cancel()
 			err := s.streamPreflight(row.ID, &Task{Source: SourceStream, SourceTitle: "Catalog claims [CHS]", EstimatedBytes: 2 * gib})(ctx, &stream.InterceptedVideo{URL: paths[name]})
-			if err == nil || !strings.Contains(err.Error(), "流媒体预检不符合要求") {
-				t.Fatalf("unsafe fixture admitted or wrong failure: %v", err)
+			if name == "traditional" && err == nil {
+				s.cfg.VerifyDownloadedMedia = true
+				row.Source, row.DownloadType = SourceStream, model.DownloadTypeStream
+				err = s.validateCompletedMedia(ctx, &row, 1, paths[name])
+			}
+			if err == nil {
+				t.Fatal("unsafe fixture admitted")
 			}
 			kind, _ := classifyError(err, 0)
 			if kind != model.FailureKindRejected {

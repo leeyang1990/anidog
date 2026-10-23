@@ -2,7 +2,6 @@ package download
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -58,21 +57,11 @@ func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *
 		// A catalog name is not proof of hard-subtitle language.
 		assessment := AssessMediaPreferences(media, "", "", quality, languages)
 		if assessment.Status == model.QualityUnknown {
-			evidence := mediacheck.DetectHardSubtitles(ctx, video.URL, args, media.Duration())
-			if evidence.Retryable {
-				return failure.Wrap(failure.Subtitles, failure.InspectionFailed, fmt.Errorf("字幕检测暂时不可用：%s", evidence.Reason))
-			}
-			if evidence.Language != "" {
-				withVerifiedLanguages(&media, []string{evidence.Language})
-				assessment = AssessMediaPreferences(media, "", task.SourceTitle, quality, languages)
-				if assessment.Status == model.QualityMeetsTarget {
-					raw, _ := json.Marshal([]string{evidence.Language})
-					return failure.Wrap(failure.Subtitles, failure.StateUnavailable, s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Updates(map[string]interface{}{"verified_languages": string(raw), "quality_note": "预检通过：" + evidence.Reason}).Error)
-				}
-				assessment.Reason = evidence.Reason + "，不符合所选字幕语言"
-			} else {
-				assessment.Reason = evidence.Reason
-			}
+			// Repeated seeks on a remote HLS stream spend the inspection budget
+			// on network I/O. Unknown hard subtitles defer proof to the completed
+			// isolated payload; they never grant language evidence or admission
+			// into the library. Resolution/duration and capacity already passed.
+			return failure.Wrap(failure.Subtitles, failure.StateUnavailable, s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Update("quality_note", "媒体预检通过；硬字幕等待下载后本地复核，尚未归档").Error)
 		}
 		if assessment.Status != model.QualityMeetsTarget {
 			return failure.Wrap(failure.Probe, failure.PreferenceMismatch, fmt.Errorf("流媒体预检不符合要求：%s", assessment.Reason))

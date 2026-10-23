@@ -361,6 +361,12 @@ func (o *Orchestrator) CheckAnime(ctx context.Context, anime *model.Anime, globa
 		zap.L().Error("媒体存储不健康，禁止本轮审计和下载", zap.Uint("anime_id", anime.ID), zap.Error(err))
 		return
 	}
+	if o.dlSvc != nil {
+		if err := o.dlSvc.ResumeMediaValidation(ctx, anime.ID); err != nil {
+			zap.L().Error("恢复暂存媒体验收失败，停止重复选源", zap.Uint("anime_id", anime.ID), zap.Error(err))
+			return
+		}
+	}
 	o.auditHistoricalStreamMediaOnce(ctx, anime)
 
 	// 已下载的集（跨所有 source_type）

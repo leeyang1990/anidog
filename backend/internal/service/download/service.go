@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/episode"
 	"github.com/anidog/anidog-go/internal/service/failure"
+	"github.com/anidog/anidog-go/internal/service/mediacheck"
 	"github.com/anidog/anidog-go/internal/service/notification"
 	"github.com/anidog/anidog-go/internal/service/stream"
 	"github.com/anidog/anidog-go/internal/ws"
@@ -38,15 +40,23 @@ type Service struct {
 	capacityProbe         capacityProbe
 	capacityVolume        func(string) (string, error)
 	qualityRefresh        qualityRefresh
+	validationCancels     sync.Map // download id -> *validationRun
+	validationSlots       chan struct{}
+	subtitleInspector     func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence
 }
 
 // NewService creates a new unified download service.
 func NewService(db *gorm.DB, cfg *config.Config, hub *ws.Hub) *Service {
+	validationLimit := 2
+	if cfg != nil && cfg.StreamMaxConcurrent > 0 {
+		validationLimit = cfg.StreamMaxConcurrent
+	}
 	return &Service{
-		db:        db,
-		cfg:       cfg,
-		hub:       hub,
-		executors: make(map[string]Executor),
+		db:              db,
+		cfg:             cfg,
+		hub:             hub,
+		executors:       make(map[string]Executor),
+		validationSlots: make(chan struct{}, validationLimit),
 	}
 }
 
@@ -172,11 +182,18 @@ func (s *Service) Cancel(dlID uint) error {
 		return fmt.Errorf("无对应执行器")
 	}
 
+	// Set the terminal intent before canceling local inspection, so its late
+	// callback cannot rearm automatic validation after an explicit cancellation.
+	updates, _, _ := failureFields(failure.Wrap(failure.Validation, failure.Canceled, context.Canceled), dl.RetryCount)
+	updates["status"] = model.DownloadStatusFailed
+	if err := s.db.Model(&dl).Updates(updates).Error; err != nil {
+		return err
+	}
+	s.cancelValidation(dlID)
 	if err := exec.Cancel(executorTaskID(&dl)); err != nil {
 		zap.L().Warn("取消下载失败", zap.Error(err))
 	}
 
-	s.db.Model(&dl).Update("status", model.DownloadStatusFailed)
 	return nil
 }
 
@@ -235,6 +252,7 @@ func (s *Service) Remove(dlID uint, removeFiles bool) error {
 		return fmt.Errorf("下载任务不存在")
 	}
 
+	s.cancelValidation(dlID)
 	exec := s.executors[dl.DownloadType]
 	if exec != nil {
 		if err := exec.Remove(executorTaskID(&dl), removeFiles); err != nil {
@@ -297,7 +315,33 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	if task.DownloadType == model.DownloadTypeStream {
 		task.Preflight = s.streamPreflight(dlID, task)
 	}
-	result, err := exec.Execute(ctx, task, progressCB)
+	var result *Result
+	var err error
+	if task.DownloadType == model.DownloadTypeStream {
+		var row model.Download
+		if err = s.db.WithContext(ctx).First(&row, dlID).Error; err == nil {
+			result, err = s.retainedValidationResult(&row)
+			if err == nil && result != nil {
+				// Recheck retained bytes against today's policy. Old OCR proof
+				// must not survive a restart or a file changed outside the app.
+				err = s.db.WithContext(ctx).Model(&row).Update("verified_languages", "").Error
+			}
+			if err == nil && result == nil && row.ValidationPending {
+				err = s.db.WithContext(ctx).Model(&row).Updates(map[string]interface{}{"validation_pending": false, "validation_final_path": "", "file_path": nil}).Error
+			}
+		}
+		if err != nil {
+			err = failure.Wrap(failure.Validation, failure.StateUnavailable, err)
+		}
+	}
+	if err == nil && result == nil {
+		result, err = exec.Execute(ctx, task, progressCB)
+	}
+	if task.DownloadType == model.DownloadTypeStream && result != nil && result.FilePath != "" {
+		if retainErr := s.retainStreamResult(ctx, dlID, result); retainErr != nil {
+			err = retainErr
+		}
+	}
 
 	if err != nil {
 		// 先读 retry_count，分类 + 算下次重试时间，统一写回。
@@ -311,6 +355,9 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		extra, kind, delay := failureFields(err, prev.RetryCount)
 		if result != nil && result.FilePath != "" {
 			extra["file_path"] = result.FilePath
+			if task.DownloadType == model.DownloadTypeStream && result.FinalPath != "" {
+				extra["validation_pending"], extra["validation_final_path"] = true, result.FinalPath
+			}
 		}
 		if !s.updateStatus(dlID, model.DownloadStatusFailed, extra) {
 			return
@@ -350,19 +397,8 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		stagingPath, finalPath = result.FilePath, result.FinalPath
 	}
 	if task.DownloadType == model.DownloadTypeStream && stagingPath != "" {
-		if err := s.validateStreamDurationConsistency(ctx, task, stagingPath); err != nil {
-			candidateErr := failure.Wrap(failure.Validation, failure.InvalidMedia, fmt.Errorf("流媒体候选无效：%w", err))
-			fields, _, _ := failureFields(candidateErr, task.RetryCount)
-			fields["quality_note"], fields["file_path"] = truncateError(candidateErr), stagingPath
-			if !s.updateStatus(dlID, model.DownloadStatusFailed, fields) {
-				return
-			}
-
-			s.triggerRejectedStreamRecovery(task)
-			zap.L().Warn("流媒体候选未通过同番时长校验",
-				zap.Uint("id", dlID), zap.String("name", task.Name), zap.Error(candidateErr))
-			return
-		}
+		s.finishStreamResult(ctx, dlID, task, result)
+		return
 	}
 	if s.CompleteEpisodeRace(context.Background(), dlID, stagingPath, finalPath) && s.hub != nil {
 		s.hub.BroadcastDownloadComplete(torrentID, task.Name)
@@ -387,8 +423,6 @@ func (s *Service) triggerRejectedStreamRecovery(task *Task) {
 // anime episode. Stream candidates are promoted from a unique staging path
 // only after winning; losing candidates never overwrite the media file.
 func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPath, finalPath string) bool {
-	s.completionMu.Lock()
-	defer s.completionMu.Unlock()
 	var candidate model.Download
 	if err := s.db.WithContext(ctx).First(&candidate, dlID).Error; err != nil {
 		// A canceled context or unavailable DB is not evidence of a deleted task.
@@ -404,6 +438,9 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		}
 		validationPath := existingCompletionPath(stagingPath, finalPath)
 		if err := s.validateCompletedMedia(ctx, &candidate, ep, validationPath); err != nil {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return false
+			}
 			candidate.FilePath = &validationPath
 			s.rejectMediaCandidate(ctx, &candidate, err)
 			return false
@@ -412,6 +449,9 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 	won := false
 	alreadyCompleted := false
 	discard := false
+	// Slow media inspection runs independently; only winner election and the
+	// filesystem promotion need serialization. Reload below guards late results.
+	s.completionMu.Lock()
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if candidate.AnimeID != nil {
 			var anime model.Anime
@@ -475,17 +515,19 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		}
 		now := time.Now()
 		updates := map[string]interface{}{
-			"status":              model.DownloadStatusCompleted,
-			"progress":            100.0,
-			"completed_at":        &now,
-			"failure_kind":        "",
-			"failure_code":        "",
-			"failure_stage":       "",
-			"last_error":          "",
-			"next_retry_at":       nil,
-			"seeking_alternative": false,
-			"media_missing":       false,
-			"media_missing_at":    nil,
+			"status":                model.DownloadStatusCompleted,
+			"validation_pending":    false,
+			"validation_final_path": "",
+			"progress":              100.0,
+			"completed_at":          &now,
+			"failure_kind":          "",
+			"failure_code":          "",
+			"failure_stage":         "",
+			"last_error":            "",
+			"next_retry_at":         nil,
+			"seeking_alternative":   false,
+			"media_missing":         false,
+			"media_missing_at":      nil,
 		}
 		if finalPath != "" {
 			updates["file_path"] = finalPath
@@ -496,9 +538,16 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		won = true
 		return nil
 	})
+	s.completionMu.Unlock()
 	if err != nil {
 		zap.L().Error("剧集竞速仲裁失败", zap.Uint("id", dlID), zap.Error(err))
-		// 保留完整候选，qBit/stream 下一轮同步可以重试归档。
+		// Streams have no BT synchronizer to revisit this callback. Persist a
+		// failed acceptance so bounded recovery can retry the retained payload,
+		// including a crash between rename and database commit.
+		if candidate.DownloadType == model.DownloadTypeStream {
+			candidate.FilePath = &stagingPath
+			s.rejectMediaCandidate(ctx, &candidate, failure.Wrap(failure.Archive, failure.StateUnavailable, err))
+		}
 		return false
 	}
 	if !won {
@@ -1019,8 +1068,14 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	s.capacityMu.Lock()
 	defer s.capacityMu.Unlock()
 	task := capacityTaskFromDownload(&dl, false)
-	if err := s.ensureTaskCapacity(ctx, task, dl.ID); err != nil {
-		return nil, fmt.Errorf("媒体存储容量保护: %w", err)
+	retained, err := s.retainedValidationResult(&dl)
+	if err != nil {
+		return nil, err
+	}
+	if retained == nil {
+		if err := s.ensureTaskCapacity(ctx, task, dl.ID); err != nil {
+			return nil, fmt.Errorf("媒体存储容量保护: %w", err)
+		}
 	}
 	task.Name, task.SourceTitle, task.URL, task.Source = dl.Name, dl.SourceTitle, dl.URL, dl.Source
 	task.AnimeID, task.EpisodeNumber, task.StreamRuleID = dl.AnimeID, dl.EpisodeNumber, dl.StreamRuleID
@@ -1032,7 +1087,7 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	if dl.StreamDetailURL != nil {
 		task.StreamDetailURL = *dl.StreamDetailURL
 	}
-	if dl.DownloadType == model.DownloadTypeStream {
+	if dl.DownloadType == model.DownloadTypeStream && retained == nil {
 		if dl.StreamRuleID == nil {
 			return nil, fmt.Errorf("stream 任务缺少规则")
 		}
@@ -1045,19 +1100,25 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	if !s.HasExecutor(dl.DownloadType) {
 		return nil, fmt.Errorf("无可用的 %s 下载执行器", dl.DownloadType)
 	}
-	if err := task.Validate(); err != nil {
-		return nil, err
+	if retained == nil {
+		if err := task.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.validateTaskAirDate(ctx, task); err != nil {
 		return nil, err
 	}
-	update := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ? AND status = ? AND torrent_removal_pending = ?", dl.ID, model.DownloadStatusFailed, false).Updates(map[string]interface{}{
-		"status": model.DownloadStatusPending, "progress": 0, "downloaded_bytes": nil,
+	updates := map[string]interface{}{
+		"status":      model.DownloadStatusPending,
 		"retry_count": 0, "failure_kind": "",
 		"failure_code":  "",
 		"failure_stage": "", "last_error": "", "next_retry_at": nil,
 		"verified_languages": "", "quality_note": "",
-	})
+	}
+	if retained == nil {
+		updates["progress"], updates["downloaded_bytes"] = 0, nil
+	}
+	update := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ? AND status = ? AND torrent_removal_pending = ?", dl.ID, model.DownloadStatusFailed, false).Updates(updates)
 	if update.Error != nil {
 		return nil, update.Error
 	}
@@ -1065,7 +1126,10 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 		return nil, fmt.Errorf("下载任务状态已变化，请刷新")
 	}
 	dl.Status, dl.RetryCount, dl.FailureKind, dl.LastError, dl.VerifiedLanguages, dl.QualityNote = model.DownloadStatusPending, 0, "", "", "", ""
-	dl.Progress, dl.DownloadedBytes, dl.NextRetryAt = 0, nil, nil
+	if retained == nil {
+		dl.Progress, dl.DownloadedBytes = 0, nil
+	}
+	dl.NextRetryAt = nil
 	dl.FailureCode, dl.FailureStage = "", ""
 	go s.execute(dl.ID, dl.TorrentID, task)
 	return &dl, nil
@@ -1127,6 +1191,18 @@ func (s *Service) RecoverPending(ctx context.Context) {
 			"progress": 0,
 		})
 
+		if dl.ValidationPending {
+			retained, err := s.retainedValidationResult(dl)
+			if err != nil {
+				fields, _, _ := failureFields(err, dl.RetryCount)
+				s.updateStatus(dl.ID, model.DownloadStatusFailed, fields)
+				continue
+			}
+			if retained != nil {
+				go s.execute(dl.ID, dl.TorrentID, validationTask(dl))
+				continue
+			}
+		}
 		// 构造 Task 并执行
 		var rule model.StreamRule
 		if dl.StreamRuleID == nil {

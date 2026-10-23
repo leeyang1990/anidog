@@ -114,7 +114,11 @@ type Download struct {
 	StreamDetailURL *string `gorm:"index" json:"stream_detail_url"`
 	StreamRoadName  *string `gorm:"index" json:"stream_road_name"`
 	FilePath        *string `json:"file_path"`
-	Source          string  `gorm:"index;default:'manual'" json:"source"`
+	// A completed payload awaiting local acceptance is recoverable independently
+	// of its expiring playback URL. It is not an available library asset yet.
+	ValidationPending   bool   `gorm:"index;default:false" json:"validation_pending,omitempty"`
+	ValidationFinalPath string `gorm:"default:''" json:"validation_final_path,omitempty"`
+	Source              string `gorm:"index;default:'manual'" json:"source"`
 
 	// BT 专属：info_hash 用于匹配 qBit 中的种子，同步真实大小/进度
 	InfoHash *string `gorm:"index" json:"info_hash"`

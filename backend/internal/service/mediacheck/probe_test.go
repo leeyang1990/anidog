@@ -51,3 +51,38 @@ func TestTailRejectsTruncatedVideoWithReadableIndex(t *testing.T) {
 		t.Fatal("truncated payload accepted because its index remained readable")
 	}
 }
+
+func TestProbeKeepsActualMP4SubtitleHandlerLabel(t *testing.T) {
+	for _, tool := range []string{"ffmpeg", "ffprobe"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " not installed")
+		}
+	}
+	dir := t.TempDir()
+	subtitle := filepath.Join(dir, "simple.srt")
+	path := filepath.Join(dir, "native.mp4")
+	if err := os.WriteFile(subtitle, []byte("1\n00:00:00,000 --> 00:00:01,800\n这是简体字幕\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=s=160x90:r=2:d=2", "-i", subtitle, "-map", "0:v", "-map", "1:s", "-c:v", "mpeg4", "-c:s", "mov_text", "-metadata:s:s:0", "language=chi", "-metadata:s:s:0", "handler_name=中文（简体）", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fixture: %v %s", err, out)
+	}
+	media, err := Probe(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stream := range media.Streams {
+		if stream.CodecType == "subtitle" {
+			if stream.Tags["handler_name"] != "中文（简体）" {
+				t.Fatal("probe discarded the container's subtitle label", stream.Tags)
+			}
+			languages := SubtitleLanguages(stream.Tags)
+			if len(languages) != 1 || languages[0] != "simplified" {
+				t.Fatal(languages)
+			}
+			return
+		}
+	}
+	t.Fatal("native mov_text track missing")
+}

@@ -120,16 +120,12 @@ func subtitleTrackLanguages(media mediacheck.Media) []string {
 		if st.CodecType != "subtitle" {
 			continue
 		}
-		tags := strings.ToLower(st.Tags["language"] + " " + st.Tags["title"])
-		switch {
-		case strings.Contains(tags, "chs") || strings.Contains(tags, "hans") || strings.Contains(tags, "简") || strings.Contains(tags, "簡"):
-			seen["simplified"] = true
-		case strings.Contains(tags, "cht") || strings.Contains(tags, "hant") || strings.Contains(tags, "繁"):
-			seen["traditional"] = true
-		default:
-			if st.Tags["language"] != "" {
-				seen[st.Tags["language"]] = true
-			}
+		languages := mediacheck.SubtitleLanguages(st.Tags)
+		for _, language := range languages {
+			seen[language] = true
+		}
+		if len(languages) == 0 && st.Tags["language"] != "" {
+			seen[st.Tags["language"]] = true
 		}
 	}
 	var result []string
@@ -190,18 +186,8 @@ func AssessMediaPreferences(m mediacheck.Media, path, title, quality string, lan
 	parsedLanguages := titleparse.Parse(title).Lang
 	knownSubtitle := len(parsedLanguages) > 0
 	addSubtitle := func(tags map[string]string) {
-		value := strings.ToLower(tags["title"] + " " + tags["language"])
-		if strings.Contains(value, "chs") || strings.Contains(value, "hans") || strings.Contains(value, "简") || strings.Contains(value, "簡") || strings.Contains(value, "中国") {
-			have["simplified"] = true
-		}
-		if strings.Contains(value, "cht") || strings.Contains(value, "hant") || strings.Contains(value, "繁") || strings.Contains(value, "香港") || strings.Contains(value, "台灣") {
-			have["traditional"] = true
-		}
-		if tags["language"] == "eng" {
-			have["english"] = true
-		}
-		if tags["language"] == "jpn" {
-			have["japanese"] = true
+		for _, language := range mediacheck.SubtitleLanguages(tags) {
+			have[language] = true
 		}
 	}
 	for _, st := range m.Streams {

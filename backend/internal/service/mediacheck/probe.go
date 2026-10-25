@@ -155,7 +155,7 @@ func probeDiagnostic(err error) string {
 func ProbeInput(ctx context.Context, path string, inputArgs []string) (Media, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	args := []string{"-v", "error", "-rw_timeout", "15000000", "-analyzeduration", "3000000", "-probesize", "3000000", "-show_entries", "stream=codec_name,codec_type,width,height:stream_tags=language,title:stream_disposition=attached_pic:format=format_name,duration,bit_rate,size", "-of", "json"}
+	args := []string{"-v", "error", "-rw_timeout", "15000000", "-analyzeduration", "3000000", "-probesize", "3000000", "-show_entries", "stream=codec_name,codec_type,width,height:stream_tags=language,title,name,handler_name:stream_disposition=attached_pic:format=format_name,duration,bit_rate,size", "-of", "json"}
 	args = append(args, hlsInputArgs("ffprobe", path, "", inputArgs)...)
 	args = append(args, path)
 	out, err := MediaCommand(ctx, "ffprobe", args...).Output()

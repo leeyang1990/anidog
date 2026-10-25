@@ -71,14 +71,7 @@ func New(
 		indexerHTTP = clients[0]
 	}
 	if indexers == nil {
-		mikan := indexer.NewMikanIndexer()
-		dmhy := indexer.NewDmhyIndexer()
-		bangumiMoe := indexer.NewBangumiMoeIndexer()
-		nyaa := indexer.NewNyaaIndexer()
-		if indexerHTTP != nil {
-			mikan.Client, dmhy.Client, bangumiMoe.Client, nyaa.Client = indexerHTTP, indexerHTTP, indexerHTTP, indexerHTTP
-		}
-		indexers = map[string]indexer.Indexer{"mikan": mikan, "dmhy": dmhy, "bangumimoe": bangumiMoe, "nyaa": nyaa}
+		indexers = indexer.NewDefaultIndexers(indexerHTTP)
 	}
 	if mediaRoot == "" {
 		mediaRoot = "/downloads"

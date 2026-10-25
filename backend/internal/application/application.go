@@ -309,7 +309,7 @@ func New(cfg *config.Config) (*Runtime, error) {
 		return dlSvc.MediaRoot(context.Background())
 	}).RegisterRoutes(v1)
 	handler.NewDefaultRulesHandler(cfg).RegisterRoutes(v1)
-	handler.NewIndexerHandler(settingSvc).RegisterRoutes(v1)
+	handler.NewIndexerHandler(settingSvc, httpClient.Client()).RegisterRoutes(v1)
 	handler.NewOrchestratorHandler(db, orch, settingSvc).RegisterRoutes(v1)
 
 	// WebSocket 路由

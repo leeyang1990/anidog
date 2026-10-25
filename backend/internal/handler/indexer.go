@@ -18,15 +18,10 @@ type IndexerHandler struct {
 	indexers map[string]indexer.Indexer
 }
 
-func NewIndexerHandler(settingSvc *setting.Service) *IndexerHandler {
+func NewIndexerHandler(settingSvc *setting.Service, client *http.Client) *IndexerHandler {
 	return &IndexerHandler{
 		settingSvc: settingSvc,
-		indexers: map[string]indexer.Indexer{
-			"mikan":      indexer.NewMikanIndexer(),
-			"dmhy":       indexer.NewDmhyIndexer(),
-			"bangumimoe": indexer.NewBangumiMoeIndexer(),
-			"nyaa":       indexer.NewNyaaIndexer(),
-		},
+		indexers:   indexer.NewDefaultIndexers(client),
 	}
 }
 
@@ -37,10 +32,10 @@ func (h *IndexerHandler) RegisterRoutes(rg *gin.RouterGroup) {
 }
 
 type indexerSearchReq struct {
-	Keyword        string                      `json:"keyword" binding:"required"`
-	Indexers       []string                    `json:"indexers"`         // 空 = 使用全局启用的
-	Preference     *indexer.DownloadPreference `json:"preference"`       // 可选：覆盖全局偏好做评分
-	TargetEpisode  int                         `json:"target_episode"`   // 可选：过滤集数
+	Keyword       string                      `json:"keyword" binding:"required"`
+	Indexers      []string                    `json:"indexers"`       // 空 = 使用全局启用的
+	Preference    *indexer.DownloadPreference `json:"preference"`     // 可选：覆盖全局偏好做评分
+	TargetEpisode int                         `json:"target_episode"` // 可选：过滤集数
 }
 
 func (h *IndexerHandler) Search(c *gin.Context) {

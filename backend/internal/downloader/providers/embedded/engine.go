@@ -377,8 +377,6 @@ func (e *Engine) PauseTorrent(_ context.Context, torrentID string) error {
 	}
 	entry.Paused = true
 	entry.forceStart = false
-	entry.torrent.DisallowDataDownload()
-	entry.torrent.DisallowDataUpload()
 	e.rebalanceLocked()
 	return e.persistLocked()
 }
@@ -391,7 +389,6 @@ func (e *Engine) ResumeTorrent(_ context.Context, torrentID string) error {
 		return err
 	}
 	entry.Paused = false
-	entry.torrent.AllowDataUpload()
 	e.rebalanceLocked()
 	return e.persistLocked()
 }
@@ -831,7 +828,7 @@ func (e *Engine) rebalanceLocked() {
 	for _, entry := range entries {
 		if entry.Paused {
 			entry.queuePaused = false
-			entry.torrent.DisallowDataDownload()
+			setDownloadDemand(entry.torrent, false)
 			entry.torrent.DisallowDataUpload()
 			continue
 		}
@@ -839,27 +836,26 @@ func (e *Engine) rebalanceLocked() {
 		if entry.torrent.Info() == nil {
 			if entry.forceStart || active < e.maxActive {
 				entry.queuePaused = false
-				entry.torrent.AllowDataDownload()
+				setDownloadDemand(entry.torrent, true)
 				active++
 			} else {
 				entry.queuePaused = true
-				entry.torrent.DisallowDataDownload()
+				setDownloadDemand(entry.torrent, false)
 			}
 			continue
 		}
 		if entry.torrent.Complete().Bool() {
 			entry.queuePaused = false
-			entry.torrent.DisallowDataDownload()
+			setDownloadDemand(entry.torrent, false)
 			continue
 		}
 		if entry.forceStart || active < e.maxActive {
 			entry.queuePaused = false
-			entry.torrent.AllowDataDownload()
-			entry.torrent.DownloadAll()
+			setDownloadDemand(entry.torrent, true)
 			active++
 		} else {
 			entry.queuePaused = true
-			entry.torrent.DisallowDataDownload()
+			setDownloadDemand(entry.torrent, false)
 		}
 	}
 }

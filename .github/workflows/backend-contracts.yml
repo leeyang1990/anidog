@@ -1,0 +1,62 @@
+name: Backend contracts
+
+on:
+  push:
+    branches: [main]
+    paths: ['backend/**', '.github/workflows/backend-contracts.yml', '.github/workflows/release.yml']
+  pull_request:
+    paths: ['backend/**', '.github/workflows/backend-contracts.yml', '.github/workflows/release.yml']
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Exact release tag or revision to validate'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Backend ${{ matrix.runtime }} contracts
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: native
+            cgo: '1'
+            file_io: mmap
+          - runtime: production
+            cgo: '0'
+            file_io: classic
+    env:
+      CGO_ENABLED: ${{ matrix.cgo }}
+      TORRENT_STORAGE_DEFAULT_FILE_IO: ${{ matrix.file_io }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Install media inspection tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Architecture and backend contracts
+        working-directory: backend
+        run: |
+          go test -p 2 -count=1 ./internal/... ./cmd/anidog
+          go vet ./internal/... ./cmd/anidog
+      - name: Build production backend
+        if: matrix.runtime == 'production'
+        working-directory: backend
+        run: go build ./cmd/anidog
+      - name: Concurrency and recovery contracts
+        if: matrix.runtime == 'native'
+        working-directory: backend
+        run: go test -p 2 -race -count=1 ./internal/downloader/... ./internal/service/download ./internal/service/mediacheck ./internal/service/orchestrator ./internal/service/stream
+      - name: Browser recovery fixtures
+        if: matrix.runtime == 'native'
+        working-directory: backend
+        run: ROD_BROWSER_BIN="$(command -v google-chrome)" ANIDOG_BROWSER_FIXTURE=1 go test ./internal/service/stream -run '^TestBrowserRecoveryFixtures$' -count=1

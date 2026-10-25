@@ -34,38 +34,30 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Backend tests
-        working-directory: backend
-        run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg
-          go test ./internal/... ./cmd/anidog
-          go vet ./internal/... ./cmd/anidog
-          go test -race ./internal/service/download ./internal/service/mediacheck ./internal/service/stream
-      - name: Browser recovery fixtures
-        working-directory: backend
-        run: ROD_BROWSER_BIN="$(command -v google-chrome)" ANIDOG_BROWSER_FIXTURE=1 go test ./internal/service/stream -run '^TestBrowserRecoveryFixtures$' -count=1
       - name: Frontend tests
         working-directory: frontend
         run: npm ci && npm test
 
-  docker:
+  backend:
     needs: validate
+    uses: ./.github/workflows/backend-contracts.yml
+    with:
+      ref: ${{ needs.validate.outputs.tag }}
+
+  docker:
+    needs: [validate, backend]
     uses: ./.github/workflows/docker-release.yml
     with:
       tag: ${{ needs.validate.outputs.tag }}
     secrets: inherit
 
   desktop:
-    needs: validate
+    needs: [validate, backend]
     name: Desktop ${{ matrix.os }} ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -137,7 +129,7 @@ jobs:
 
   release:
     name: Publish complete release
-    needs: [validate, docker, desktop]
+    needs: [validate, backend, docker, desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write

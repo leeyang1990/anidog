@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/anidog/anidog-go/internal/mediaquality"
 	"github.com/anidog/anidog-go/internal/service/titleparse"
 )
 
@@ -304,24 +305,7 @@ func matchesRequiredMedia(p *titleparse.ParsedTitle, pref DownloadPreference) bo
 	}
 	return false
 }
-func QualityHeight(quality string) int {
-	switch strings.ToLower(quality) {
-	case "480p":
-		return 480
-	case "576p":
-		return 576
-	case "720p":
-		return 720
-	case "900p":
-		return 900
-	case "1080p", "fhd":
-		return 1080
-	case "1440p":
-		return 1440
-	case "2160p", "4k", "uhd":
-		return 2160
-	case "4320p", "8k":
-		return 4320
-	}
-	return 0
-}
+
+// QualityHeight preserves the indexer API; quality labels belong to the shared
+// media contract so ranking and acceptance cannot define different thresholds.
+func QualityHeight(quality string) int { return mediaquality.Height(quality) }

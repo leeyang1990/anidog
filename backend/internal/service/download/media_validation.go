@@ -13,9 +13,9 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/anidog/anidog-go/internal/mediaquality"
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/failure"
-	"github.com/anidog/anidog-go/internal/service/indexer"
 	"github.com/anidog/anidog-go/internal/service/mediacheck"
 	"github.com/anidog/anidog-go/internal/service/mediapolicy"
 	"github.com/anidog/anidog-go/internal/service/titleparse"
@@ -90,7 +90,7 @@ func (s *Service) validateMedia(ctx context.Context, dl *model.Download, ep int,
 		}
 	}
 	w, h := m.Resolution()
-	want := indexer.QualityHeight(quality)
+	want := mediaquality.Height(quality)
 	resolutionOK := want <= 0 || h >= want || w >= want*16/9 && h >= want*7/10
 	if len(languages) > 0 && resolutionOK && assessment.Status != model.QualityMeetsTarget {
 		evidence, err := s.inspectContent(ctx, dl, path, m)
@@ -174,7 +174,7 @@ func AssessMediaPreferences(m mediacheck.Media, path, title, quality string, lan
 		withVerifiedLanguages(&m, verified[0])
 	}
 	w, h := m.Resolution()
-	want := indexer.QualityHeight(quality)
+	want := mediaquality.Height(quality)
 	// Cinema crops can retain the full width of a 1080p/2160p master.
 	if want > 0 && h < want && !(w >= want*16/9 && h >= want*7/10) {
 		return QualityAssessment{model.QualityUpgradeNeeded, fmt.Sprintf("实际分辨率 %dx%d 低于要求 %s", w, h, quality)}

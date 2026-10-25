@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/anidog/anidog-go/internal/mediaquality"
 	"github.com/anidog/anidog-go/internal/model"
-	"github.com/anidog/anidog-go/internal/service/indexer"
 	"gorm.io/gorm"
 )
 
@@ -60,7 +60,7 @@ func Apply(g Goal, anime *model.Anime) (Goal, error) {
 			}
 		}
 	}
-	if g.Quality != "" && indexer.QualityHeight(g.Quality) == 0 {
+	if g.Quality != "" && mediaquality.Height(g.Quality) == 0 {
 		return Goal{}, fmt.Errorf("画质偏好无效: %s", g.Quality)
 	}
 	return g, nil

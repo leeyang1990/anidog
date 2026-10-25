@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
@@ -21,6 +21,8 @@ import (
 var testDBSeq atomic.Uint64
 
 // InitTestDB creates an in-memory SQLite database with all migrations.
+// The fixture uses pure Go so backend tests also run with production's CGO=0.
+// Production database selection remains owned by the database package.
 // Each call creates a unique database to avoid cross-test contamination.
 func InitTestDB() *gorm.DB {
 	// file::memory:?cache=shared 会让整个测试进程的所有调用共享同一数据库，

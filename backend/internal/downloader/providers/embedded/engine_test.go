@@ -428,6 +428,15 @@ func TestEngineRechecksAndRepairsRetainedPartialAfterRestart(t *testing.T) {
 	}
 	restored := newTestEngine(t, state, downloadDir)
 	defer restored.Close()
+	// A persistent completion cache can remember the old successful hash.
+	// Request a recheck explicitly after the deliberate offline corruption;
+	// this must exercise storage reads with either completion backend.
+	restored.mu.RLock()
+	retained := restored.entries[hash].torrent
+	restored.mu.RUnlock()
+	if err := retained.VerifyDataContext(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err := restored.ResumeTorrent(ctx, hash); err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +452,13 @@ func TestEngineRechecksAndRepairsRetainedPartialAfterRestart(t *testing.T) {
 	}
 	waitFor(t, ctx, func() bool {
 		rows, err := restored.ListTorrents(ctx)
-		return err == nil && len(rows) == 1 && rows[0].Progress == 1
+		if err != nil || len(rows) != 1 || rows[0].Progress != 1 {
+			return false
+		}
+		// Piece counters can reach 100% before asynchronous completion has
+		// promoted the part file. Require the real final file as well.
+		file, err := os.Stat(filepath.Join(downloadDir, name))
+		return err == nil && file.Size() == int64(len(want))
 	})
 	got, err := os.ReadFile(filepath.Join(downloadDir, name))
 	if err != nil {

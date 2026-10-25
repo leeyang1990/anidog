@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,4 +279,63 @@ func waitFor(t *testing.T, ctx context.Context, ready func() bool) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func TestDuplicateTorrentRegistrationSurvivesMetadataOutageAndRestart(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	source := filepath.Join(root, "fixture.bin")
+	if err := os.WriteFile(source, []byte("managed payload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := os.ReadFile(buildTorrentFile(t, source, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	var offline atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if offline.Load() {
+			http.Error(w, "metadata origin unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write(metadata)
+	}))
+	defer server.Close()
+	state, media := filepath.Join(root, "state"), filepath.Join(root, "media")
+	engine := newTestEngine(t, state, media)
+	defer func() { _ = engine.Close() }()
+	url := server.URL + "/release.torrent"
+	hash, err := engine.AddTorrent(ctx, url, media)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.PauseTorrent(ctx, hash); err != nil {
+		t.Fatal(err)
+	}
+	offline.Store(true)
+	check := func(e *Engine) {
+		t.Helper()
+		got, err := e.AddTorrent(ctx, url, media)
+		if err != nil || got != hash {
+			t.Fatalf("managed registration depended on metadata origin: %s %v", got, err)
+		}
+		if _, err := e.AddTorrent(ctx, url, filepath.Join(root, "other")); err == nil {
+			t.Fatal("duplicate registration relocated managed media")
+		}
+		items, err := e.ListTorrents(ctx)
+		if err != nil || len(items) != 1 || items[0].ID != hash || items[0].State != "pausedDL" {
+			t.Fatalf("registration changed managed task or pause state: %+v %v", items, err)
+		}
+		if requests.Load() != 1 {
+			t.Fatalf("duplicate registration fetched metadata again: %d", requests.Load())
+		}
+	}
+	check(engine)
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	engine = newTestEngine(t, state, media)
+	check(engine)
 }

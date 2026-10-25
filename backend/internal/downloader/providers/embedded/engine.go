@@ -222,9 +222,26 @@ func (e *Engine) add(
 	}
 	e.mu.RLock()
 	closed := e.closed
+	var existingHash, existingPath string
+	for hash, entry := range e.entries {
+		if entry.URL == manifestURL && entry.torrent != nil {
+			existingHash, existingPath = hash, entry.SavePath
+			break
+		}
+	}
 	e.mu.RUnlock()
 	if closed {
 		return "", errors.New("BT 引擎已关闭")
+	}
+	// Registration is idempotent for the original source and storage path.
+	// A retry must reuse the managed torrent even if its metadata URL has
+	// expired or the proxy is temporarily unavailable. Do not derive this
+	// receipt from an unverified hash embedded in a remote filename.
+	if existingHash != "" {
+		if filepath.Clean(existingPath) != cleanSavePath {
+			return "", fmt.Errorf("同一 BT 任务已在不同目录中，拒绝复用: %s", existingPath)
+		}
+		return existingHash, nil
 	}
 
 	var spec *atorrent.TorrentSpec

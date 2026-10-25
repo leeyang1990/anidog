@@ -186,11 +186,18 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			// 将“这个候选”标为 rejected 并立即换源，不能把它当 transient
 			// 延迟复活，否则旧 hash 会制造冷却并阻塞后续正常候选。
 			// 已 completed / failed / paused 的不动。
-			// 保护：刚创建 < 60s 的任务给 qBit 一点时间索引，跳过；
-			// >= 60s 还找不到才认定为孤儿。
+			// A retry or a fresh engine observation starts a new visibility
+			// window. CreatedAt describes the historical attempt, so it cannot
+			// tell us how long a resubmission has been absent from the engine.
+			// Missing observations do not update UpdatedAt, allowing a genuinely
+			// missing task to expire even when Sync runs repeatedly.
+			lastActivity := dl.UpdatedAt
+			if lastActivity.IsZero() {
+				lastActivity = dl.CreatedAt
+			}
 			if (dl.Status == model.DownloadStatusDownloading ||
 				dl.Status == model.DownloadStatusPending) &&
-				time.Since(dl.CreatedAt) > time.Minute {
+				time.Since(lastActivity) > time.Minute {
 				orphanMessage := buildOrphanError(dl.LastError)
 				updates := rejectedCandidateCleanup()
 				updates["status"] = model.DownloadStatusFailed

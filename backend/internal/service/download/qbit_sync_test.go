@@ -595,6 +595,7 @@ func TestSyncRejectsMissingQBitTaskAndImmediatelyRecoversEpisode(t *testing.T) {
 		TotalBytes:      &wrongBatchSize,
 		DownloadedBytes: &partialBytes,
 		CreatedAt:       time.Now().Add(-2 * time.Hour),
+		UpdatedAt:       time.Now().Add(-2 * time.Hour),
 	}
 	if err := db.Create(&row).Error; err != nil {
 		t.Fatal(err)
@@ -734,4 +735,105 @@ func cloneTorrentMap(in map[string]interface{}) map[string]interface{} {
 		out[key] = value
 	}
 	return out
+}
+
+type gatedTorrentSubmission struct {
+	pathCaptureExecutor
+	started chan struct{}
+	release chan struct{}
+	hash    string
+}
+
+func (e *gatedTorrentSubmission) Execute(context.Context, *Task, ProgressCallback) (*Result, error) {
+	close(e.started)
+	<-e.release
+	return &Result{TorrentID: e.hash}, nil
+}
+
+func TestSyncDoesNotOrphanHistoricalTaskDuringExplicitResubmission(t *testing.T) {
+	svc := capacityService(t, 500*gib)
+	hash := "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+	old := time.Now().Add(-24 * time.Hour)
+	row := model.Download{
+		TorrentID: "torrent-submitting", Name: "resubmission", URL: "magnet:?xt=urn:btih:" + hash,
+		DownloadType: model.DownloadTypeTorrent, Source: SourceBT, InfoHash: &hash,
+		Status: model.DownloadStatusFailed, CreatedAt: old, UpdatedAt: old,
+	}
+	if err := svc.db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	exec := &gatedTorrentSubmission{started: make(chan struct{}), release: make(chan struct{}), hash: hash}
+	svc.RegisterExecutor(model.DownloadTypeTorrent, exec)
+	defer func() {
+		select {
+		case <-exec.release:
+		default:
+			close(exec.release)
+		}
+	}()
+	if _, err := svc.Retry(context.Background(), row.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry never submitted the torrent")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			_, _ = w.Write([]byte("Ok."))
+		case "/api/v2/app/setPreferences":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v2/torrents/info":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	syncer := &QBitSyncer{db: svc.db, baseURL: server.URL, client: server.Client()}
+	var submitted model.Download
+	if err := svc.db.First(&submitted, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := syncer.Sync(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		var saved model.Download
+		if err := svc.db.First(&saved, row.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if saved.Status != model.DownloadStatusDownloading || saved.LastError != "" {
+			t.Fatalf("in-flight resubmission was orphaned: %+v", saved)
+		}
+		if !saved.UpdatedAt.Equal(submitted.UpdatedAt) {
+			t.Fatal("missing engine observations must not renew the visibility window")
+		}
+	}
+	close(exec.release)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var saved model.Download
+		if err := svc.db.First(&saved, row.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if saved.TorrentID == hash && saved.Status == model.DownloadStatusDownloading {
+			// A pre-submission engine snapshot may still be empty after Add
+			// succeeds. It must not invalidate the freshly accepted task.
+			if err := syncer.Sync(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.db.First(&saved, row.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.Status != model.DownloadStatusDownloading {
+				t.Fatalf("successful submission lost to a stale engine snapshot: %+v", saved)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("successful submission never became an engine-owned task")
 }

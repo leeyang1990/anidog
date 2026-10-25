@@ -343,20 +343,25 @@ func TestDuplicateTorrentRegistrationSurvivesMetadataOutageAndRestart(t *testing
 }
 
 func TestEngineRechecksAndRepairsRetainedPartialAfterRestart(t *testing.T) {
-	if os.Getenv("ANIDOG_PARTIAL_RESTART_TEST") != "1" {
+	phase := os.Getenv("ANIDOG_PARTIAL_RESTART_TEST")
+	if phase == "" {
 		for _, mode := range []string{"classic", "mmap"} {
 			t.Run(mode, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestEngineRechecksAndRepairsRetainedPartialAfterRestart$")
-				for _, value := range os.Environ() {
-					if !strings.HasPrefix(value, "TORRENT_STORAGE_DEFAULT_FILE_IO=") && !strings.HasPrefix(value, "ANIDOG_PARTIAL_RESTART_TEST=") {
-						cmd.Env = append(cmd.Env, value)
+				root := t.TempDir()
+				for _, phase := range []string{"prepare", "resume"} {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestEngineRechecksAndRepairsRetainedPartialAfterRestart$")
+					for _, value := range os.Environ() {
+						if !strings.HasPrefix(value, "TORRENT_STORAGE_DEFAULT_FILE_IO=") && !strings.HasPrefix(value, "ANIDOG_PARTIAL_RESTART_TEST=") && !strings.HasPrefix(value, "ANIDOG_PARTIAL_RESTART_DIR=") {
+							cmd.Env = append(cmd.Env, value)
+						}
 					}
-				}
-				cmd.Env = append(cmd.Env, "TORRENT_STORAGE_DEFAULT_FILE_IO="+mode, "ANIDOG_PARTIAL_RESTART_TEST=1")
-				if output, err := cmd.CombinedOutput(); err != nil {
-					t.Fatalf("retained partial with %s IO: %v\n%s", mode, err, output)
+					cmd.Env = append(cmd.Env, "TORRENT_STORAGE_DEFAULT_FILE_IO="+mode, "ANIDOG_PARTIAL_RESTART_TEST="+phase, "ANIDOG_PARTIAL_RESTART_DIR="+root)
+					output, err := cmd.CombinedOutput()
+					cancel()
+					if err != nil {
+						t.Fatalf("retained partial with %s IO (%s): %v\n%s", mode, phase, err, output)
+					}
 				}
 			})
 		}
@@ -364,85 +369,90 @@ func TestEngineRechecksAndRepairsRetainedPartialAfterRestart(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	root := t.TempDir()
-	seedDir, downloadDir := filepath.Join(root, "seed"), filepath.Join(root, "download")
-	for _, dir := range []string{seedDir, downloadDir} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
+	root := os.Getenv("ANIDOG_PARTIAL_RESTART_DIR")
+	if root == "" {
+		t.Fatal("missing subprocess fixture directory")
 	}
+	seedDir, downloadDir := filepath.Join(root, "seed"), filepath.Join(root, "download")
+	state := filepath.Join(root, "download-state")
 	want := make([]byte, 2<<20)
 	for i := range want {
 		want[i] = byte((i/(32<<10) + i%251) % 251)
 	}
 	const name = "retained.bin"
-	if err := os.WriteFile(filepath.Join(seedDir, name), want, 0600); err != nil {
-		t.Fatal(err)
-	}
-	metadata := buildTorrentFile(t, filepath.Join(seedDir, name), root)
-	seed := newTestEngine(t, filepath.Join(root, "seed-state"), seedDir)
-	defer seed.Close()
-	if _, err := seed.AddTorrent(ctx, metadata, seedDir); err != nil {
-		t.Fatal(err)
-	}
 	partial := filepath.Join(downloadDir, name+".part")
-	if err := os.WriteFile(partial, want[:256<<10], 0600); err != nil {
-		t.Fatal(err)
-	}
-	state := filepath.Join(root, "download-state")
-	first := newTestEngine(t, state, downloadDir)
-	hash, err := first.AddTorrent(ctx, metadata, downloadDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Finish the initial scan before taking the retained-data snapshot. The
-	// scenario under test is rechecking a previously stopped partial download.
-	waitFor(t, ctx, func() bool {
-		first.mu.RLock()
-		defer first.mu.RUnlock()
-		for _, state := range first.entries[hash].torrent.PieceStateRuns() {
-			if state.Hashing || state.QueuedForHash || state.Marking {
-				return false
+	metadata := filepath.Join(root, "fixture.torrent")
+	if phase == "prepare" {
+		for _, dir := range []string{seedDir, downloadDir} {
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
 			}
 		}
-		return true
-	})
-	if err := first.PauseTorrent(ctx, hash); err != nil {
-		t.Fatal(err)
+		if err := os.WriteFile(filepath.Join(seedDir, name), want, 0600); err != nil {
+			t.Fatal(err)
+		}
+		metadata = buildTorrentFile(t, filepath.Join(seedDir, name), root)
+		if err := os.WriteFile(partial, want[:256<<10], 0600); err != nil {
+			t.Fatal(err)
+		}
+		first := newTestEngine(t, state, filepath.Join(root, "default-unused"))
+		defer first.Close()
+		hash, err := first.AddTorrent(ctx, metadata, downloadDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, ctx, func() bool {
+			first.mu.RLock()
+			defer first.mu.RUnlock()
+			for _, state := range first.entries[hash].torrent.PieceStateRuns() {
+				if state.Hashing || state.QueuedForHash || state.Marking {
+					return false
+				}
+			}
+			return true
+		})
+		if err := first.PauseTorrent(ctx, hash); err != nil {
+			t.Fatal(err)
+		}
+		if err := first.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return
 	}
-	if err := first.Close(); err != nil {
-		t.Fatal(err)
+	if phase != "resume" {
+		t.Fatalf("unknown test phase %q", phase)
 	}
+	// The preparation process has exited, releasing all completion DB handles.
+	// Reopening in this process must not depend on a locked DB falling back to
+	// memory, and no explicit recheck or network peer may rescue retained bytes.
 	file, err := os.OpenFile(partial, os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := file.WriteAt([]byte{want[0] ^ 0xff}, 0); err != nil {
+		file.Close()
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
+	seed := newTestEngine(t, filepath.Join(root, "seed-state"), filepath.Join(root, "seed-default-unused"))
+	defer seed.Close()
+	hash, err := seed.AddTorrent(ctx, metadata, seedDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(metadata); err != nil {
 		t.Fatal(err)
 	}
-	restored := newTestEngine(t, state, downloadDir)
+	restored := newTestEngine(t, state, filepath.Join(root, "default-unused"))
 	defer restored.Close()
-	// A persistent completion cache can remember the old successful hash.
-	// Request a recheck explicitly after the deliberate offline corruption;
-	// this must exercise storage reads with either completion backend.
-	restored.mu.RLock()
-	retained := restored.entries[hash].torrent
-	restored.mu.RUnlock()
-	if err := retained.VerifyDataContext(ctx); err != nil {
-		t.Fatal(err)
-	}
 	if err := restored.ResumeTorrent(ctx, hash); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, ctx, func() bool {
 		rows, err := restored.ListTorrents(ctx)
-		return err == nil && len(rows) == 1 && rows[0].Downloaded >= (256<<10)-(32<<10) && rows[0].Progress < 1
+		return err == nil && len(rows) == 1 && rows[0].Downloaded == (256<<10)-(32<<10) && rows[0].Progress < 1
 	})
 	restored.mu.RLock()
 	added := restored.entries[hash].torrent.AddClientPeer(seed.client)
@@ -455,8 +465,6 @@ func TestEngineRechecksAndRepairsRetainedPartialAfterRestart(t *testing.T) {
 		if err != nil || len(rows) != 1 || rows[0].Progress != 1 {
 			return false
 		}
-		// Piece counters can reach 100% before asynchronous completion has
-		// promoted the part file. Require the real final file as well.
 		file, err := os.Stat(filepath.Join(downloadDir, name))
 		return err == nil && file.Size() == int64(len(want))
 	})

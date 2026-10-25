@@ -25,7 +25,13 @@ type portableFileStorage struct {
 var classicFileIO = os.Getenv("TORRENT_STORAGE_DEFAULT_FILE_IO") == "classic"
 
 func newFileStorage(root string) storage.ClientImplCloser {
-	client := storage.NewFile(root)
+	// With part files, NewFile's persistent completion cache turns previously
+	// verified pieces into known-incomplete pieces on reopen, so they are never
+	// rechecked and valid retained bytes are downloaded again. NewFileOpts uses
+	// the backend's intended in-memory completion policy for part files: after a
+	// restart, unknown pieces are hashed from disk before requesting data.
+	// Torrent ownership and metadata remain persisted by Engine.
+	client := storage.NewFileOpts(storage.NewFileClientOpts{ClientBaseDir: root})
 	if classicFileIO {
 		return portableFileStorage{client}
 	}

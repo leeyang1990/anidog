@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -94,6 +95,7 @@ func TestSeasonUpgradeLostCommitAcknowledgement(t *testing.T) {
 			os.MkdirAll(stage, 0700)
 			incoming := filepath.Join(stage, "ep-01.mkv")
 			os.WriteFile(incoming, video, 0600)
+			os.WriteFile(strings.TrimSuffix(incoming, filepath.Ext(incoming))+".chs.srt", []byte("1\n00:00:00,000 --> 00:00:02,000\n这是简体字幕\n"), 0600)
 			d := model.Download{TorrentID: "upgrade", Name: "upgrade", URL: "magnet", AnimeID: &a.ID, EpisodeNumber: &one, EpisodeStart: &one, EpisodeEnd: &one, Scope: model.DownloadScopeSeason, Purpose: model.DownloadPurposeSeasonUpgrade, DownloadType: model.DownloadTypeTorrent, Status: model.DownloadStatusDownloading, SavePath: &stage, SourceTitle: "[Review] Series [1080p][简体]"}
 			db.Create(&d)
 			svc := NewService(db, &config.Config{MediaRoot: root}, nil)

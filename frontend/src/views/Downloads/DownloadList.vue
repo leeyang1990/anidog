@@ -26,12 +26,16 @@
     </div>
 
     <!-- 过滤器 + 搜索 + 批量操作 -->
+    <div class="flex items-center gap-3 text-xs text-muted-foreground">
+      <span class="font-bold text-foreground">{{ t('pages.downloads.currentEpisodes') }}</span>
+      <span>{{ t('pages.downloads.attemptTotal', { count: attemptTotal }) }}</span>
+    </div>
     <div class="flex items-center gap-2 flex-wrap">
       <div class="flex gap-1 bg-ac-sand p-1 rounded-2xl">
         <button v-for="f in filters" :key="f.key"
           class="h-7 px-3 rounded-xl text-xs font-bold transition-all"
           :class="activeFilter === f.key ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'"
-          @click="activeFilter = f.key">
+          @click="setFilter(f.key)">
           {{ f.label }}
           <span v-if="f.count > 0" class="ml-1 opacity-70 font-num">{{ f.count }}</span>
         </button>
@@ -96,12 +100,13 @@
           </div>
 
           <div class="w-5 shrink-0 flex items-center justify-center">
-            <component :is="statusIcon(task.status)" class="size-4" :class="statusIconClass(task.status)" />
+            <component :is="statusIcon(task.status)" class="size-4" :class="task.status === 'failed' && downloadOutcome(task) !== 'error' ? 'text-ac-sun-dark' : statusIconClass(task.status)" />
           </div>
 
           <div class="flex-1 min-w-0">
             <div class="text-sm truncate font-bold" :title="task.name">{{ task.name }}</div>
             <DownloadTaskDescription :task="task" :t="t" />
+            <button v-if="task.attempt_count > 1" class="text-xs text-ac-sky-dark mt-1" @click="showHistory(task)">{{ t('pages.downloads.historyCount', { count: task.attempt_count }) }}</button>
           </div>
 
           <div class="w-16 shrink-0 flex items-center justify-center">
@@ -168,6 +173,7 @@
             <button v-else-if="task.status === 'paused'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="togglePause(task)" :title="t('pages.downloads.resume')">
               <PlayOutline class="size-3.5" />
             </button>
+            <button v-else-if="task.status === 'failed' && downloadOutcome(task) === 'review' && task.file_path" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" :disabled="inspecting.has(task.id) || task.inspection_active" @click="inspectTask(task)" :title="t('pages.downloads.inspectRetained')"><SearchOutline class="size-3.5" /></button>
             <button v-else-if="task.status === 'failed'" class="p-1.5 rounded-lg hover:bg-ac-sand transition-colors" @click="retryTask(task)" :title="t('pages.downloads.retry')">
               <ReloadOutline class="size-3.5" />
             </button>
@@ -181,6 +187,23 @@
         </div>
       </div>
     </AcCard>
+    <div class="flex justify-end gap-3 items-center text-xs">
+      <button :disabled="page <= 1" @click="changePage(-1)">{{ t('pages.library.previous') }}</button>
+      <span>{{ page }} / {{ Math.max(1, Math.ceil(serverTotal / 100)) }}</span>
+      <button :disabled="page * 100 >= serverTotal" @click="changePage(1)">{{ t('pages.library.next') }}</button>
+    </div>
+    <AcModal v-model:show="historyOpen" :title="t('pages.downloads.attemptHistory')">
+      <div v-for="attempt in historyTasks" :key="attempt.id" class="py-3 border-b border-ac-sand">
+        <div class="text-sm font-bold">#{{ attempt.id }} · {{ attempt.source_title || attempt.name }}</div>
+        <div class="text-xs text-muted-foreground">{{ formatAbsoluteTime(attempt.created_at) }} · {{ attempt.stream_road_name || attempt.source }}</div>
+        <DownloadTaskDescription :task="attempt" :t="t" />
+      </div>
+      <div class="flex justify-between text-xs mt-3">
+        <button :disabled="historyPage <= 1" @click="showHistory(historyTarget, historyPage - 1)">{{ t('pages.library.previous') }}</button>
+        <span>{{ historyPage }} / {{ Math.max(1, Math.ceil(historyTotal / 100)) }}</span>
+        <button :disabled="historyPage * 100 >= historyTotal" @click="showHistory(historyTarget, historyPage + 1)">{{ t('pages.library.next') }}</button>
+      </div>
+    </AcModal>
 
     <!-- 添加下载弹窗 -->
     <AcModal v-model:show="showAddModal" :title="t('pages.downloads.addTitle')">
@@ -225,7 +248,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, shallowRef } from 'vue'
+import { ref, computed, onMounted, onUnmounted, shallowRef, watch } from 'vue'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
 import {
@@ -238,6 +261,7 @@ import {
 import { get, post, del } from '@/utils/api'
 import { isDesktopRuntime, openDesktopPath } from '@/utils/desktop'
 import { resolveDownloadStage } from '@/utils/downloadStage'
+import { downloadOutcome } from '@/utils/downloadOutcome'
 import { useSound } from '@/composables/useSound'
 import DownloadTaskDescription from '@/components/Downloads/DownloadTaskDescription.vue'
 import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
@@ -252,6 +276,44 @@ const { confirm } = useConfirm()
 const { t, locale } = useI18n({ useScope: 'global' })
 
 const tasks = ref([])
+const counts = ref({})
+const page = ref(1)
+const serverTotal = ref(0)
+const attemptTotal = ref(0)
+const historyOpen = ref(false)
+const historyTasks = ref([])
+const inspecting = ref(new Set())
+async function inspectTask(task) {
+  inspecting.value = new Set([...inspecting.value, task.id])
+  try {
+    await post(`/downloads/${task.id}/inspect`)
+    await fetchTasks()
+  } catch {
+    toast.error(t('pages.downloads.operationFailed'))
+  } finally {
+    const next = new Set(inspecting.value)
+    next.delete(task.id)
+    inspecting.value = next
+  }
+}
+const historyTarget = ref(null)
+const historyPage = ref(1)
+const historyTotal = ref(0)
+let fetchGeneration = 0
+function setFilter(key) { activeFilter.value = key; page.value = 1; selectedIds.value = new Set(); fetchTasks() }
+function changePage(delta) { page.value += delta; selectedIds.value = new Set(); fetchTasks() }
+async function showHistory(task, pageNumber = 1) {
+  try {
+    const data = await get(`/downloads/${task.id}/attempts`, { params: { page: pageNumber, page_size: 100 } })
+    historyTarget.value = task
+    historyPage.value = pageNumber
+    historyTotal.value = data.total || 0
+    historyTasks.value = data.tasks || []
+    historyOpen.value = true
+  } catch {
+    toast.error(t('pages.downloads.operationFailed'))
+  }
+}
 const globalDownloadSpeed = ref(0)
 const globalUploadSpeed = ref(0)
 const searchKeyword = ref('')
@@ -360,31 +422,21 @@ function connectWs() {
 }
 
 const filters = computed(() => [
-  { key: 'all', label: t('pages.downloads.all'), count: tasks.value.length },
+  { key: 'all', label: t('pages.downloads.all'), count: Object.values(counts.value).reduce((a, b) => a + b, 0) },
   { key: 'downloading', label: t('pages.downloads.downloading'), count: statusCount(['downloading', 'queued']) },
   { key: 'paused', label: t('pages.downloads.paused'), count: statusCount(['paused']) },
   { key: 'completed', label: t('pages.downloads.completed'), count: statusCount(['completed']) },
-  { key: 'failed', label: t('pages.downloads.failed'), count: statusCount(['failed']) },
+  ...['rejected', 'review', 'reused', 'error'].map(key => ({ key, label: t(`pages.downloads.outcome_${key}`), count: counts.value[key] || 0 })),
 ])
-function statusCount(statuses) { return tasks.value.filter(t => statuses.includes(t.status)).length }
+function statusCount(statuses) { return statuses.reduce((n, key) => n + (counts.value[key] || 0), 0) }
 
 // 阶段推导抽到 utils/downloadStage.js（纯函数，可单测）
 function stageOf(task) {
+  if (task.status === 'failed' && downloadOutcome(task) !== 'error') return null
   return resolveDownloadStage(task, t, t)
 }
 
-const filteredTasks = computed(() => {
-  let list = tasks.value
-  if (activeFilter.value !== 'all') {
-    const m = { downloading: ['downloading', 'queued'], paused: ['paused'], completed: ['completed'], failed: ['failed'] }
-    list = list.filter(t => m[activeFilter.value]?.includes(t.status))
-  }
-  if (searchKeyword.value) {
-    const kw = searchKeyword.value.toLowerCase()
-    list = list.filter(t => (t.name || '').toLowerCase().includes(kw))
-  }
-  return list
-})
+const filteredTasks = computed(() => tasks.value)
 
 const hasActive = computed(() => tasks.value.some(t => t.status === 'downloading'))
 const hasPaused = computed(() => tasks.value.some(t => t.status === 'paused'))
@@ -426,9 +478,14 @@ function toggleSelectAll() {
 function clearSelection() { selectedIds.value = new Set() }
 
 async function fetchTasks() {
+  const generation = ++fetchGeneration
   try {
-    const data = await get('/downloads', { params: { page_size: 500 } })
+    const data = await get('/downloads/current', { params: { page_size: 100, page: page.value, result_class: activeFilter.value, search: searchKeyword.value } })
+    if (generation !== fetchGeneration) return
     tasks.value = data.tasks || []
+    serverTotal.value = data.total || 0
+    attemptTotal.value = data.attempt_total || data.total || 0
+    counts.value = data.counts || {}
     globalDownloadSpeed.value = data.download_speed || 0
     globalUploadSpeed.value = data.upload_speed || 0
   } catch (e) {
@@ -438,6 +495,7 @@ async function fetchTasks() {
     }
   }
 }
+watch(searchKeyword, () => { page.value = 1; fetchTasks() })
 
 async function togglePause(task) {
   try {

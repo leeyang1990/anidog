@@ -169,6 +169,9 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		if dl.InfoHash == nil {
 			continue
 		}
+		if dl.ValidationPending {
+			continue
+		} // Local acceptance owns completed bytes, even if the engine is offline.
 		// 终态只能由用户操作或新建候选改变。遗留的 qBit 任务即使仍在
 		// seeding/downloading，也不能把赢家或已淘汰候选重新翻回活动状态。
 		if dl.Status == model.DownloadStatusCompleted ||
@@ -485,8 +488,13 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			updated++
 		}
 		if completeViaRace {
-			s.raceService.CompleteEpisodeRace(
-				ctx, dl.ID, completionStagingPath, completionFinalPath)
+			if s.raceService.cfg != nil && s.raceService.cfg.VerifyDownloadedMedia {
+				if err := s.raceService.QueueEpisodeCompletion(ctx, dl.ID, completionStagingPath, completionFinalPath); err != nil {
+					zap.L().Warn("BT 成片验收入队失败", zap.Uint("download_id", dl.ID), zap.Error(err))
+				}
+			} else {
+				s.raceService.CompleteEpisodeRace(ctx, dl.ID, completionStagingPath, completionFinalPath)
+			}
 		}
 		if completeSeasonPack {
 			s.raceService.CompleteSeasonPack(ctx, dl.ID, completionPackFiles, completionPackMediaRoot)

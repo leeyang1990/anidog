@@ -41,6 +41,7 @@ func InitTestDB() *gorm.DB {
 		&model.RSSRule{},
 		&model.RSSEntry{},
 		&model.Download{},
+		&model.MediaEvidence{},
 		&model.NotificationChannel{},
 		&model.StreamRule{},
 		&model.Setting{},

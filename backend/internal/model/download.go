@@ -24,6 +24,7 @@ const (
 	FailureKindTransient = "transient"
 	FailureKindPermanent = "permanent"
 	FailureKindRejected  = "rejected"
+	FailureKindReview    = "review" // Inconclusive evidence; retain payload, no blind automatic retry.
 	// exhausted：快速重试预算已耗尽，但外部下载源未来可能恢复。
 	// 不进入 5 分钟 RetryJob，由 30 分钟 Orchestrator 在长冷却后半开探测。
 	FailureKindExhausted = "exhausted"
@@ -49,6 +50,12 @@ type Download struct {
 	Name                  string  `gorm:"index;not null" json:"name"`
 	SourceTitle           string  `json:"source_title"`                                  // Original release/catalog title, not the rewritten display name.
 	VerifiedLanguages     string  `gorm:"type:text" json:"verified_languages,omitempty"` // Languages established by sampled subtitle evidence.
+	VideoHash             string  `gorm:"index;default:''" json:"video_hash,omitempty"`
+	SubtitleEvidence      string  `gorm:"type:text;default:''" json:"subtitle_evidence,omitempty"`
+	EvidenceReusedFrom    *uint   `json:"evidence_reused_from,omitempty"`
+	ResultClass           string  `gorm:"-" json:"result_class,omitempty"`
+	InspectionActive      bool    `gorm:"-" json:"inspection_active,omitempty"`
+	AttemptCount          int64   `gorm:"->;-:migration" json:"attempt_count,omitempty"`
 	TorrentRemovalPending bool    `gorm:"index;default:false" json:"torrent_removal_pending,omitempty"`
 	RecoveryNote          string  `gorm:"-" json:"recovery_note,omitempty"`
 	URL                   string  `gorm:"not null" json:"url"`

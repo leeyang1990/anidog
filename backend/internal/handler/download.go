@@ -23,6 +23,8 @@ func (h *DownloadHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	downloads := rg.Group("/downloads")
 	{
 		downloads.GET("", h.ListDownloads)
+		downloads.GET("/current", h.CurrentDownloads)
+		downloads.GET("/:id/attempts", h.AttemptHistory)
 		downloads.GET("/:id", h.GetDownload)
 		downloads.POST("/", h.CreateDownload)
 		downloads.POST("/:id/pause", h.PauseDownload)
@@ -32,9 +34,51 @@ func (h *DownloadHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		downloads.DELETE("/:id", h.DeleteDownload)
 		downloads.PUT("/:id/refresh", h.RefreshDownload)
 		downloads.POST("/:id/retry", h.RetryDownload)
+		downloads.POST("/:id/inspect", h.InspectRetained)
 		downloads.POST("/pause-all", h.PauseAll)
 		downloads.POST("/resume-all", h.ResumeAll)
 	}
+}
+
+func (h *DownloadHandler) InspectRetained(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "无效的下载 ID"})
+		return
+	}
+	row, err := h.dlSvc.StartRetainedInspection(c.Request.Context(), uint(id))
+	if err != nil {
+		c.JSON(409, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, row)
+}
+
+func (h *DownloadHandler) CurrentDownloads(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("page_size", "100"))
+	r, err := h.dlSvc.CurrentTasks(c.Request.Context(), c.Query("result_class"), c.Query("search"), page, size)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "读取剧集下载状态失败"})
+		return
+	}
+	c.JSON(200, r)
+}
+
+func (h *DownloadHandler) AttemptHistory(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "无效的下载 ID"})
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	size, _ := strconv.Atoi(c.DefaultQuery("page_size", "100"))
+	rows, err := h.dlSvc.AttemptHistory(c.Request.Context(), uint(id), page, size)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "读取尝试历史失败"})
+		return
+	}
+	c.JSON(200, gin.H{"tasks": rows.Items, "total": rows.Total})
 }
 
 func (h *DownloadHandler) ListDownloads(c *gin.Context) {

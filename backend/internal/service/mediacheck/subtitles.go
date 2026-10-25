@@ -26,17 +26,34 @@ const traditionalMarkers = "歷曆謂靈階證據處誰離夠飯雞魚熱鍋飽�
 // Shared shinjitai characters alone cannot establish Chinese subtitles.
 const sharedJapaneseMarkers = "来体万当与点学国会将声数写条画没据"
 
+const SubtitleInspectorVersion = "subtitle-v2"
+
+type SubtitleSample struct {
+	At        float64 `json:"at"`
+	FrameHash string  `json:"frame_hash"`
+	Caption   string  `json:"caption"`
+}
+
 type SubtitleEvidence struct {
-	Language    string `json:"language"`
-	Frames      int    `json:"frames"`
-	Characters  int    `json:"characters"`
-	Reason      string `json:"reason"`
-	Attempted   int    `json:"attempted"`
-	Extracted   int    `json:"extracted"`
-	Recognized  int    `json:"recognized"`
-	FrameErrors int    `json:"frame_errors"`
-	OCRErrors   int    `json:"ocr_errors"`
-	Retryable   bool   `json:"retryable"`
+	TrackLanguages    []string         `json:"track_languages,omitempty"`
+	InspectorVersion  string           `json:"inspector_version"`
+	Samples           []SubtitleSample `json:"samples,omitempty"`
+	Method            string           `json:"method,omitempty"`
+	Width             int              `json:"width,omitempty"`
+	Height            int              `json:"height,omitempty"`
+	Duration          float64          `json:"duration,omitempty"`
+	Language          string           `json:"language"`
+	Frames            int              `json:"frames"`
+	Characters        int              `json:"characters"`
+	SimplifiedGlyphs  int              `json:"simplified_glyphs"`
+	TraditionalGlyphs int              `json:"traditional_glyphs"`
+	Reason            string           `json:"reason"`
+	Attempted         int              `json:"attempted"`
+	Extracted         int              `json:"extracted"`
+	Recognized        int              `json:"recognized"`
+	FrameErrors       int              `json:"frame_errors"`
+	OCRErrors         int              `json:"ocr_errors"`
+	Retryable         bool             `json:"retryable"`
 }
 
 type scriptVotes struct {
@@ -135,7 +152,7 @@ func (v *scriptVotes) addCaption(text string) {
 }
 
 func (v *scriptVotes) result() SubtitleEvidence {
-	e := SubtitleEvidence{Characters: v.chinese, Reason: "抽样字幕证据不足，不能确认简繁体"}
+	e := SubtitleEvidence{Characters: v.chinese, SimplifiedGlyphs: len(v.simplified), TraditionalGlyphs: len(v.traditional), Reason: fmt.Sprintf("有效文字 %d 字，简体区分字 %d 种、繁体区分字 %d 种；证据不足，不能确认简繁体", v.chinese, len(v.simplified), len(v.traditional))}
 	if v.chinese < 20 {
 		return e
 	}
@@ -164,19 +181,25 @@ func DetectHardSubtitles(ctx context.Context, input string, inputArgs []string, 
 		return SubtitleEvidence{Reason: "未安装字幕识别工具，无法确认硬字幕", Retryable: true}
 	}
 	return detectHardSubtitles(ctx, duration, func(ctx context.Context, at float64) ([]byte, error) {
-		args := []string{"-nostdin", "-v", "error", "-rw_timeout", "15000000", "-ss", fmt.Sprintf("%.3f", at)}
-		args = append(args, hlsInputArgs("ffmpeg", input, "", inputArgs)...)
-		args = append(args, "-i", input, "-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-vf", "crop=iw:ih*0.20:0:ih*0.80,scale=1920:-2", "-threads", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1")
-		return MediaCommand(ctx, "ffmpeg", args...).Output()
+		return ExtractSubtitleFrame(ctx, input, inputArgs, at)
 	}, recognizeSubtitleFrame)
+}
+
+func ExtractSubtitleFrame(ctx context.Context, input string, inputArgs []string, at float64) ([]byte, error) {
+	args := []string{"-nostdin", "-v", "error", "-rw_timeout", "15000000", "-ss", fmt.Sprintf("%.3f", at)}
+	args = append(args, hlsInputArgs("ffmpeg", input, "", inputArgs)...)
+	args = append(args, "-i", input, "-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-vf", "crop=iw:ih*0.20:0:ih*0.80,scale=1920:-2", "-threads", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1")
+	return MediaCommand(ctx, "ffmpeg", args...).Output()
 }
 
 // White outlined captions on busy anime backgrounds defeat block OCR even
 // at full resolution. A second high-contrast read may recover the caption;
 // it is still judged by the same confidence and script evidence thresholds.
 func recognizeSubtitleFrame(ctx context.Context, frame []byte) (string, error) {
-	return recognizeCaption(ctx, frame, func(ctx context.Context, input []byte) (string, error) {
-		ocr := exec.CommandContext(ctx, "tesseract", "stdin", "stdout", "-l", "chi_tra+chi_sim", "--psm", "6", "-c", "tessedit_create_tsv=1")
+	readModel := func(ctx context.Context, input []byte, language string, budget time.Duration) (string, error) {
+		ctx, cancel := context.WithTimeout(ctx, budget)
+		defer cancel()
+		ocr := exec.CommandContext(ctx, "tesseract", "stdin", "stdout", "-l", language, "--psm", "6", "-c", "tessedit_create_tsv=1")
 		ocr.Env = append(os.Environ(), "OMP_THREAD_LIMIT=1", "OMP_NUM_THREADS=1")
 		ocr.Stdin = bytes.NewReader(input)
 		raw, err := ocr.Output()
@@ -184,7 +207,57 @@ func recognizeSubtitleFrame(ctx context.Context, frame []byte) (string, error) {
 			return "", err
 		}
 		return subtitleText(string(raw)), nil
+	}
+	read := func(ctx context.Context, input []byte) (string, error) {
+		first, err := readModel(ctx, input, "chi_tra+chi_sim", 6*time.Second)
+		if err != nil {
+			return "", err
+		}
+		second, err := readModel(ctx, input, "chi_tra", 6*time.Second)
+		if err != nil {
+			return "", err
+		}
+		// A simplified model can normalize a real traditional glyph at high
+		// confidence. Only script glyphs agreed by independent reads count.
+		return commonCaption(first, second), nil
+	}
+	// Keep the established whole-band and contrast readings for conventional
+	// subtitles. Region detection is a fallback for styles these cannot read,
+	// rather than allowing a false background region to suppress a valid line.
+	original, originalErr := recognizeCaption(ctx, frame, func(ctx context.Context, input []byte) (string, error) {
+		return readModel(ctx, input, "chi_tra+chi_sim", 20*time.Second)
 	})
+	if len([]rune(original)) >= 4 {
+		return original, nil
+	}
+	// Find the caption line before OCR on outlined/black captions; interpreting
+	// a whole busy background as one text block can produce no usable words.
+	var caption string
+	regions := captionRegions(frame)
+	for _, region := range regions {
+		regionCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		out, err := read(regionCtx, region)
+		if err == nil && len([]rune(out)) < 8 {
+			if mask, e := outlinedCaption(region); e == nil {
+				masked, e := read(regionCtx, mask)
+				if e == nil {
+					out = combineCaptions(out, masked)
+				}
+			}
+		}
+		cancel()
+		if err == nil && len([]rune(out)) >= 3 {
+			if caption == "" {
+				caption = out
+			} else {
+				caption = combineCaptions(caption, out)
+			}
+		}
+	}
+	if caption != "" {
+		return caption, nil
+	}
+	return original, originalErr
 }
 
 func recognizeCaption(ctx context.Context, frame []byte, read func(context.Context, []byte) (string, error)) (string, error) {
@@ -306,7 +379,7 @@ func detectHardSubtitles(ctx context.Context, duration float64, extract func(con
 	ctx, cancel := context.WithTimeout(ctx, 240*time.Second)
 	defer cancel()
 	votes := scriptVotes{}
-	evidence := SubtitleEvidence{}
+	evidence := SubtitleEvidence{InspectorVersion: SubtitleInspectorVersion, Method: "hard_subtitles", Duration: duration}
 	// Some exact timestamps land in a gap, credits, or a line containing only
 	// shared Han characters. Sample additional dialogue without lowering the
 	// confidence, script-specific glyph, or independent-frame requirements.
@@ -335,12 +408,14 @@ func detectHardSubtitles(ctx context.Context, duration float64, extract func(con
 		}
 		evidence.Recognized++
 		votes.addCaption(out)
+		evidence.Samples = append(evidence.Samples, SubtitleSample{At: at, FrameHash: FrameDigest(frame), Caption: out})
 		if votes.result().Language != "" {
 			break
 		}
 	}
 	result := votes.result()
 	evidence.Language, evidence.Frames, evidence.Characters, evidence.Reason = result.Language, result.Frames, result.Characters, result.Reason
+	evidence.SimplifiedGlyphs, evidence.TraditionalGlyphs = result.SimplifiedGlyphs, result.TraditionalGlyphs
 	if evidence.Language == "" && (evidence.FrameErrors > 0 || evidence.OCRErrors > 0 || ctx.Err() != nil) {
 		evidence.Retryable = true
 		evidence.Reason = fmt.Sprintf("字幕检测执行失败：抽帧 %d/%d 成功（%d 失败），识别 %d 成功（%d 失败），等待重试", evidence.Extracted, evidence.Attempted, evidence.FrameErrors, evidence.Recognized, evidence.OCRErrors)

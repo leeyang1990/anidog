@@ -26,7 +26,11 @@ type candidateMediaError struct{ error }
 func (e candidateMediaError) Unwrap() error { return e.error }
 
 func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download, ep int, path string) error {
-	if (s.cfg == nil || (!s.cfg.VerifyDownloadedMedia && dl.Source != SourceStream)) && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
+	return s.validateMedia(ctx, dl, ep, path, false)
+}
+
+func (s *Service) validateMedia(ctx context.Context, dl *model.Download, ep int, path string, force bool) error {
+	if !force && (s.cfg == nil || (!s.cfg.VerifyDownloadedMedia && dl.Source != SourceStream)) && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
 		return nil
 	}
 	m, err := mediacheck.Probe(ctx, path)
@@ -66,25 +70,33 @@ func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download
 	if fallback && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
 		return nil
 	}
-	if dl.VerifiedLanguages != "" {
-		var verified []string
-		if json.Unmarshal([]byte(dl.VerifiedLanguages), &verified) == nil {
-			withVerifiedLanguages(&m, verified)
+	// Source titles rank candidates. Admission requires the actual media, for
+	// BT and streams alike. Old unbound verified_languages cannot grant entry.
+	assessment := AssessMediaPreferences(m, path, "", quality, languages)
+	tracks := subtitleTrackLanguages(m)
+	if len(tracks) > 0 && assessment.Status == model.QualityMeetsTarget {
+		evidence := mediacheck.SubtitleEvidence{InspectorVersion: mediacheck.SubtitleInspectorVersion, Method: "subtitle_tracks", TrackLanguages: tracks, Reason: "实际字幕轨符合要求", Duration: m.Duration()}
+		evidence.Width, evidence.Height = m.Resolution()
+		for _, lang := range tracks {
+			if lang == "simplified" || lang == "traditional" {
+				evidence.Language = lang
+				if lang == "simplified" {
+					break
+				}
+			}
+		}
+		if err = s.saveSubtitleEvidence(ctx, dl, "", evidence, nil); err != nil {
+			return err
 		}
 	}
-	title := dl.SourceTitle
-	isStream := dl.DownloadType == model.DownloadTypeStream || dl.Source == SourceStream
-	if isStream {
-		// Catalog labels do not establish the script burned into the payload.
-		title = ""
-	}
-	assessment := AssessMediaPreferences(m, path, title, quality, languages)
-	if isStream && assessment.Status == model.QualityUnknown {
-		inspect := s.subtitleInspector
-		if inspect == nil {
-			inspect = mediacheck.DetectHardSubtitles
+	w, h := m.Resolution()
+	want := indexer.QualityHeight(quality)
+	resolutionOK := want <= 0 || h >= want || w >= want*16/9 && h >= want*7/10
+	if len(languages) > 0 && resolutionOK && assessment.Status != model.QualityMeetsTarget {
+		evidence, err := s.inspectContent(ctx, dl, path, m)
+		if err != nil {
+			return err
 		}
-		evidence := inspect(ctx, path, nil, m.Duration())
 		if evidence.Retryable {
 			return failure.Wrap(failure.Subtitles, failure.InspectionFailed, fmt.Errorf("成片字幕检查暂时不可用：%s", evidence.Reason))
 		}
@@ -92,19 +104,40 @@ func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download
 			withVerifiedLanguages(&m, []string{evidence.Language})
 			assessment = AssessMediaPreferences(m, path, "", quality, languages)
 		}
-		if assessment.Status == model.QualityMeetsTarget {
-			raw, _ := json.Marshal([]string{evidence.Language})
-			updates := map[string]interface{}{"verified_languages": string(raw), "quality_note": "成片本地验收通过：" + evidence.Reason}
-			if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dl.ID).Updates(updates).Error; err != nil {
-				return failure.Wrap(failure.Validation, failure.StateUnavailable, err)
-			}
-			dl.VerifiedLanguages = string(raw)
+		if evidence.Language == "" && assessment.Status == model.QualityUnknown {
+			return failure.Wrap(failure.Subtitles, failure.SubtitleUnknown, fmt.Errorf("字幕待复核：%s；%s；已保留成片，尚未入库", assessment.Reason, evidence.Reason))
 		}
 	}
 	if assessment.Status != model.QualityMeetsTarget {
 		return candidateMediaError{failure.Wrap(failure.Validation, failure.PreferenceMismatch, fmt.Errorf("%s", assessment.Reason))}
 	}
 	return nil
+}
+
+func subtitleTrackLanguages(media mediacheck.Media) []string {
+	seen := map[string]bool{}
+	for _, st := range media.Streams {
+		if st.CodecType != "subtitle" {
+			continue
+		}
+		tags := strings.ToLower(st.Tags["language"] + " " + st.Tags["title"])
+		switch {
+		case strings.Contains(tags, "chs") || strings.Contains(tags, "hans") || strings.Contains(tags, "简") || strings.Contains(tags, "簡"):
+			seen["simplified"] = true
+		case strings.Contains(tags, "cht") || strings.Contains(tags, "hant") || strings.Contains(tags, "繁"):
+			seen["traditional"] = true
+		default:
+			if st.Tags["language"] != "" {
+				seen[st.Tags["language"]] = true
+			}
+		}
+	}
+	var result []string
+	for lang := range seen {
+		result = append(result, lang)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func QualityGoalKey(quality string, languages []string) string {
@@ -210,7 +243,15 @@ func AssessMediaPreferences(m mediacheck.Media, path, title, quality string, lan
 	if knownSubtitle || have["simplified"] || have["traditional"] {
 		status = model.QualityUpgradeNeeded
 	}
-	return QualityAssessment{status, fmt.Sprintf("无法确认成片满足字幕/语言要求 %s；请换源或明确允许偏好回退", strings.Join(languages, ","))}
+	var detected []string
+	for language := range have {
+		detected = append(detected, language)
+	}
+	sort.Strings(detected)
+	if status == model.QualityUpgradeNeeded {
+		return QualityAssessment{status, fmt.Sprintf("已识别字幕/语言 %s，不符合要求 %s", strings.Join(detected, ","), strings.Join(languages, ","))}
+	}
+	return QualityAssessment{status, fmt.Sprintf("尚无满足字幕/语言要求 %s 的证据（已检测到：%s）", strings.Join(languages, ","), strings.Join(detected, ","))}
 }
 
 // Reject before moving into the library. Retain the candidate's bytes so a
@@ -225,6 +266,14 @@ func (s *Service) rejectMediaCandidate(ctx context.Context, dl *model.Download, 
 			updates["file_path"] = *dl.FilePath
 		}
 		s.updateStatus(dl.ID, model.DownloadStatusFailed, updates)
+		if failure.Describe(err).Kind == model.FailureKindReview {
+			if executor := s.executors[dl.DownloadType]; executor != nil {
+				_ = executor.Remove(executorTaskID(dl), false)
+			}
+			if dl.AnimeID != nil && dl.EpisodeNumber != nil {
+				s.triggerRejectedStreamRecovery(validationTask(dl))
+			}
+		}
 		return
 	}
 	updates, _, _ := failureFields(failure.Wrap(failure.Validation, failure.InvalidMedia, err), dl.RetryCount)

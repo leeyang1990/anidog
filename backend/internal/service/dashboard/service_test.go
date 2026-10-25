@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/anidog/anidog-go/internal/model"
@@ -48,6 +49,31 @@ func TestGetStats_WithData(t *testing.T) {
 	}
 	if stats.DownloadStats.Completed != 1 {
 		t.Errorf("Completed = %d; want 1", stats.DownloadStats.Completed)
+	}
+}
+
+func TestDashboardUsesTheSharedOutcomeClasses(t *testing.T) {
+	s := setupDashboardSvc(&mockBangumiProvider{})
+	for i, code := range []string{"preference_mismatch", "subtitle_unknown", "duplicate_media", "source_unavailable"} {
+		if err := s.db.Create(&model.Download{TorrentID: fmt.Sprint("outcome-", i), Name: "candidate", URL: "x", Status: model.DownloadStatusFailed, FailureCode: code}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := s.GetStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.DownloadStats.Rejected != 1 || r.DownloadStats.Review != 1 || r.DownloadStats.Reused != 1 || r.DownloadStats.Failed != 1 {
+		t.Fatal("candidate outcomes counted as execution errors", r.DownloadStats)
+	}
+	recent, err := s.GetRecentDownloads(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range recent {
+		if row.ResultClass == "" {
+			t.Fatal("recent download lost outcome class")
+		}
 	}
 }
 

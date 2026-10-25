@@ -19,7 +19,7 @@ import (
 func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *stream.InterceptedVideo) error {
 	return func(ctx context.Context, video *stream.InterceptedVideo) error {
 		// Old evidence belongs to the previous execution, never to a refreshed URL.
-		if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Update("verified_languages", "").Error; err != nil {
+		if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id = ?", dlID).Updates(map[string]interface{}{"verified_languages": "", "subtitle_evidence": "", "video_hash": "", "evidence_reused_from": nil}).Error; err != nil {
 			return failure.Wrap(failure.Probe, failure.StateUnavailable, err)
 		}
 		args := video.InputArgs("ffprobe")
@@ -57,6 +57,9 @@ func (s *Service) streamPreflight(dlID uint, task *Task) func(context.Context, *
 		// A catalog name is not proof of hard-subtitle language.
 		assessment := AssessMediaPreferences(media, "", "", quality, languages)
 		if assessment.Status == model.QualityUnknown {
+			if err := s.rejectKnownContent(ctx, dlID, task, video, media, quality, languages); err != nil {
+				return err
+			}
 			// Repeated seeks on a remote HLS stream spend the inspection budget
 			// on network I/O. Unknown hard subtitles defer proof to the completed
 			// isolated payload; they never grant language evidence or admission

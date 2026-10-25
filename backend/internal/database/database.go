@@ -89,6 +89,7 @@ func Init(cfg *config.Config) *gorm.DB {
 		&model.RSSRule{},
 		&model.RSSEntry{},
 		&model.Download{},
+		&model.MediaEvidence{},
 		&model.NotificationChannel{},
 		&model.EpisodeNotification{},
 		&model.StreamRule{},

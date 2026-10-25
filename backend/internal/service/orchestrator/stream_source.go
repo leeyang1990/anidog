@@ -209,7 +209,7 @@ func streamCandidateRetryAt(failure model.Download) time.Time {
 		}
 	case model.FailureKindExhausted:
 		delay = 24 * time.Hour
-	case model.FailureKindRejected:
+	case model.FailureKindRejected, model.FailureKindReview:
 		delay = 24 * time.Hour
 	}
 	return failure.UpdatedAt.Add(delay)

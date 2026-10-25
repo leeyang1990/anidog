@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,6 +73,7 @@ func TestSeasonUpgradeAllOrNothing(t *testing.T) {
 			for ep := 1; ep <= total; ep++ {
 				p := filepath.Join(staging, fmt.Sprintf("episode-%02d.mkv", ep))
 				os.WriteFile(p, video, 0600)
+				os.WriteFile(strings.TrimSuffix(p, filepath.Ext(p))+".chs.srt", []byte("1\n00:00:00,000 --> 00:00:02,000\n这是简体字幕\n"), 0600)
 				files[ep] = p
 			}
 			os.WriteFile(filepath.Join(staging, "episode-01.chs.ass"), []byte("new subs"), 0600)

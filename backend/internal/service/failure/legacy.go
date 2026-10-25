@@ -5,9 +5,16 @@ import (
 	"strings"
 )
 
+func inconclusiveSubtitle(message string) bool {
+	return strings.Contains(message, "无法确认成片满足字幕") || strings.Contains(message, "抽样字幕证据不足")
+}
+
 // Keep historical text interpretation here, not in schedulers or SQL queries.
 // New producers must supply a code at the stage that knows what failed.
 func legacy(message string) Facts {
+	if inconclusiveSubtitle(message) {
+		return facts(SubtitleUnknown, Subtitles)
+	}
 	msg := strings.ToLower(message)
 	for _, marker := range []string{"no space left", "permission denied", "read-only file system", "invalid data found", "invalid argument", "unsupported codec", "unknown format", "unknown encoder"} {
 		if strings.Contains(msg, marker) {

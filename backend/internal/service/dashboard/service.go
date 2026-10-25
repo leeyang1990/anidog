@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/failure"
 )
 
 // BangumiProvider is a narrow interface for calendar data.
@@ -38,6 +39,9 @@ type DownloadStats struct {
 	Downloading int64 `json:"downloading"`
 	Completed   int64 `json:"completed"`
 	Failed      int64 `json:"failed"`
+	Rejected    int64 `json:"rejected"`
+	Review      int64 `json:"review"`
+	Reused      int64 `json:"reused"`
 	Paused      int64 `json:"paused"`
 }
 
@@ -58,11 +62,26 @@ func (s *Service) GetStats(ctx context.Context) (*Stats, error) {
 		{model.DownloadStatusPending, &ds.Pending},
 		{model.DownloadStatusDownloading, &ds.Downloading},
 		{model.DownloadStatusCompleted, &ds.Completed},
-		{model.DownloadStatusFailed, &ds.Failed},
 		{model.DownloadStatusPaused, &ds.Paused},
 	}
 	for _, sc := range statusCounts {
 		s.db.WithContext(ctx).Model(&model.Download{}).Where("status = ?", sc.Status).Count(sc.Count)
+	}
+	var attempts []model.Download
+	if err := s.db.WithContext(ctx).Select("status,failure_kind,failure_code,failure_stage,last_error,verified_languages").Where("status = ?", model.DownloadStatusFailed).Find(&attempts).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range attempts {
+		switch failure.ResultClass(row) {
+		case "review":
+			ds.Review++
+		case "rejected":
+			ds.Rejected++
+		case "reused":
+			ds.Reused++
+		default:
+			ds.Failed++
+		}
 	}
 
 	return &Stats{
@@ -98,6 +117,9 @@ func (s *Service) GetDownloadChart(ctx context.Context) ([]ChartDataPoint, error
 func (s *Service) GetRecentDownloads(ctx context.Context, limit int) ([]model.Download, error) {
 	var downloads []model.Download
 	err := s.db.WithContext(ctx).Order("created_at DESC").Limit(limit).Find(&downloads).Error
+	for i := range downloads {
+		downloads[i].ResultClass = failure.ResultClass(downloads[i])
+	}
 	return downloads, err
 }
 

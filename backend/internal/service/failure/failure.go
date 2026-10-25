@@ -26,6 +26,8 @@ const (
 	StorageUnavailable Code = "storage_unavailable"
 	StateUnavailable   Code = "state_unavailable"
 	Canceled           Code = "canceled"
+	SubtitleUnknown    Code = "subtitle_unknown"
+	DuplicateMedia     Code = "duplicate_media"
 )
 
 const (
@@ -82,8 +84,10 @@ type Facts struct {
 func facts(code Code, stage Stage) Facts {
 	f := Facts{Code: code, Stage: stage, Kind: model.FailureKindTransient}
 	switch code {
-	case IdentityMismatch, PreferenceMismatch, InvalidMedia:
+	case IdentityMismatch, PreferenceMismatch, InvalidMedia, DuplicateMedia:
 		f.Kind = model.FailureKindRejected
+	case SubtitleUnknown:
+		f.Kind = model.FailureKindReview
 	case PlayerUnavailable:
 		f.Kind, f.AvailabilityFailure = model.FailureKindRejected, true
 	case SourceUnavailable:
@@ -111,6 +115,11 @@ func Describe(err error) Facts {
 // FromRecord is the sole compatibility boundary for old persisted messages.
 // Unknown future codes cannot accidentally count as a source outage.
 func FromRecord(row model.Download) Facts {
+	// Old releases discarded rejected OCR facts and used the same message for
+	// unknown evidence and mismatch. They cannot retrospectively prove a script.
+	if (row.FailureCode == "" || row.FailureCode == string(PreferenceMismatch)) && row.VerifiedLanguages == "" && inconclusiveSubtitle(row.LastError) {
+		return facts(SubtitleUnknown, Subtitles)
+	}
 	if row.FailureCode != "" {
 		return facts(Code(row.FailureCode), Stage(row.FailureStage))
 	}
@@ -120,4 +129,26 @@ func FromRecord(row model.Download) Facts {
 		f.AvailabilityFailure = row.FailureKind == model.FailureKindTransient || row.FailureKind == model.FailureKindExhausted
 	}
 	return f
+}
+
+// ResultClass projects execution state into a user-facing outcome. Schedulers
+// retain their lifecycle states; expected rejection is not an execution error.
+func ResultClass(row model.Download) string {
+	if row.Status == model.DownloadStatusPending {
+		return "queued"
+	}
+	if row.Status != model.DownloadStatusFailed {
+		return row.Status
+	}
+	f := FromRecord(row)
+	if f.Code == SubtitleUnknown || row.FailureKind == model.FailureKindReview {
+		return "review"
+	}
+	if f.Code == DuplicateMedia {
+		return "reused"
+	}
+	if f.Kind == model.FailureKindRejected && !f.AvailabilityFailure {
+		return "rejected"
+	}
+	return "error"
 }

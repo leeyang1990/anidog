@@ -24,7 +24,7 @@ func capacityService(t *testing.T, free int64) *Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Setting{}, &model.Download{}, &model.Anime{}, &model.AnimeEpisode{}, &model.OrchestratorDiagnosis{}); err != nil {
+	if err := db.AutoMigrate(&model.Setting{}, &model.Download{}, &model.MediaEvidence{}, &model.Anime{}, &model.AnimeEpisode{}, &model.OrchestratorDiagnosis{}); err != nil {
 		t.Fatal(err)
 	}
 	conn, _ := db.DB()

@@ -99,7 +99,7 @@ func TestLocalStreamAcceptanceRequiresActualSubtitleProof(t *testing.T) {
 	}{
 		{name: "simplified", language: "simplified", completed: true},
 		{name: "traditional", language: "traditional", wantCode: failure.PreferenceMismatch},
-		{name: "unknown despite catalog CHS", wantCode: failure.PreferenceMismatch},
+		{name: "unknown despite catalog CHS", wantCode: failure.SubtitleUnknown},
 		{name: "inspection outage", retryable: true, wantCode: failure.InspectionFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,7 +120,7 @@ func TestLocalStreamAcceptanceRequiresActualSubtitleProof(t *testing.T) {
 					t.Fatalf("bad acceptance: %+v", row)
 				}
 			} else {
-				if row.Status != model.DownloadStatusFailed || row.FailureCode != string(tc.wantCode) || row.ValidationPending != tc.retryable || row.FilePath == nil || *row.FilePath != result.FilePath {
+				if row.Status != model.DownloadStatusFailed || row.FailureCode != string(tc.wantCode) || row.ValidationPending != (tc.retryable || tc.wantCode == failure.SubtitleUnknown) || row.FilePath == nil || *row.FilePath != result.FilePath {
 					t.Fatalf("lost failure or payload: %+v", row)
 				}
 				if _, err := os.Stat(result.FilePath); err != nil {

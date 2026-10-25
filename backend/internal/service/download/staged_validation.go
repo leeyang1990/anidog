@@ -36,20 +36,23 @@ func (s *Service) retainStreamResult(ctx context.Context, id uint, result *Resul
 }
 
 func (s *Service) retainedValidationResult(dl *model.Download) (*Result, error) {
-	if dl.DownloadType != model.DownloadTypeStream || !dl.ValidationPending {
+	if !dl.ValidationPending {
 		return nil, nil
 	}
 	if dl.FilePath == nil || *dl.FilePath == "" || dl.ValidationFinalPath == "" {
 		return nil, failure.Wrap(failure.Validation, failure.StateUnavailable, fmt.Errorf("暂存成片缺少验收路径"))
 	}
 	root := ""
-	if dl.SavePath != nil {
+	if dl.DownloadType == model.DownloadTypeTorrent && s.cfg != nil {
+		root = s.cfg.MediaRoot
+	}
+	if root == "" && dl.SavePath != nil {
 		root = *dl.SavePath
 	}
 	if root == "" && s.cfg != nil {
 		root = s.cfg.MediaRoot
 	}
-	if root == "" || !pathWithin(*dl.FilePath, root) || !pathWithin(dl.ValidationFinalPath, root) || filepath.Dir(*dl.FilePath) != filepath.Dir(dl.ValidationFinalPath) {
+	if root == "" || !pathWithin(*dl.FilePath, root) || !pathWithin(dl.ValidationFinalPath, root) || dl.DownloadType == model.DownloadTypeStream && filepath.Dir(*dl.FilePath) != filepath.Dir(dl.ValidationFinalPath) {
 		return nil, failure.Wrap(failure.Validation, failure.StorageUnavailable, fmt.Errorf("暂存成片路径超出下载目录"))
 	}
 	path := existingCompletionPath(*dl.FilePath, dl.ValidationFinalPath)
@@ -63,10 +66,48 @@ func (s *Service) retainedValidationResult(dl *model.Download) (*Result, error) 
 	if !stat.Mode().IsRegular() || stat.Size() == 0 {
 		return nil, failure.Wrap(failure.Validation, failure.InvalidMedia, fmt.Errorf("暂存成片不是完整的普通文件"))
 	}
+	if err := checkRetainedPath(path, root); err != nil {
+		return nil, failure.Wrap(failure.Validation, failure.StorageUnavailable, err)
+	}
 	return &Result{FilePath: *dl.FilePath, FinalPath: dl.ValidationFinalPath}, nil
 }
 
-type validationRun struct{ cancel context.CancelFunc }
+type validationRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func newValidationRun(cancel context.CancelFunc) *validationRun {
+	return &validationRun{cancel: cancel, done: make(chan struct{})}
+}
+
+func (s *Service) finishValidationRun(id uint, run *validationRun) {
+	run.cancel()
+	s.validationCancels.CompareAndDelete(id, run)
+	close(run.done)
+}
+
+// Resume waits for a paused worker's lease to end before claiming another. A
+// worker may have read the paused state just before the resume request arrived.
+func (s *Service) resumeValidation(id uint, staging, final string) error {
+	if value, loaded := s.validationCancels.Load(id); loaded {
+		run := value.(*validationRun)
+		go func() {
+			select {
+			case <-run.done:
+				var row model.Download
+				if s.db.First(&row, id).Error == nil && row.Status == model.DownloadStatusDownloading && row.ValidationPending {
+					if err := s.QueueEpisodeCompletion(context.Background(), id, staging, final); err != nil {
+						zap.L().Warn("恢复成片验收失败", zap.Uint("download_id", id), zap.Error(err))
+					}
+				}
+			case <-time.After(8 * time.Minute):
+			}
+		}()
+		return nil
+	}
+	return s.QueueEpisodeCompletion(context.Background(), id, staging, final)
+}
 
 func (s *Service) cancelValidation(id uint) {
 	if cancel, ok := s.validationCancels.Load(id); ok {
@@ -76,14 +117,54 @@ func (s *Service) cancelValidation(id uint) {
 
 func (s *Service) finishStreamResult(ctx context.Context, id uint, task *Task, result *Result) {
 	ctx, cancel := context.WithCancel(ctx)
-	run := &validationRun{cancel: cancel}
-	s.validationCancels.Store(id, run)
-	defer func() { cancel(); s.validationCancels.CompareAndDelete(id, run) }()
+	run := newValidationRun(cancel)
+	if _, loaded := s.validationCancels.LoadOrStore(id, run); loaded {
+		cancel()
+		return
+	}
+	defer s.finishValidationRun(id, run)
+	s.finishMediaValidation(ctx, id, task, result)
+}
+
+// QueueEpisodeCompletion keeps slow local OCR out of BT's global health patrol.
+// Claim before spawning, retain transfer completion before inspection, and share
+// the same worker slots and cancellation lease as stream acceptance.
+func (s *Service) QueueEpisodeCompletion(ctx context.Context, id uint, staging, final string) error {
+	var row model.Download
+	if err := s.db.WithContext(ctx).First(&row, id).Error; err != nil {
+		return err
+	}
+	if row.Status != model.DownloadStatusDownloading && row.Status != model.DownloadStatusPending {
+		return nil
+	}
+	jobCtx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	run := newValidationRun(cancel)
+	if _, loaded := s.validationCancels.LoadOrStore(id, run); loaded {
+		cancel()
+		return nil
+	}
+	result := &Result{FilePath: staging, FinalPath: final}
+	if err := s.retainStreamResult(ctx, id, result); err != nil {
+		s.finishValidationRun(id, run)
+		return err
+	}
+	go func() {
+		defer s.finishValidationRun(id, run)
+		s.finishMediaValidation(jobCtx, id, validationTask(&row), result)
+	}()
+	return nil
+}
+
+func (s *Service) finishMediaValidation(ctx context.Context, id uint, task *Task, result *Result) {
 	if s.validationSlots != nil {
 		select {
 		case s.validationSlots <- struct{}{}:
 			defer func() { <-s.validationSlots }()
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				fields, _, _ := failureFields(failure.Wrap(failure.Validation, failure.InspectionFailed, ctx.Err()), task.RetryCount)
+				s.updateStatus(id, model.DownloadStatusFailed, fields)
+			}
 			return
 		}
 	}
@@ -117,8 +198,8 @@ func (s *Service) finishStreamResult(ctx context.Context, id uint, task *Task, r
 // never resets it, fetches a playback page, or creates another download row.
 func (s *Service) ResumeMediaValidation(ctx context.Context, animeID uint) error {
 	var rows []model.Download
-	err := s.db.WithContext(ctx).Where("anime_id = ? AND download_type = ? AND validation_pending = ? AND status = ? AND retry_count < ?", animeID, model.DownloadTypeStream, true, model.DownloadStatusFailed, 3).
-		Where("failure_code <> ? AND failure_kind <> ?", string(failure.Canceled), model.FailureKindRejected).
+	err := s.db.WithContext(ctx).Where("anime_id = ? AND validation_pending = ? AND status = ? AND retry_count < ?", animeID, true, model.DownloadStatusFailed, 3).
+		Where("failure_code <> ? AND failure_kind NOT IN ?", string(failure.Canceled), []string{model.FailureKindRejected, model.FailureKindReview}).
 		Where("next_retry_at IS NULL OR next_retry_at <= ?", time.Now()).
 		Where("episode_number IS NOT NULL").
 		Where(`NOT EXISTS (SELECT 1 FROM download newer WHERE newer.anime_id = download.anime_id AND newer.episode_number = download.episode_number AND newer.id > download.id AND newer.validation_pending = ? AND newer.status = ?)`, true, model.DownloadStatusFailed).
@@ -139,7 +220,7 @@ func (s *Service) ResumeMediaValidation(ctx context.Context, animeID uint) error
 			}
 			continue
 		}
-		if !s.HasExecutor(model.DownloadTypeStream) {
+		if !s.HasExecutor(row.DownloadType) {
 			continue
 		}
 		updates := map[string]interface{}{"status": model.DownloadStatusPending, "retry_count": row.RetryCount + 1, "failure_kind": "", "failure_code": "", "failure_stage": "", "last_error": "", "next_retry_at": nil}

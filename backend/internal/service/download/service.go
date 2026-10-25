@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -43,6 +44,9 @@ type Service struct {
 	validationCancels     sync.Map // download id -> *validationRun
 	validationSlots       chan struct{}
 	subtitleInspector     func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence
+	videoHasher           func(context.Context, string, string) (string, error)
+	evidenceFlights       singleflight.Group
+	inspectionRequests    sync.Map
 }
 
 // NewService creates a new unified download service.
@@ -203,6 +207,17 @@ func (s *Service) Pause(dlID uint) (*model.Download, error) {
 	if err := s.db.First(&dl, dlID).Error; err != nil {
 		return nil, fmt.Errorf("下载任务不存在")
 	}
+	if dl.ValidationPending {
+		q := s.db.Model(&model.Download{}).Where("id = ? AND status IN ?", dl.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Update("status", model.DownloadStatusPaused)
+		if q.Error != nil {
+			return nil, q.Error
+		}
+		if q.RowsAffected != 1 {
+			return nil, fmt.Errorf("任务状态已变化")
+		}
+		dl.Status = model.DownloadStatusPaused
+		return &dl, nil
+	}
 
 	exec := s.executors[dl.DownloadType]
 	if exec == nil {
@@ -223,6 +238,27 @@ func (s *Service) Resume(dlID uint) (*model.Download, error) {
 	var dl model.Download
 	if err := s.db.First(&dl, dlID).Error; err != nil {
 		return nil, fmt.Errorf("下载任务不存在")
+	}
+	if dl.ValidationPending {
+		result, err := s.retainedValidationResult(&dl)
+		if err != nil {
+			return nil, err
+		}
+		if result == nil {
+			return nil, fmt.Errorf("保留成片不存在，请重新选源")
+		}
+		q := s.db.Model(&model.Download{}).Where("id = ? AND status = ?", dl.ID, model.DownloadStatusPaused).Update("status", model.DownloadStatusDownloading)
+		if q.Error != nil {
+			return nil, q.Error
+		}
+		if q.RowsAffected != 1 {
+			return nil, fmt.Errorf("任务状态已变化")
+		}
+		if err = s.resumeValidation(dl.ID, result.FilePath, result.FinalPath); err != nil {
+			return nil, err
+		}
+		dl.Status = model.DownloadStatusDownloading
+		return &dl, nil
 	}
 
 	exec := s.executors[dl.DownloadType]
@@ -317,10 +353,12 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	}
 	var result *Result
 	var err error
-	if task.DownloadType == model.DownloadTypeStream {
+	resumedValidation := false
+	{
 		var row model.Download
 		if err = s.db.WithContext(ctx).First(&row, dlID).Error; err == nil {
 			result, err = s.retainedValidationResult(&row)
+			resumedValidation = result != nil
 			if err == nil && result != nil {
 				// Recheck retained bytes against today's policy. Old OCR proof
 				// must not survive a restart or a file changed outside the app.
@@ -376,7 +414,7 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 
 	// TorrentExecutor 成功只表示种子已提交给 BT 引擎，并不代表文件下载完成。
 	// 实际进度和 completed 由 TorrentSyncer 根据引擎状态写回。
-	if task.DownloadType == model.DownloadTypeTorrent {
+	if task.DownloadType == model.DownloadTypeTorrent && !resumedValidation {
 		extra := map[string]interface{}{
 			"failure_kind":  "",
 			"failure_code":  "",
@@ -396,7 +434,7 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	if result != nil {
 		stagingPath, finalPath = result.FilePath, result.FinalPath
 	}
-	if task.DownloadType == model.DownloadTypeStream && stagingPath != "" {
+	if (task.DownloadType == model.DownloadTypeStream || resumedValidation) && stagingPath != "" {
 		s.finishStreamResult(ctx, dlID, task, result)
 		return
 	}
@@ -432,6 +470,12 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		return false
 	}
 	if candidate.Status == model.DownloadStatusDownloading || candidate.Status == model.DownloadStatusPending {
+		if candidate.Scope != model.DownloadScopeSeason && stagingPath != "" && finalPath != "" && s.cfg != nil && (s.cfg.VerifyDownloadedMedia || candidate.Source == SourceStream) {
+			if err := s.retainStreamResult(ctx, dlID, &Result{FilePath: stagingPath, FinalPath: finalPath}); err != nil {
+				s.rejectMediaCandidate(ctx, &candidate, err)
+				return false
+			}
+		}
 		ep := 0
 		if candidate.EpisodeNumber != nil {
 			ep = *candidate.EpisodeNumber
@@ -1039,6 +1083,10 @@ func (s *Service) List(ctx context.Context, status, downloadType string, animeID
 		return nil, err
 	}
 	s.annotateRecovery(ctx, downloads)
+	for i := range downloads {
+		downloads[i].ResultClass = failure.ResultClass(downloads[i])
+		_, downloads[i].InspectionActive = s.inspectionRequests.Load(downloads[i].ID)
+	}
 	return &ListResult{Items: downloads, Total: total}, nil
 }
 
@@ -1048,6 +1096,8 @@ func (s *Service) GetByID(ctx context.Context, id uint) (*model.Download, error)
 	if err := s.db.WithContext(ctx).First(&dl, id).Error; err != nil {
 		return nil, fmt.Errorf("下载任务不存在")
 	}
+	dl.ResultClass = failure.ResultClass(dl)
+	_, dl.InspectionActive = s.inspectionRequests.Load(dl.ID)
 	return &dl, nil
 }
 
@@ -1150,9 +1200,22 @@ func (s *Service) ResumeAll(ctx context.Context) (int64, error) {
 	if err := s.ensureMediaCapacity(ctx); err != nil {
 		return 0, fmt.Errorf("媒体存储容量保护: %w", err)
 	}
+	var retained []model.Download
+	if err := s.db.WithContext(ctx).Where("status = ? AND download_type = ? AND validation_pending = ?", model.DownloadStatusPaused, model.DownloadTypeTorrent, true).Find(&retained).Error; err != nil {
+		return 0, err
+	}
 	result := s.db.WithContext(ctx).Model(&model.Download{}).
 		Where("status = ? AND download_type = ?", model.DownloadStatusPaused, model.DownloadTypeTorrent).
 		Update("status", model.DownloadStatusDownloading)
+	if result.Error == nil {
+		for _, row := range retained {
+			if row.FilePath != nil {
+				if err := s.resumeValidation(row.ID, *row.FilePath, row.ValidationFinalPath); err != nil {
+					return result.RowsAffected, err
+				}
+			}
+		}
+	}
 	return result.RowsAffected, result.Error
 }
 
@@ -1169,9 +1232,9 @@ func (s *Service) RecoverPending(ctx context.Context) {
 
 	var downloads []model.Download
 	if err := s.db.WithContext(ctx).
-		Where("status IN ? AND download_type = ?",
+		Where("status IN ? AND (download_type = ? OR validation_pending = ?)",
 			[]string{model.DownloadStatusPending, model.DownloadStatusDownloading},
-			model.DownloadTypeStream).
+			model.DownloadTypeStream, true).
 		Find(&downloads).Error; err != nil {
 		zap.L().Error("查询未完成下载任务失败", zap.Error(err))
 		return
@@ -1185,11 +1248,11 @@ func (s *Service) RecoverPending(ctx context.Context) {
 
 	for i := range downloads {
 		dl := &downloads[i]
-		// 重置进度
-		s.db.Model(dl).Updates(map[string]interface{}{
-			"status":   model.DownloadStatusPending,
-			"progress": 0,
-		})
+		updates := map[string]interface{}{"status": model.DownloadStatusPending}
+		if !dl.ValidationPending {
+			updates["progress"] = 0
+		}
+		s.db.Model(dl).Updates(updates)
 
 		if dl.ValidationPending {
 			retained, err := s.retainedValidationResult(dl)
@@ -1200,6 +1263,12 @@ func (s *Service) RecoverPending(ctx context.Context) {
 			}
 			if retained != nil {
 				go s.execute(dl.ID, dl.TorrentID, validationTask(dl))
+				continue
+			}
+			if dl.DownloadType == model.DownloadTypeTorrent {
+				fields, _, _ := failureFields(failure.Wrap(failure.Validation, failure.StorageUnavailable, fmt.Errorf("BT 暂存成片已丢失，请重新选源")), dl.RetryCount)
+				fields["validation_pending"], fields["validation_final_path"] = false, ""
+				s.updateStatus(dl.ID, model.DownloadStatusFailed, fields)
 				continue
 			}
 		}

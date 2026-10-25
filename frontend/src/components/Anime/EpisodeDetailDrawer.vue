@@ -71,15 +71,16 @@
       <section v-if="failedDownloads.length">
         <h3 class="text-sm font-bold mb-2 flex items-center gap-2">
           <CloseCircleOutline class="size-4 text-ac-heart-dark" />
-          失败 ({{ failedDownloads.length }})
+          {{ t('pages.downloads.attemptHistory') }} ({{ failedDownloads.length }})
         </h3>
         <div class="space-y-2">
           <div v-for="d in failedDownloads" :key="d.id"
             class="p-3 rounded-2xl border-2 border-ac-sand bg-card text-xs space-y-1">
             <div class="flex items-center gap-2">
-              <AcTag variant="heart" size="sm">{{ sourceLabel(d.source) }} 失败</AcTag>
+              <AcTag :variant="downloadOutcome(d) === 'error' ? 'heart' : 'sun'" size="sm">{{ sourceLabel(d.source) }} · {{ t(`pages.downloads.outcome_${downloadOutcome(d)}`) }}</AcTag>
             </div>
             <div class="truncate" :title="d.name">{{ d.name }}</div>
+            <DownloadTaskDescription :task="d" :t="t" />
             <div class="flex gap-2 pt-1">
               <button class="text-ac-grass-dark hover:underline font-bold" @click="retryDownload(d)">重试</button>
               <button class="text-ac-heart-dark hover:underline font-bold" @click="deleteDownload(d)">删除记录</button>
@@ -145,6 +146,9 @@ import {
 import { post, del } from '@/utils/api'
 import { useToast } from '@/composables/useToast'
 import { AcDrawer, AcButton, AcTag } from '@/components/ac'
+import { useI18n } from 'vue-i18n'
+import { downloadOutcome } from '../../utils/downloadOutcome'
+import DownloadTaskDescription from '../Downloads/DownloadTaskDescription.vue'
 
 const props = defineProps({
   show: Boolean,
@@ -158,6 +162,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:show', 'refresh', 'manual-search'])
 const toast = useToast()
+const { t } = useI18n({ useScope: 'global' })
 
 const completedDownloads = computed(() => props.downloads.filter(d => d.status === 'completed' && !d.media_missing))
 const activeDownloads = computed(() => props.downloads.filter(d => d.status === 'downloading' || d.status === 'pending'))

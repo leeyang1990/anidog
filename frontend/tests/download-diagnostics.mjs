@@ -27,3 +27,12 @@ try {
 } finally {
   await server.close()
 }
+
+const { downloadOutcome, subtitleFacts } = await import('../src/utils/downloadOutcome.js')
+assert.equal(downloadOutcome({ status: 'failed', result_class: 'review' }), 'review')
+assert.equal(downloadOutcome({ status: 'failed', failure_code: 'duplicate_media' }), 'reused')
+assert.equal(downloadOutcome({ status: 'failed', failure_kind: 'rejected', failure_code: 'preference_mismatch' }), 'rejected')
+assert.equal(downloadOutcome({ status: 'failed', failure_kind: 'rejected', failure_code: 'player_unavailable' }), 'error')
+assert.equal(downloadOutcome({ status: 'completed', failure_code: 'subtitle_unknown' }), 'completed')
+assert.deepEqual(subtitleFacts({ subtitle_evidence: 'bad json' }), { language: '', method: '', tracks: [], attempted: 0, captions: 0, reason: '' })
+assert.equal(subtitleFacts({ subtitle_evidence: JSON.stringify({ language: 'traditional', attempted: 10, samples: [{ caption: '' }, { caption: '這個' }] }) }).captions, 1)

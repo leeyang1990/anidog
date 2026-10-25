@@ -81,7 +81,7 @@
                 </td>
                 <td class="py-3 text-sm text-muted-foreground whitespace-nowrap font-num">{{ formatSize(dl.total_bytes || dl.downloaded_bytes) }}</td>
                 <td class="py-3 text-sm">
-                  <AcTag :variant="statusVariant(dl.status)">{{ statusText(dl.status) }}</AcTag>
+                  <AcTag :variant="dl.status === 'failed' && downloadOutcome(dl) !== 'error' ? 'sun' : statusVariant(dl.status)">{{ dl.status === 'failed' ? t(`pages.downloads.outcome_${downloadOutcome(dl)}`) : statusText(dl.status) }}</AcTag>
                 </td>
                 <td class="py-3 pr-6 text-xs text-muted-foreground whitespace-nowrap font-num">{{ formatTime(dl.updated_at) }}</td>
               </tr>
@@ -95,6 +95,7 @@
 </template>
 
 <script setup>
+import { downloadOutcome } from '../utils/downloadOutcome'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useToast } from '../composables/useToast'
 import {
@@ -190,10 +191,10 @@ function rebuildCharts() {
     }],
   }
   doughnutData.value = {
-    labels: ['pending', 'downloading', 'completed', 'paused', 'failed'].map(statusText),
+    labels: [...['pending', 'downloading', 'completed', 'paused'].map(statusText), ...['error', 'rejected', 'review', 'reused'].map(key => t(`pages.downloads.outcome_${key}`))],
     datasets: [{
-      data: [stats.value.pending, stats.value.downloading, stats.value.completed, stats.value.paused, stats.value.failed],
-      backgroundColor: [palette.pending, palette.downloading, palette.completed, palette.paused, palette.failed],
+      data: [stats.value.pending, stats.value.downloading, stats.value.completed, stats.value.paused, stats.value.failed, stats.value.rejected, stats.value.review, stats.value.reused],
+      backgroundColor: [palette.pending, palette.downloading, palette.completed, palette.paused, palette.failed, '#D1A34A', '#A9A2E8', '#81B6CC'],
       borderWidth: skin.value === 'classic' ? 2 : 4,
       borderColor: 'hsl(var(--card))',
     }],
@@ -215,6 +216,9 @@ async function fetchDashboardData() {
       downloading: ds.downloading || 0,
       completed: ds.completed || 0,
       failed: ds.failed || 0,
+      rejected: ds.rejected || 0,
+      review: ds.review || 0,
+      reused: ds.reused || 0,
       paused: ds.paused || 0,
     }
     chartPoints.value = Array.isArray(data.downloadStats) ? data.downloadStats : []

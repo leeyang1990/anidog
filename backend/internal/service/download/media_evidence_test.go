@@ -303,6 +303,65 @@ func TestRetainedBTUsesRuntimeRootAcrossStagingAndLibrary(t *testing.T) {
 	}
 }
 
+func TestArchivedPackResolutionRequiresOwnedAvailableFilesAndPreservesHistory(t *testing.T) {
+	for _, scenario := range []string{"available", "missing file", "missing owner", "unmapped", "upgrade"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := capacityService(t, 500*gib)
+			anime := model.Anime{Title: "pack archive"}
+			s.db.Create(&anime)
+			start, end, ep := 1, 12, 2
+			pack := model.Download{TorrentID: "pack-owner", Name: "pack", URL: "x", AnimeID: &anime.ID, Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end, EpisodeNumber: &ep, Status: model.DownloadStatusCompleted}
+			s.db.Create(&pack)
+			failed := model.Download{TorrentID: "failed", Name: "old failed episode", URL: "x", AnimeID: &anime.ID, EpisodeNumber: &ep, Status: model.DownloadStatusFailed, LastError: "original failure", SubtitleEvidence: `{"reason":"old evidence"}`}
+			if scenario == "upgrade" {
+				failed.Scope = model.DownloadScopeSeason
+				failed.Purpose = model.DownloadPurposeSeasonUpgrade
+			}
+			s.db.Create(&failed)
+			path := filepath.Join(s.cfg.MediaRoot, "episode.mkv")
+			if scenario != "missing file" {
+				if err := os.WriteFile(path, []byte("archived"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			owner := pack.TorrentID
+			if scenario == "missing owner" {
+				owner = "unrelated"
+			}
+			episode := model.AnimeEpisode{AnimeID: anime.ID, EpisodeNumber: ep, Downloaded: scenario != "unmapped", DownloadID: &owner, FilePath: &path}
+			s.db.Create(&episode)
+			s.resolvePriorFailures(pack.ID)
+			s.resolveHistoricalFailures(context.Background())
+			s.db.First(&failed, failed.ID)
+			want := model.DownloadStatusFailed
+			if scenario == "available" {
+				want = model.DownloadStatusSuperseded
+			}
+			if failed.Status != want || failed.LastError != "original failure" || failed.SubtitleEvidence != `{"reason":"old evidence"}` {
+				t.Fatal(failed)
+			}
+			if scenario != "available" {
+				return
+			}
+			current, err := s.CurrentTasks(context.Background(), "all", "", 1, 100)
+			if err != nil || current.Total != 1 || current.Counts["completed"] != 1 || current.Items[0].AttemptCount != 2 {
+				t.Fatal(current, err)
+			}
+			history, err := s.AttemptHistory(context.Background(), pack.ID, 1, 1)
+			if err != nil || history.Total != 2 || len(history.Items) != 1 {
+				t.Fatal(history, err)
+			}
+			history, err = s.AttemptHistory(context.Background(), pack.ID, 2, 1)
+			if err != nil || len(history.Items) != 1 {
+				t.Fatal(history, err)
+			}
+			if content, err := os.ReadFile(path); err != nil || string(content) != "archived" {
+				t.Fatal("archive changed", err)
+			}
+		})
+	}
+}
+
 func TestBTCompletionQueueDoesNotBlockPatrolAndRestartDoesNotTransfer(t *testing.T) {
 	for _, restart := range []bool{false, true} {
 		t.Run(fmt.Sprint("restart=", restart), func(t *testing.T) {

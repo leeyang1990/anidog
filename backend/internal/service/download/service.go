@@ -950,6 +950,7 @@ func (s *Service) settleSeasonPack(ctx context.Context, winner *model.Download, 
 			}
 		}
 	}
+	s.resolveArchivedPackFailures(ctx, *winner.AnimeID)
 }
 
 func (s *Service) updateAnimeProgressFromEpisodeTable(ctx context.Context, animeID uint) {
@@ -1411,12 +1412,12 @@ func (s *Service) updateStatus(dlID uint, status string, extra map[string]interf
 // 记录仍保留用于审计，但默认下载列表和自动重试不再把它视为当前故障。
 func (s *Service) resolvePriorFailures(completedID uint) {
 	var completed model.Download
-	if err := s.db.Scopes(AvailableMedia).First(&completed, completedID).Error; err != nil || completed.AnimeID == nil || completed.EpisodeNumber == nil {
+	if err := s.db.Scopes(AvailableMedia).First(&completed, completedID).Error; err != nil || completed.Scope == model.DownloadScopeSeason || completed.AnimeID == nil || completed.EpisodeNumber == nil {
 		return
 	}
 	s.db.Model(&model.Download{}).
-		Where("id <> ? AND anime_id = ? AND episode_number = ? AND status = ?",
-			completed.ID, *completed.AnimeID, *completed.EpisodeNumber, model.DownloadStatusFailed).
+		Where("id <> ? AND anime_id = ? AND episode_number = ? AND status = ? AND scope <> ? AND purpose <> ?",
+			completed.ID, *completed.AnimeID, *completed.EpisodeNumber, model.DownloadStatusFailed, model.DownloadScopeSeason, model.DownloadPurposeSeasonUpgrade).
 		Update("status", model.DownloadStatusSuperseded)
 }
 
@@ -1427,16 +1428,58 @@ func (s *Service) resolveHistoricalFailures(ctx context.Context) {
 		WHERE failed.status = ?
 		  AND failed.anime_id IS NOT NULL
 		  AND failed.episode_number IS NOT NULL
+		  AND failed.scope <> ? AND failed.purpose <> ?
 		  AND EXISTS (
 			SELECT 1 FROM download AS done
 			WHERE done.anime_id = failed.anime_id
 			  AND done.episode_number = failed.episode_number
-			  AND done.status = ? AND done.media_missing = false
-		  )`, model.DownloadStatusSuperseded, model.DownloadStatusFailed, model.DownloadStatusCompleted)
+			  AND done.status = ? AND done.media_missing = false AND done.scope <> ?
+		  )`, model.DownloadStatusSuperseded, model.DownloadStatusFailed, model.DownloadScopeSeason, model.DownloadPurposeSeasonUpgrade, model.DownloadStatusCompleted, model.DownloadScopeSeason)
 	if result.Error != nil {
 		zap.L().Warn("收口历史失败任务失败", zap.Error(result.Error))
 	} else if result.RowsAffected > 0 {
 		zap.L().Info("历史失败任务已标记为已解决", zap.Int64("rows", result.RowsAffected))
+	}
+	s.resolveArchivedPackFailures(ctx, 0)
+}
+
+// A pack's range alone cannot resolve an episode. Require the archive mapping
+// to name that completed pack and the mapped file to still exist. Reuse this
+// boundary on completion and restart; retain failed payloads and diagnostics.
+func (s *Service) resolveArchivedPackFailures(ctx context.Context, animeID uint) {
+	var rows []struct {
+		ID       uint
+		FilePath string
+	}
+	q := s.db.WithContext(ctx).Table("download AS failed").
+		Select("failed.id, episode.file_path").
+		Joins("JOIN animeepisode AS episode ON episode.anime_id=failed.anime_id AND episode.episode_number=failed.episode_number").
+		Joins("JOIN download AS owner ON owner.anime_id=episode.anime_id AND owner.torrent_id=episode.download_id").
+		Where("failed.status=? AND failed.scope<>? AND failed.purpose<>?", model.DownloadStatusFailed, model.DownloadScopeSeason, model.DownloadPurposeSeasonUpgrade).
+		Where("episode.downloaded=? AND episode.file_path<>'' AND owner.status=? AND owner.media_missing=? AND owner.scope=?", true, model.DownloadStatusCompleted, false, model.DownloadScopeSeason).
+		Where("episode.episode_number BETWEEN owner.episode_start AND owner.episode_end")
+	if animeID != 0 {
+		q = q.Where("failed.anime_id=?", animeID)
+	}
+	if err := q.Scan(&rows).Error; err != nil {
+		zap.L().Warn("读取合集覆盖的历史失败失败", zap.Error(err))
+		return
+	}
+	var resolved []uint
+	for _, row := range rows {
+		if ctx.Err() != nil {
+			return
+		}
+		if stat, err := os.Stat(row.FilePath); err == nil && stat.Mode().IsRegular() && stat.Size() > 0 {
+			resolved = append(resolved, row.ID)
+		}
+	}
+	if len(resolved) == 0 {
+		return
+	}
+	if err := s.db.WithContext(ctx).Model(&model.Download{}).Where("id IN ? AND status=?", resolved, model.DownloadStatusFailed).
+		Updates(map[string]interface{}{"status": model.DownloadStatusSuperseded, "seeking_alternative": false, "next_retry_at": nil}).Error; err != nil {
+		zap.L().Warn("收口合集覆盖的历史失败失败", zap.Error(err))
 	}
 }
 

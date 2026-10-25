@@ -6,6 +6,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/model"
 	"github.com/anidog/anidog-go/internal/service/failure"
+	"gorm.io/gorm"
 )
 
 type CurrentResult struct {
@@ -77,6 +78,11 @@ func (s *Service) CurrentTasks(ctx context.Context, resultClass, search string, 
 				continue
 			}
 			row.AttemptCount = projection.AttemptCount
+			if row.Scope == model.DownloadScopeSeason {
+				if err := s.attemptHistoryQuery(ctx, &row).Count(&row.AttemptCount).Error; err != nil {
+					return nil, err
+				}
+			}
 			row.ResultClass = failure.ResultClass(row)
 			_, row.InspectionActive = s.inspectionRequests.Load(row.ID)
 			result.Items = append(result.Items, row)
@@ -91,12 +97,7 @@ func (s *Service) AttemptHistory(ctx context.Context, id uint, page, size int) (
 	if err := s.db.WithContext(ctx).First(&target, id).Error; err != nil {
 		return nil, err
 	}
-	q := s.db.WithContext(ctx).Model(&model.Download{})
-	if target.AnimeID == nil || target.EpisodeNumber == nil || target.Scope == model.DownloadScopeSeason {
-		q = q.Where("id = ?", id)
-	} else {
-		q = q.Where("anime_id = ? AND episode_number = ? AND purpose = ? AND scope <> ?", *target.AnimeID, *target.EpisodeNumber, target.Purpose, model.DownloadScopeSeason)
-	}
+	q := s.attemptHistoryQuery(ctx, &target)
 	if page < 1 {
 		page = 1
 	}
@@ -118,4 +119,15 @@ func (s *Service) AttemptHistory(ctx context.Context, id uint, page, size int) (
 		rows[i].ResultClass = failure.ResultClass(rows[i])
 	}
 	return &ListResult{Items: rows, Total: total}, nil
+}
+
+func (s *Service) attemptHistoryQuery(ctx context.Context, target *model.Download) *gorm.DB {
+	q := s.db.WithContext(ctx).Model(&model.Download{})
+	if target.Scope == model.DownloadScopeSeason && target.AnimeID != nil && target.EpisodeStart != nil && target.EpisodeEnd != nil {
+		return q.Where("id=? OR (anime_id=? AND episode_number BETWEEN ? AND ? AND scope<>?)", target.ID, *target.AnimeID, *target.EpisodeStart, *target.EpisodeEnd, model.DownloadScopeSeason)
+	}
+	if target.AnimeID == nil || target.EpisodeNumber == nil || target.Scope == model.DownloadScopeSeason {
+		return q.Where("id=?", target.ID)
+	}
+	return q.Where("anime_id=? AND episode_number=? AND purpose=? AND scope<>?", *target.AnimeID, *target.EpisodeNumber, target.Purpose, model.DownloadScopeSeason)
 }

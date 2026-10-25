@@ -3,7 +3,7 @@
     <!-- 顶部状态栏 -->
     <div class="flex items-center justify-between gap-4 flex-wrap">
       <div class="flex items-center gap-2 text-sm">
-        <span class="text-muted-foreground">{{ t('pages.downloads.total', { count: tasks.length }) }}</span>
+        <span class="text-muted-foreground">{{ t('pages.downloads.total', { count: serverTotal }) }}</span>
         <span class="text-muted-foreground">·</span>
         <span class="text-ac-grass-dark inline-flex items-center gap-1 font-num font-bold">
           <ArrowDownOutline class="size-3.5" /><AcCountUp :value="globalDownloadSpeed" :format="formatSpeed" />

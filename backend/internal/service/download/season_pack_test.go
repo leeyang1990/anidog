@@ -77,6 +77,11 @@ func TestCompleteSeasonPackArchivesEveryMappedEpisode(t *testing.T) {
 	if err := db.Create(&dl).Error; err != nil {
 		t.Fatal(err)
 	}
+	failedEpisode := 2
+	failed := model.Download{TorrentID: "old-failed-single", Name: "old failed single", URL: "x", AnimeID: &anime.ID, EpisodeNumber: &failedEpisode, Status: model.DownloadStatusFailed, LastError: "retained diagnostic"}
+	if err := db.Create(&failed).Error; err != nil {
+		t.Fatal(err)
+	}
 	svc := NewService(db, &config.Config{MediaRoot: mediaRoot}, nil)
 	if !svc.CompleteSeasonPack(context.Background(), dl.ID, files, mediaRoot) {
 		t.Fatal("season pack completion failed")
@@ -87,6 +92,9 @@ func TestCompleteSeasonPackArchivesEveryMappedEpisode(t *testing.T) {
 	}
 	if refreshed.Status != model.DownloadStatusCompleted {
 		t.Fatalf("status=%q, want completed", refreshed.Status)
+	}
+	if err := db.First(&failed, failed.ID).Error; err != nil || failed.Status != model.DownloadStatusSuperseded || failed.LastError != "retained diagnostic" {
+		t.Fatal("completed pack left a phantom failed episode or discarded history", failed, err)
 	}
 	var episodes []model.AnimeEpisode
 	db.Where("anime_id = ? AND downloaded = ?", anime.ID, true).Order("episode_number").Find(&episodes)

@@ -255,7 +255,7 @@ func (e *Engine) add(
 	}
 	// Each task gets qBittorrent-compatible save-path semantics: torrent files
 	// are rooted below the exact directory selected by AniDog.
-	spec.Storage = storage.NewFile(cleanSavePath)
+	spec.Storage = newFileStorage(cleanSavePath)
 	spec.DisallowDataDownload = paused
 	spec.DisallowDataUpload = paused
 	t, added, err := e.client.AddTorrentSpec(spec)

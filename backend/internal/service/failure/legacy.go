@@ -16,6 +16,16 @@ func legacy(message string) Facts {
 		return facts(SubtitleUnknown, Subtitles)
 	}
 	msg := strings.ToLower(message)
+	// A failed probe has not established any content or preference mismatch.
+	// Older releases persisted these network/tool errors as rejected candidates.
+	if strings.Contains(msg, "流媒体预检探测失败") {
+		for _, marker := range []string{"server returned", "http error", "connection refused", "connection reset", "timed out", "timeout", "deadline exceeded", "no route to host", "network is unreachable", "unable to resolve", "failed to resolve"} {
+			if strings.Contains(msg, marker) {
+				return facts(SourceUnavailable, Probe)
+			}
+		}
+		return facts(InspectionFailed, Probe)
+	}
 	for _, marker := range []string{"no space left", "permission denied", "read-only file system", "invalid data found", "invalid argument", "unsupported codec", "unknown format", "unknown encoder"} {
 		if strings.Contains(msg, marker) {
 			return facts(StorageUnavailable, "")

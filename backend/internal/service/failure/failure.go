@@ -127,6 +127,10 @@ func FromRecord(row model.Download) Facts {
 	if f.Code == "" {
 		f.Kind = row.FailureKind
 		f.AvailabilityFailure = row.FailureKind == model.FailureKindTransient || row.FailureKind == model.FailureKindExhausted
+		if row.FailureKind == model.FailureKindRejected {
+			// An old lifecycle label proves neither bad content nor an outage.
+			f.Kind = model.FailureKindTransient
+		}
 	}
 	return f
 }

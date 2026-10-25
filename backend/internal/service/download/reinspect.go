@@ -20,10 +20,10 @@ func (s *Service) StartRetainedInspection(ctx context.Context, id uint) (*model.
 	if err != nil {
 		return nil, err
 	}
-	if row.Status != model.DownloadStatusFailed || row.FilePath == nil || s.cfg == nil || !pathWithin(*row.FilePath, s.cfg.MediaRoot) {
+	if row.Status != model.DownloadStatusFailed || row.FilePath == nil || s.cfg == nil {
 		return nil, fmt.Errorf("任务没有可复核的保留成片")
 	}
-	if err := checkRetainedPath(*row.FilePath, s.cfg.MediaRoot); err != nil {
+	if err := checkRetainedPath(*row.FilePath, s.currentMediaRoot(ctx)); err != nil {
 		return nil, fmt.Errorf("保留成片不可读取")
 	}
 	if _, loaded := s.inspectionRequests.LoadOrStore(id, struct{}{}); loaded {
@@ -47,10 +47,10 @@ func (s *Service) InspectRetainedMedia(ctx context.Context, id uint) (*model.Dow
 	if err := s.db.WithContext(ctx).First(&row, id).Error; err != nil {
 		return nil, err
 	}
-	if row.Status != model.DownloadStatusFailed || row.FilePath == nil || s.cfg == nil || !pathWithin(*row.FilePath, s.cfg.MediaRoot) {
+	if row.Status != model.DownloadStatusFailed || row.FilePath == nil || s.cfg == nil {
 		return nil, fmt.Errorf("只有下载目录内保留的失败成片可以复核")
 	}
-	if err := checkRetainedPath(*row.FilePath, s.cfg.MediaRoot); err != nil {
+	if err := checkRetainedPath(*row.FilePath, s.currentMediaRoot(ctx)); err != nil {
 		return nil, fmt.Errorf("保留成片不可读取")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Minute)

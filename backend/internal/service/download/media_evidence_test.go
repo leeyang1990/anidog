@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -222,8 +223,14 @@ func rowsForCurrentTest(t *testing.T, s *Service) []model.Download {
 	return rows
 }
 
-func TestBackgroundReinspectionIsBoundedAndNeverArchives(t *testing.T) {
+func TestBackgroundReinspectionUsesRuntimeRootAndNeverArchives(t *testing.T) {
 	s, row, result := stagedValidationFixture(t)
+	if err := s.db.Create(&model.Setting{Key: "download_dir", Value: s.cfg.MediaRoot}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Production uses the persisted library setting with an empty/different
+	// config fallback. Both the request and worker must resolve the same root.
+	s.cfg.MediaRoot = t.TempDir()
 	s.db.Model(&row).Update("status", model.DownloadStatusFailed)
 	s.cfg.VerifyDownloadedMedia = false
 	entered := make(chan struct{})
@@ -262,6 +269,37 @@ func TestBackgroundReinspectionIsBoundedAndNeverArchives(t *testing.T) {
 	}
 	if _, err = os.Stat(result.FinalPath); !os.IsNotExist(err) {
 		t.Fatal("inspection promoted library file")
+	}
+}
+
+func TestRetainedBTUsesRuntimeRootAcrossStagingAndLibrary(t *testing.T) {
+	s, row, result := stagedValidationFixture(t)
+	root := s.cfg.MediaRoot
+	if err := s.db.Create(&model.Setting{Key: "download_dir", Value: root}).Error; err != nil {
+		t.Fatal(err)
+	}
+	stagingDir := filepath.Join(root, ".anidog-race", "anime-1", "episode-001", "candidate")
+	if err := os.MkdirAll(stagingDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(stagingDir, "episode.mp4")
+	if err := os.Rename(result.FilePath, staging); err != nil {
+		t.Fatal(err)
+	}
+	row.DownloadType = model.DownloadTypeTorrent
+	row.FilePath, row.SavePath = &staging, &stagingDir
+	s.cfg.MediaRoot = t.TempDir()
+	retained, err := s.retainedValidationResult(context.Background(), &row)
+	if err != nil || retained == nil || retained.FilePath != staging || retained.FinalPath != result.FinalPath {
+		t.Fatal("BT recovery ignored effective root or treated staging as library root", retained, err)
+	}
+	outside := filepath.Join(s.cfg.MediaRoot, "outside.mp4")
+	if err := os.WriteFile(outside, []byte("not a library file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	row.FilePath = &outside
+	if _, err = s.retainedValidationResult(context.Background(), &row); err == nil {
+		t.Fatal("config fallback expanded access beyond the effective root")
 	}
 }
 

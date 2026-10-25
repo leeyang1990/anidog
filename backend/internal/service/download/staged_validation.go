@@ -35,7 +35,7 @@ func (s *Service) retainStreamResult(ctx context.Context, id uint, result *Resul
 	return nil
 }
 
-func (s *Service) retainedValidationResult(dl *model.Download) (*Result, error) {
+func (s *Service) retainedValidationResult(ctx context.Context, dl *model.Download) (*Result, error) {
 	if !dl.ValidationPending {
 		return nil, nil
 	}
@@ -44,13 +44,13 @@ func (s *Service) retainedValidationResult(dl *model.Download) (*Result, error) 
 	}
 	root := ""
 	if dl.DownloadType == model.DownloadTypeTorrent && s.cfg != nil {
-		root = s.cfg.MediaRoot
+		root = s.currentMediaRoot(ctx)
 	}
 	if root == "" && dl.SavePath != nil {
 		root = *dl.SavePath
 	}
 	if root == "" && s.cfg != nil {
-		root = s.cfg.MediaRoot
+		root = s.currentMediaRoot(ctx)
 	}
 	if root == "" || !pathWithin(*dl.FilePath, root) || !pathWithin(dl.ValidationFinalPath, root) || dl.DownloadType == model.DownloadTypeStream && filepath.Dir(*dl.FilePath) != filepath.Dir(dl.ValidationFinalPath) {
 		return nil, failure.Wrap(failure.Validation, failure.StorageUnavailable, fmt.Errorf("暂存成片路径超出下载目录"))
@@ -210,7 +210,7 @@ func (s *Service) ResumeMediaValidation(ctx context.Context, animeID uint) error
 	}
 	for i := range rows {
 		row := &rows[i]
-		retained, err := s.retainedValidationResult(row)
+		retained, err := s.retainedValidationResult(ctx, row)
 		if err != nil {
 			return err
 		}

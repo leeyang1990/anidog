@@ -262,7 +262,7 @@ func TestRetainedPayloadMissingAndSymlinkDoNotStartAnotherTransfer(t *testing.T)
 				if err := os.Symlink(outside, result.FilePath); err != nil {
 					t.Skip(err)
 				}
-				if _, err := s.retainedValidationResult(&row); err == nil {
+				if _, err := s.retainedValidationResult(context.Background(), &row); err == nil {
 					t.Fatal("retained symlink accepted")
 				}
 			} else {

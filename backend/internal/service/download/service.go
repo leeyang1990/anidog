@@ -240,7 +240,7 @@ func (s *Service) Resume(dlID uint) (*model.Download, error) {
 		return nil, fmt.Errorf("下载任务不存在")
 	}
 	if dl.ValidationPending {
-		result, err := s.retainedValidationResult(&dl)
+		result, err := s.retainedValidationResult(context.Background(), &dl)
 		if err != nil {
 			return nil, err
 		}
@@ -357,7 +357,7 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	{
 		var row model.Download
 		if err = s.db.WithContext(ctx).First(&row, dlID).Error; err == nil {
-			result, err = s.retainedValidationResult(&row)
+			result, err = s.retainedValidationResult(ctx, &row)
 			resumedValidation = result != nil
 			if err == nil && result != nil {
 				// Recheck retained bytes against today's policy. Old OCR proof
@@ -1118,7 +1118,7 @@ func (s *Service) Retry(ctx context.Context, id uint) (*model.Download, error) {
 	s.capacityMu.Lock()
 	defer s.capacityMu.Unlock()
 	task := capacityTaskFromDownload(&dl, false)
-	retained, err := s.retainedValidationResult(&dl)
+	retained, err := s.retainedValidationResult(ctx, &dl)
 	if err != nil {
 		return nil, err
 	}
@@ -1255,7 +1255,7 @@ func (s *Service) RecoverPending(ctx context.Context) {
 		s.db.Model(dl).Updates(updates)
 
 		if dl.ValidationPending {
-			retained, err := s.retainedValidationResult(dl)
+			retained, err := s.retainedValidationResult(ctx, dl)
 			if err != nil {
 				fields, _, _ := failureFields(err, dl.RetryCount)
 				s.updateStatus(dl.ID, model.DownloadStatusFailed, fields)

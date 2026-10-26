@@ -424,6 +424,11 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 		}
 		if result != nil && result.TorrentID != "" {
 			extra["torrent_id"] = result.TorrentID
+			// The provider's receipt is authoritative. Plain torrent URLs may
+			// contain no hash at all; URL parsing is only a discovery hint.
+			if hash := normalizeTorrentHash(result.TorrentID); hash != "" {
+				extra["info_hash"] = hash
+			}
 		}
 		s.updateStatus(dlID, model.DownloadStatusDownloading, extra)
 		zap.L().Info("种子已提交到 BT 引擎", zap.String("name", task.Name))

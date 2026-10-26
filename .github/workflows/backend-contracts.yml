@@ -3,9 +3,9 @@ name: Backend contracts
 on:
   push:
     branches: [main]
-    paths: ['backend/**', '.github/workflows/backend-contracts.yml', '.github/workflows/release.yml']
+    paths: ['backend/**', 'scripts/verify-torrent-source.py', '.github/workflows/backend-contracts.yml', '.github/workflows/release.yml']
   pull_request:
-    paths: ['backend/**', '.github/workflows/backend-contracts.yml', '.github/workflows/release.yml']
+    paths: ['backend/**', 'scripts/verify-torrent-source.py', '.github/workflows/backend-contracts.yml', '.github/workflows/release.yml']
   workflow_call:
     inputs:
       ref:
@@ -43,6 +43,8 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Install media inspection tools
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Verify dependency source provenance
+        run: python3 scripts/verify-torrent-source.py
       - name: Architecture and backend contracts
         working-directory: backend
         run: |

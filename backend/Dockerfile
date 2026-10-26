@@ -16,6 +16,7 @@ RUN apk add --no-cache git ca-certificates
 
 # 复制依赖文件
 COPY go.mod go.sum .
+COPY third_party/torrent ./third_party/torrent
 
 # 下载依赖
 RUN go mod download

@@ -145,10 +145,10 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		}
 	}
 
-	// 查 DB 里所有有 info_hash 的 BT 下载
+	// Include old submissions whose engine receipt was saved only in torrent_id.
 	var downloads []model.Download
 	if err := s.db.WithContext(ctx).
-		Where("download_type = ? AND info_hash IS NOT NULL", model.DownloadTypeTorrent).
+		Where("download_type = ?", model.DownloadTypeTorrent).
 		Find(&downloads).Error; err != nil {
 		return err
 	}
@@ -166,9 +166,6 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 		}
 	}
 	for _, dl := range downloads {
-		if dl.InfoHash == nil {
-			continue
-		}
 		if dl.ValidationPending {
 			continue
 		} // Local acceptance owns completed bytes, even if the engine is offline.
@@ -178,6 +175,23 @@ func (s *QBitSyncer) Sync(ctx context.Context) error {
 			dl.Status == model.DownloadStatusSuperseded ||
 			dl.Status == model.DownloadStatusFailed {
 			continue
+		}
+		if dl.InfoHash == nil || strings.TrimSpace(*dl.InfoHash) == "" {
+			hash := normalizeTorrentHash(dl.TorrentID)
+			if _, observed := byHash[hash]; hash == "" || !observed {
+				continue // A runtime ID or URL claim cannot establish ownership.
+			}
+			q := s.db.WithContext(ctx).Model(&model.Download{}).
+				Where("id = ? AND (info_hash IS NULL OR info_hash = '') AND status IN ?", dl.ID,
+					[]string{model.DownloadStatusPending, model.DownloadStatusDownloading, model.DownloadStatusPaused}).
+				Update("info_hash", hash)
+			if q.Error != nil {
+				return q.Error
+			}
+			if q.RowsAffected != 1 {
+				continue
+			}
+			dl.InfoHash = &hash
 		}
 		qt, ok := byHash[strings.ToUpper(*dl.InfoHash)]
 		if !ok {

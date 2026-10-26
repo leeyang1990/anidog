@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	engineVersion          = "anacrolix/torrent v1.61.0"
+	engineVersion          = "anacrolix/torrent v1.61.0 (AniDog inventory fix)"
 	manifestVersion        = 1
 	maxMetainfoBytes int64 = 16 << 20
 )

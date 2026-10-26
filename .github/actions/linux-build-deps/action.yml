@@ -1,0 +1,27 @@
+name: Ubuntu build dependencies
+description: Normalize active Ubuntu archives and install bounded build dependencies
+inputs:
+  package-set:
+    description: media or desktop
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Check APT source normalization contract
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/test_normalize_sources.py"
+    - name: Install dependencies
+      shell: bash
+      env:
+        ANIDOG_BUILD_PACKAGE_SET: ${{ inputs.package-set }}
+      run: |
+        set -euo pipefail
+        case "$ANIDOG_BUILD_PACKAGE_SET" in
+          media) packages=(ffmpeg) ;;
+          desktop) packages=(libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config) ;;
+          *) echo "Unknown build dependency set" >&2; exit 1 ;;
+        esac
+        sudo python3 "$GITHUB_ACTION_PATH/normalize_sources.py"
+        options=(-o Acquire::ForceIPv4=true -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+        sudo apt-get "${options[@]}" update
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get "${options[@]}" install -y --no-install-recommends "${packages[@]}"

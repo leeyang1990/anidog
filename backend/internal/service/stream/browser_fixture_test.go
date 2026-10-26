@@ -28,6 +28,7 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
+	badServed := make(chan time.Time, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/catalog-456":
@@ -42,6 +43,10 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 		case "/outer":
 			fmt.Fprint(w, `<iframe src="/bad"></iframe>`)
 		case "/bad":
+			select {
+			case badServed <- time.Now():
+			default:
+			}
 			fmt.Fprint(w, `播放失败，请刷新或稍候再试！`)
 		case "/ad-then-main":
 			fmt.Fprint(w, `<script>fetch('/missing.m3u8').finally(()=>setTimeout(()=>fetch('/index.m3u8'),200))</script>`)
@@ -58,11 +63,22 @@ func TestBrowserRecoveryFixtures(t *testing.T) {
 	}))
 	defer srv.Close()
 	for _, path := range []string{"/outer"} {
-		start := time.Now()
 		_, err := v.InterceptVideoURL(context.Background(), srv.URL+path, "", "")
 		var player *playerFailure
-		if !errors.As(err, &player) || time.Since(start) > 8*time.Second {
-			t.Fatalf("%s: %v after %s", path, err, time.Since(start))
+		if !errors.As(err, &player) {
+			t.Fatalf("%s: expected a player failure, got %v", path, err)
+		}
+		// Measure the detector after the fixture is actually served. Cold
+		// browser-context/page creation is separately bounded by interception;
+		// charging it to this short detector budget creates load-dependent
+		// failures even when the error is correctly recognized immediately.
+		select {
+		case served := <-badServed:
+			if elapsed := time.Since(served); elapsed > 8*time.Second {
+				t.Fatalf("%s: player failure detection took %s after serving the error page", path, elapsed)
+			}
+		default:
+			t.Fatal("interception failed without requesting the fixture error page")
 		}
 	}
 

@@ -44,6 +44,9 @@ FROM leeyang1990/anidog-backend-runtime:alpine3.24-v1
 # whole episode. Keep the stable Chromium runtime layer reusable.
 RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-chi_sim tesseract-ocr-data-chi_tra
 
+COPY tools/ocr-models.tsv tools/install-ocr-models.sh /opt/anidog-ocr/
+RUN sh /opt/anidog-ocr/install-ocr-models.sh /usr/share/tessdata
+
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/anidog .
 

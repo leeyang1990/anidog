@@ -375,14 +375,14 @@ func (me *regularTrackerAnnounceDispatcher) step() mytimer.TimeValue {
 	return me.nextTimerDelay()
 }
 
-func (me *regularTrackerAnnounceDispatcher) addKey(key torrentTrackerAnnouncerKey) {
+func (me *regularTrackerAnnounceDispatcher) addKey(key torrentTrackerAnnouncerKey) bool {
 	if me.announceData.ContainsKey(key) {
-		return
+		return true
 	}
 	t := me.torrentFromShortInfohash(key.ShortInfohash)
 	if t == nil {
-		// Crude, but the torrent was already dropped. We probably called AddTrackers late.
-		return
+		// A late AddTrackers after Drop must not install a missing dispatcher key.
+		return false
 	}
 	g.MakeMapIfNil(&me.torrentForAnnounceRequests)
 	// This can be duplicated when there's multiple trackers for a short infohash. That's fine.
@@ -398,6 +398,7 @@ func (me *regularTrackerAnnounceDispatcher) addKey(key torrentTrackerAnnouncerKe
 		infohashActive:         g.OptionFromTuple(me.infohashAnnouncing.Get(key.ShortInfohash)).Value.count,
 	})
 	me.updateTimer()
+	return true
 }
 
 // Returns nil if the torrent was dropped.
@@ -568,6 +569,12 @@ func (me *regularTrackerAnnounceDispatcher) singleAnnounce(
 	}
 
 	me.torrentClient.lock()
+	owner := me.torrentFromShortInfohash(key.ShortInfohash)
+	if owner != nil && owner != t {
+		// The HTTP request outlived its torrent generation. Do not let its
+		// result overwrite the replacement's announce state or deliver peers.
+		return
+	}
 	me.updateAnnounceState(key, func(state *announceState) {
 		state.Err = err
 		state.lastAttemptCompleted = now
@@ -583,7 +590,9 @@ func (me *regularTrackerAnnounceDispatcher) singleAnnounce(
 			}
 		}
 	})
-	t.addPeers(peerInfos(nil).AppendFromTracker(resp.Peers))
+	if owner == t {
+		t.addPeers(peerInfos(nil).AppendFromTracker(resp.Peers))
+	}
 }
 
 // Updates the announce state, shared by regularTrackerAnnounceDispatcher and Torrent, but it lives in Torrent
@@ -880,5 +889,10 @@ func (me *regularTrackerAnnounceDispatcher) initTrackerClient(
 // Returns nil if the Torrent has been GCd. Use this lazily as a way to stop caring about announcing
 // something, if we don't get to sending Completed or error in time.
 func (me *regularTrackerAnnounceDispatcher) getTorrentForAnnounceRequest(ih shortInfohash) *Torrent {
+	if t := me.torrentFromShortInfohash(ih); t != nil {
+		return t
+	}
+	// Only detached Stopped bookkeeping may use a former owner. A live
+	// replacement is always resolved from the client's authoritative registry.
 	return g.MapMustGet(me.torrentForAnnounceRequests, ih).Value()
 }

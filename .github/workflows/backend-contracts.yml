@@ -33,6 +33,7 @@ jobs:
     env:
       CGO_ENABLED: ${{ matrix.cgo }}
       TORRENT_STORAGE_DEFAULT_FILE_IO: ${{ matrix.file_io }}
+      ANIDOG_OCR_FIXTURE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,11 +44,13 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Install media inspection tools
         timeout-minutes: 15
-        uses: leeyang1990/anidog/.github/actions/linux-build-deps@5e061e7b940a5218d70d3ac889cde5b073d660fe
+        uses: leeyang1990/anidog/.github/actions/linux-build-deps@ec5f838a9e9a8695b6213a0af58a3b7893f4ec2c
         with:
           package-set: media
       - name: Verify dependency source provenance
         run: python3 scripts/verify-torrent-source.py
+      - name: Verify model installation failure and idempotence contracts
+        run: python3 backend/tools/test_install_ocr_models.py
       - name: Architecture and backend contracts
         working-directory: backend
         run: |

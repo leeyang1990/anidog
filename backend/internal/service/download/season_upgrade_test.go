@@ -174,7 +174,7 @@ func TestSeasonUpgradeAllOrNothing(t *testing.T) {
 					t.Fatal("completed upgrade ran twice")
 				}
 			}
-			if err := svc.RecoverSeasonUpgrades(context.Background()); err != nil {
+			if err := svc.RecoverMediaUpgrades(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -210,7 +210,7 @@ func TestUpgradeRecoveryAtEveryMoveBoundary(t *testing.T) {
 			}
 			svc := NewService(db, &config.Config{MediaRoot: root}, nil)
 			for n := 0; n < 2; n++ {
-				if err := svc.RecoverSeasonUpgrades(context.Background()); err != nil {
+				if err := svc.RecoverMediaUpgrades(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -247,7 +247,7 @@ func TestTerminalUpgradeJournalLeavesStartupScan(t *testing.T) {
 				t.Fatal(err)
 			}
 			svc := NewService(testutil.InitTestDB(), &config.Config{MediaRoot: root}, nil)
-			if err := svc.RecoverSeasonUpgrades(context.Background()); err != nil {
+			if err := svc.RecoverMediaUpgrades(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := os.Stat(archived); err != nil {
@@ -304,7 +304,7 @@ func TestUpgradeRecoveryKeepsCommittedDatabaseWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewService(db, &config.Config{MediaRoot: root}, nil)
-	if err := svc.RecoverSeasonUpgrades(context.Background()); err != nil {
+	if err := svc.RecoverMediaUpgrades(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if data, _ := os.ReadFile(filepath.Join(old, "new.mkv")); string(data) != "new" {

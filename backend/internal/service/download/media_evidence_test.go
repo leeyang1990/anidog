@@ -453,3 +453,50 @@ func TestResumeCannotLoseAcceptanceBehindAnEndingPausedLease(t *testing.T) {
 		t.Fatal("resume left completed payload stuck")
 	}
 }
+
+func TestFreshInspectionDoesNotClaimOldAttemptProvenance(t *testing.T) {
+	s, row, result := stagedValidationFixture(t)
+	media, err := mediacheck.Probe(context.Background(), result.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.videoHasher = func(context.Context, string, string) (string, error) { return "same-video", nil }
+	old := row
+	old.ID = 0
+	old.TorrentID = "old-outage"
+	old.VideoHash = "same-video"
+	old.SubtitleEvidence = `{"retryable":true,"reason":"old tool outage"}`
+	if err = s.db.Create(&old).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, retryable := range []bool{true, false} {
+		s.subtitleInspector = func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence {
+			return mediacheck.SubtitleEvidence{Retryable: retryable, Language: "", Reason: "fresh inspection"}
+		}
+		if _, err = s.inspectContent(context.Background(), &row, result.FilePath, media); err != nil {
+			t.Fatal(err)
+		}
+		if row.EvidenceReusedFrom != nil {
+			t.Fatal("fresh OCR falsely attributed to historical attempt", *row.EvidenceReusedFrom)
+		}
+	}
+	// A separate service really does consume the durable content fact.
+	other := NewService(s.db, s.cfg, nil)
+	other.videoHasher = s.videoHasher
+	other.subtitleInspector = func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence {
+		t.Fatal("cache not reused")
+		return mediacheck.SubtitleEvidence{}
+	}
+	copy := row
+	copy.ID = 0
+	copy.TorrentID = "cache-consumer"
+	if err = s.db.Create(&copy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err = other.inspectContent(context.Background(), &copy, result.FilePath, media); err != nil {
+		t.Fatal(err)
+	}
+	if copy.EvidenceReusedFrom == nil || *copy.EvidenceReusedFrom != row.ID {
+		t.Fatal("cache provenance does not identify actual inspector", copy.EvidenceReusedFrom)
+	}
+}

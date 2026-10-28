@@ -45,7 +45,9 @@ const (
 
 // Download 下载数据库模型
 type Download struct {
-	ID                    uint    `gorm:"primaryKey" json:"id"`
+	ID uint `gorm:"primaryKey" json:"id"`
+	// Stable attempt identity; provider content identity is stored in InfoHash.
+	// Legacy rows may still use a hash here and remain valid.
 	TorrentID             string  `gorm:"uniqueIndex;not null" json:"torrent_id"`
 	Name                  string  `gorm:"index;not null" json:"name"`
 	SourceTitle           string  `json:"source_title"`                                  // Original release/catalog title, not the rewritten display name.

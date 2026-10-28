@@ -2,6 +2,8 @@ package download
 
 import (
 	"context"
+	"crypto/sha1"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,9 +19,20 @@ import (
 type pathCaptureExecutor struct{ paths chan string }
 
 func (e *pathCaptureExecutor) Execute(_ context.Context, task *Task, _ ProgressCallback) (*Result, error) {
-	e.paths <- task.SavePath
-	return &Result{TorrentID: task.RuntimeID}, nil
+	if e.paths != nil {
+		e.paths <- task.SavePath
+	}
+	return &Result{TorrentID: testTorrentReceipt(task)}, nil
 }
+
+// Test providers return a content receipt, never the attempt runtime ID.
+func testTorrentReceipt(task *Task) string {
+	if h := ExtractInfoHash(task.URL); h != "" {
+		return h
+	}
+	return fmt.Sprintf("%x", sha1.Sum([]byte(task.URL)))
+}
+
 func (*pathCaptureExecutor) Cancel(string) error       { return nil }
 func (*pathCaptureExecutor) Pause(string) error        { return nil }
 func (*pathCaptureExecutor) Resume(string) error       { return nil }

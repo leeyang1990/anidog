@@ -59,7 +59,7 @@ func matchSubtitleProof(ctx context.Context, evidence SubtitleEvidence, extract 
 		required = 4
 	}
 	for _, sample := range evidence.Samples {
-		if sample.FrameHash == "" || seen[sample.FrameHash] {
+		if sample.FailureStage != "" || sample.FrameHash == "" || seen[sample.FrameHash] {
 			continue
 		}
 		var votes scriptVotes

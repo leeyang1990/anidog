@@ -819,7 +819,10 @@ func TestSyncDoesNotOrphanHistoricalTaskDuringExplicitResubmission(t *testing.T)
 		if err := svc.db.First(&saved, row.ID).Error; err != nil {
 			t.Fatal(err)
 		}
-		if saved.TorrentID == hash && saved.Status == model.DownloadStatusDownloading {
+		if saved.InfoHash != nil && *saved.InfoHash == hash && saved.UpdatedAt.After(submitted.UpdatedAt) && saved.Status == model.DownloadStatusDownloading {
+			if saved.TorrentID != row.TorrentID {
+				t.Fatal("provider receipt overwrote stable attempt identity")
+			}
 			// A pre-submission engine snapshot may still be empty after Add
 			// succeeds. It must not invalidate the freshly accepted task.
 			if err := syncer.Sync(context.Background()); err != nil {

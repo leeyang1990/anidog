@@ -105,7 +105,7 @@ jobs:
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         timeout-minutes: 15
-        uses: leeyang1990/anidog/.github/actions/linux-build-deps@5e061e7b940a5218d70d3ac889cde5b073d660fe
+        uses: leeyang1990/anidog/.github/actions/linux-build-deps@ec5f838a9e9a8695b6213a0af58a3b7893f4ec2c
         with:
           package-set: desktop
       - name: Install Wails

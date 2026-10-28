@@ -132,10 +132,10 @@ func (s *Service) upgradeCommitted(ctx context.Context, j *upgradeJournal) (bool
 	return d.Status == model.DownloadStatusCompleted && d.BackupPath == j.BackupPath, err
 }
 
-// RecoverSeasonUpgrades runs before the BT engine or scheduler starts. A DB
+// RecoverMediaUpgrades runs before the BT engine or scheduler starts. A DB
 // commit is the decision point: committed swaps stay, interrupted swaps roll
 // back. Journals retain the previous file mappings for manual recovery as well.
-func (s *Service) RecoverSeasonUpgrades(ctx context.Context) error {
+func (s *Service) RecoverMediaUpgrades(ctx context.Context) error {
 	root := s.currentMediaRoot(ctx)
 	journals, err := filepath.Glob(filepath.Join(root, ".anidog-upgrades", "anime-*", "task-*", "*", "journal.json"))
 	if err != nil {
@@ -156,10 +156,8 @@ func (s *Service) RecoverSeasonUpgrades(ctx context.Context) error {
 			}
 			continue
 		}
-		for _, m := range j.Moves {
-			if !pathWithin(m.From, root) || !pathWithin(m.To, root) {
-				return fmt.Errorf("升级日志路径越界: %s", path)
-			}
+		if err := checkUpgradePaths(root, j.Moves); err != nil {
+			return fmt.Errorf("升级日志路径无效: %s: %w", path, err)
 		}
 		committed, err := s.upgradeCommitted(ctx, &j)
 		if err != nil {
@@ -315,52 +313,8 @@ func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Do
 		return false
 	}
 	j.Moves = append(j.Moves, upgradeMove{ready, seasonDir})
-	if err := writeUpgradeJournal(journalPath, &j); err != nil {
-		return false
-	}
-	fail := func(err error) bool {
-		rollbackErr := rollbackUpgrade(&j)
-		if rollbackErr == nil {
-			j.State = "rolled_back"
-			_ = writeUpgradeJournal(journalPath, &j)
-		}
-		note := fmt.Sprintf("整季升级切换失败，原版已保留: %v", err)
-		if rollbackErr != nil {
-			note = fmt.Sprintf("整季升级需恢复，已暂停: %v；回滚: %v", err, rollbackErr)
-		}
-		// A successful rollback does not resolve the cause of the failed swap.
-		// Pause both outcomes so the BT poller cannot repeat this every few seconds.
-		s.db.Model(&model.Download{}).Where("id = ? AND status IN ?", candidate.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Updates(map[string]interface{}{"status": model.DownloadStatusPaused, "last_error": note})
-		zap.L().Error(note)
-		return false
-	}
-	// Stop peer reads and writes before moving any candidate files. With classic
-	// file IO their handles close at the end of each operation, including on SMB.
-	if executor := s.executors[candidate.DownloadType]; executor != nil {
-		if err := executor.Pause(executorTaskID(candidate)); err != nil {
-			return fail(fmt.Errorf("暂停升级候选的文件访问: %w", err))
-		}
-	}
-	for _, m := range j.Moves {
-		if _, err := os.Stat(m.To); err == nil {
-			return fail(fmt.Errorf("升级目标已存在: %s", m.To))
-		} else if !os.IsNotExist(err) {
-			return fail(err)
-		}
-		if err := os.MkdirAll(filepath.Dir(m.To), 0755); err != nil {
-			return fail(err)
-		}
-		if err := os.Rename(m.From, m.To); err != nil {
-			return fail(err)
-		}
-	}
 	now := time.Now()
-	j.State = "committing"
-	if err := writeUpgradeJournal(journalPath, &j); err != nil {
-		return fail(err)
-	}
-	readyToCommit := false
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if !s.commitUpgradeJournal(ctx, candidate, journalPath, &j, func(tx *gorm.DB) error {
 		r := tx.Model(&model.Download{}).Where("id = ? AND status IN ?", candidate.ID, []string{model.DownloadStatusPending, model.DownloadStatusDownloading}).Updates(map[string]interface{}{"status": model.DownloadStatusCompleted, "progress": 100, "completed_at": now, "file_path": seasonDir, "backup_path": backup, "failure_kind": "", "last_error": "", "next_retry_at": nil, "seeking_alternative": false, "quality_note": fmt.Sprintf("整季 %d 集升级完成；旧版已备份", total)})
 		if r.Error != nil {
 			return r.Error
@@ -385,32 +339,9 @@ func (s *Service) completeSeasonUpgrade(ctx context.Context, candidate *model.Do
 				return err
 			}
 		}
-		err := tx.Model(&model.Anime{}).Where("id = ?", anime.ID).Updates(map[string]interface{}{"media_management_state": "archived", "current_episode": total}).Error
-		readyToCommit = err == nil
-		return err
-	})
-	if err != nil {
-		if !readyToCommit {
-			return fail(err)
-		}
-		// The request may have been cancelled after the server committed. Resolve
-		// independently of that request, with a bounded primary database read.
-		resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		committed, resolveErr := s.upgradeCommitted(resolveCtx, &j)
-		cancel()
-		if resolveErr != nil {
-			// Keep both copies and the nonterminal journal. In particular, never
-			// overwrite a possibly committed task or archive this as rolled back.
-			zap.L().Error("整季升级提交结果待恢复；保留新旧文件和恢复日志", zap.Uint("id", candidate.ID), zap.Error(err), zap.NamedError("resolution", resolveErr))
-			return false
-		}
-		if !committed {
-			return fail(err)
-		}
-	}
-	j.State = "committed"
-	if err = writeUpgradeJournal(journalPath, &j); err != nil {
-		zap.L().Warn("整季升级已提交，启动时将补齐日志", zap.Error(err))
+		return tx.Model(&model.Anime{}).Where("id = ?", anime.ID).Updates(map[string]interface{}{"media_management_state": "archived", "current_episode": total}).Error
+	}) {
+		return false
 	}
 	eps := make([]int, total)
 	for i := range eps {
@@ -460,13 +391,18 @@ func (s *Service) validateSeasonUpgradeTask(ctx context.Context, task *Task) err
 
 // A crash after the DB commit may precede engine cleanup. Never let that stale
 // torrent fetch another copy into the old staging directory after restart.
-func (s *Service) SettleRecoveredSeasonUpgrades(ctx context.Context) {
+func (s *Service) SettleRecoveredMediaUpgrades(ctx context.Context) {
 	var completed []model.Download
-	if err := s.db.WithContext(ctx).Where("purpose = ? AND status = ? AND backup_path <> ''", model.DownloadPurposeSeasonUpgrade, model.DownloadStatusCompleted).Find(&completed).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("status = ? AND backup_path <> ''", model.DownloadStatusCompleted).Find(&completed).Error; err != nil {
 		return
 	}
 	for i := range completed {
 		d := &completed[i]
+		if d.Scope != model.DownloadScopeSeason {
+			s.updateAnimeProgress(d.ID)
+			s.resolvePriorFailures(d.ID)
+			s.settleEpisodeRace(ctx, d)
+		}
 		if e := s.executors[d.DownloadType]; e != nil {
 			if err := e.Remove(executorTaskID(d), false); err != nil {
 				zap.L().Warn("清理已完成升级的下载任务失败，文件保持不变", zap.Uint("id", d.ID), zap.Error(err))

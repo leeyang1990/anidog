@@ -125,7 +125,7 @@ func TestSeasonUpgradeLostCommitAcknowledgement(t *testing.T) {
 					t.Fatal("unresolved swap repeated")
 				}
 			}
-			if err := svc.RecoverSeasonUpgrades(context.Background()); err != nil {
+			if err := svc.RecoverMediaUpgrades(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			var got model.AnimeEpisode

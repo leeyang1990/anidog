@@ -23,8 +23,10 @@ func captionRegions(frame []byte) [][]byte {
 		return nil
 	}
 	type band struct {
-		box   image.Rectangle
-		count int
+		box     image.Rectangle
+		anchor  image.Rectangle
+		count   int
+		heights []int
 	}
 	var candidates []band
 	for _, light := range []bool{false, true} {
@@ -64,17 +66,23 @@ func captionRegions(frame []byte) [][]byte {
 			}
 			found := false
 			for i := range bands {
-				old := bands[i].box
-				overlap := min(old.Max.Y, rect.Max.Y) - max(old.Min.Y, rect.Min.Y)
-				if overlap*2 >= min(old.Dy(), rect.Dy()) {
-					bands[i].box = old.Union(rect)
+				old := bands[i].anchor
+				centerDelta := (old.Min.Y + old.Max.Y) - (rect.Min.Y + rect.Max.Y)
+				if centerDelta < 0 {
+					centerDelta = -centerDelta
+				}
+				// Anchor alignment and glyph size cannot drift as background
+				// components are added to a row's growing bounding rectangle.
+				if min(old.Dy(), rect.Dy())*5 >= max(old.Dy(), rect.Dy())*4 && centerDelta*2 <= min(old.Dy(), rect.Dy()) {
+					bands[i].box = bands[i].box.Union(rect)
 					bands[i].count++
+					bands[i].heights = append(bands[i].heights, rect.Dy())
 					found = true
 					break
 				}
 			}
 			if !found {
-				bands = append(bands, band{rect, 1})
+				bands = append(bands, band{box: rect, anchor: rect, count: 1, heights: []int{rect.Dy()}})
 			}
 		}
 		for _, v := range bands {
@@ -84,9 +92,19 @@ func captionRegions(frame []byte) [][]byte {
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].count > candidates[j].count })
+	// Bilingual captions must not merge a smaller Japanese row into Chinese
+	// script evidence. Use character heights, not a noisy row's bounding box.
+	largest := 0
+	for _, v := range candidates {
+		sort.Ints(v.heights)
+		largest = max(largest, v.heights[len(v.heights)/2])
+	}
 	var output [][]byte
 	var boxes []image.Rectangle
 	for _, v := range candidates {
+		if v.heights[len(v.heights)/2]*5 < largest*4 {
+			continue
+		}
 		r := v.box.Inset(-8).Intersect(image.Rect(0, 0, w, h))
 		duplicate := false
 		for _, old := range boxes {

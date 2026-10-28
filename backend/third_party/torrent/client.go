@@ -1533,6 +1533,12 @@ func (cl *Client) AddTorrentOpt(opts AddTorrentOpts) (t *Torrent, new bool) {
 		}
 	})
 	cl.torrentsByShortHash[infoHash] = t
+	// Publish every supplied identity before metadata and tracker callbacks can
+	// resolve this owner. Hybrid metadata already knows both hashes, so the
+	// metadata path only validates them and will not add the missing alias.
+	if opts.InfoHashV2.Ok {
+		cl.torrentsByShortHash[*opts.InfoHashV2.Value.ToShort()] = t
+	}
 	t.setInfoBytesLocked(opts.InfoBytes)
 	cl.clearAcceptLimits()
 	t.updateWantPeersEvent()

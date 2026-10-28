@@ -159,6 +159,26 @@ func (o *Orchestrator) coolingStreamRoads(ctx context.Context, animeID uint, ep 
 		return nil, fmt.Errorf("查询线路冷却失败: %w", err)
 	}
 	blocked, seen := map[string]bool{}, map[string]bool{}
+	// A retained payload is an acceptance job, not an expired transfer failure.
+	// Keep other roads eligible, but require local repair/review (or a missing
+	// file) before downloading this stable source identity again. Inspect every
+	// retained owner, even if a newer failed network probe has no payload.
+	for i := range failures {
+		row := &failures[i]
+		if !row.ValidationPending || row.StreamDetailURL == nil || *row.StreamDetailURL != detail || row.StreamRoadName == nil || *row.StreamRoadName == "" || blocked[*row.StreamRoadName] {
+			continue
+		}
+		if o.dlSvc == nil {
+			return nil, fmt.Errorf("下载服务不可用，无法核实保留成片")
+		}
+		retained, err := o.dlSvc.HasRetainedMedia(ctx, row)
+		if err != nil {
+			return nil, fmt.Errorf("核实保留成片失败: %w", err)
+		}
+		if retained {
+			blocked[*row.StreamRoadName] = true
+		}
+	}
 	exhausted := map[string]int{}
 	for _, failure := range failures {
 		if failure.FailureKind == model.FailureKindExhausted {

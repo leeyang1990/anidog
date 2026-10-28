@@ -15,7 +15,7 @@ type retryCaptureExecutor struct {
 
 func (e *retryCaptureExecutor) Execute(_ context.Context, task *Task, _ ProgressCallback) (*Result, error) {
 	e.tasks <- *task
-	return &Result{TorrentID: task.RuntimeID}, nil
+	return &Result{TorrentID: testTorrentReceipt(task)}, nil
 }
 
 func TestExplicitRetryResetsEvidenceAndActuallyRequeuesTorrent(t *testing.T) {

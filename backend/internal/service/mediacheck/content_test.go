@@ -61,7 +61,7 @@ func TestProofMatchingCannotGrantPositiveAdmission(t *testing.T) {
 
 func TestSubtitleEvidenceIncludesBlankFramesWithoutInventingCaptions(t *testing.T) {
 	e := detectHardSubtitles(context.Background(), 1500, func(context.Context, float64) ([]byte, error) { return []byte("different pixels"), nil }, func(context.Context, []byte) (string, error) { return "", nil })
-	if e.Language != "" || e.Characters != 0 || len(e.Samples) != 10 || e.InspectorVersion != SubtitleInspectorVersion {
+	if e.Language != "" || e.Characters != 0 || len(e.Samples) != 20 || e.InspectorVersion != SubtitleInspectorVersion {
 		t.Fatal(e)
 	}
 	for _, s := range e.Samples {

@@ -2233,8 +2233,13 @@ func (t *Torrent) startScrapingTrackerWithInfohash(u *url.URL, urlStr trackerAnn
 
 // We need a key in regularTrackerAnnounceState to ensure we propagate next announce state values.
 func (t *Torrent) initRegularTrackerAnnounceState(key torrentTrackerAnnouncerKey) {
+	if t.isDropped() {
+		return
+	}
 	g.MakeMapIfNil(&t.regularTrackerAnnounceState)
-	t.cl.regularTrackerAnnounceDispatcher.addKey(key)
+	if !t.cl.regularTrackerAnnounceDispatcher.addKey(key) {
+		return
+	}
 	t.regularTrackerAnnounceState[key] = t.cl.regularTrackerAnnounceDispatcher.announceStates[key]
 	t.deferUpdateRegularTrackerAnnouncing()
 }

@@ -415,6 +415,11 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 	// TorrentExecutor 成功只表示种子已提交给 BT 引擎，并不代表文件下载完成。
 	// 实际进度和 completed 由 TorrentSyncer 根据引擎状态写回。
 	if task.DownloadType == model.DownloadTypeTorrent && !resumedValidation {
+		if result == nil || normalizeTorrentHash(result.TorrentID) == "" {
+			fields, _, _ := failureFields(failure.Wrap(failure.Engine, failure.StateUnavailable, fmt.Errorf("BT 引擎没有返回可跟踪的接单身份")), task.RetryCount)
+			s.updateStatus(dlID, model.DownloadStatusFailed, fields)
+			return
+		}
 		extra := map[string]interface{}{
 			"failure_kind":  "",
 			"failure_code":  "",
@@ -422,15 +427,13 @@ func (s *Service) execute(dlID uint, torrentID string, task *Task) {
 			"last_error":    "",
 			"next_retry_at": nil,
 		}
-		if result != nil && result.TorrentID != "" {
-			extra["torrent_id"] = result.TorrentID
-			// The provider's receipt is authoritative. Plain torrent URLs may
-			// contain no hash at all; URL parsing is only a discovery hint.
-			if hash := normalizeTorrentHash(result.TorrentID); hash != "" {
-				extra["info_hash"] = hash
-			}
+		// Keep the attempt ID stable. A provider hash identifies reusable content,
+		// and may already belong to a terminal historical attempt. All provider
+		// controls use InfoHash, while projections and callbacks use TorrentID.
+		extra["info_hash"] = normalizeTorrentHash(result.TorrentID)
+		if !s.updateStatus(dlID, model.DownloadStatusDownloading, extra) {
+			return
 		}
-		s.updateStatus(dlID, model.DownloadStatusDownloading, extra)
 		zap.L().Info("种子已提交到 BT 引擎", zap.String("name", task.Name))
 		return
 	}
@@ -474,8 +477,14 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		}
 		return false
 	}
+	upgradeState, upgradeErr := s.episodeUpgradeState(ctx, &candidate)
+	if upgradeErr != nil {
+		s.rejectMediaCandidate(ctx, &candidate, failure.Wrap(failure.Archive, failure.StateUnavailable, upgradeErr))
+		return false
+	}
+	strictUpgrade := upgradeState != nil
 	if candidate.Status == model.DownloadStatusDownloading || candidate.Status == model.DownloadStatusPending {
-		if candidate.Scope != model.DownloadScopeSeason && stagingPath != "" && finalPath != "" && s.cfg != nil && (s.cfg.VerifyDownloadedMedia || candidate.Source == SourceStream) {
+		if candidate.Scope != model.DownloadScopeSeason && stagingPath != "" && finalPath != "" && s.cfg != nil && (s.cfg.VerifyDownloadedMedia || candidate.Source == SourceStream || strictUpgrade) {
 			if err := s.retainStreamResult(ctx, dlID, &Result{FilePath: stagingPath, FinalPath: finalPath}); err != nil {
 				s.rejectMediaCandidate(ctx, &candidate, err)
 				return false
@@ -486,7 +495,7 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 			ep = *candidate.EpisodeNumber
 		}
 		validationPath := existingCompletionPath(stagingPath, finalPath)
-		if err := s.validateCompletedMedia(ctx, &candidate, ep, validationPath); err != nil {
+		if err := s.validateMediaWithOptions(ctx, &candidate, ep, validationPath, strictUpgrade, strictUpgrade); err != nil {
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return false
 			}
@@ -501,6 +510,16 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 	// Slow media inspection runs independently; only winner election and the
 	// filesystem promotion need serialization. Reload below guards late results.
 	s.completionMu.Lock()
+	if strictUpgrade {
+		handled, upgradeWon := s.completeEpisodeUpgrade(ctx, &candidate, stagingPath, finalPath)
+		if handled {
+			s.completionMu.Unlock()
+			if upgradeWon {
+				s.finishEpisodeWinner(ctx, &candidate, stagingPath)
+			}
+			return upgradeWon
+		}
+	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if candidate.AnimeID != nil {
 			var anime model.Anime
@@ -617,15 +636,20 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		}
 		return false
 	}
-	s.updateAnimeProgress(dlID)
-	s.resolvePriorFailures(dlID)
-	s.notifyCompletion(dlID)
-	s.settleEpisodeRace(ctx, &candidate)
+	s.finishEpisodeWinner(ctx, &candidate, stagingPath)
+	return true
+}
+
+func (s *Service) finishEpisodeWinner(ctx context.Context, candidate *model.Download, stagingPath string) {
+	s.updateAnimeProgress(candidate.ID)
+	s.resolvePriorFailures(candidate.ID)
+	s.notifyCompletion(candidate.ID)
+	s.settleEpisodeRace(ctx, candidate)
 	// 隔离 BT 候选归档后，qBittorrent 仍指向旧 staging 路径。
 	// 仅移除任务、不删除文件；正式媒体已原子移动到规范路径。
 	if stagingPath != "" && candidate.DownloadType == model.DownloadTypeTorrent {
 		if exec := s.executors[candidate.DownloadType]; exec != nil {
-			if err := exec.Remove(executorTaskID(&candidate), false); err != nil {
+			if err := exec.Remove(executorTaskID(candidate), false); err != nil {
 				zap.L().Warn("移除竞速赢家的 qBit 任务失败",
 					zap.Uint("id", candidate.ID), zap.Error(err))
 			}
@@ -633,8 +657,7 @@ func (s *Service) CompleteEpisodeRace(ctx context.Context, dlID uint, stagingPat
 		removeTorrentRaceDirectory(candidate.SavePath)
 	}
 	zap.L().Info("剧集竞速产生赢家",
-		zap.Uint("id", dlID), zap.String("name", candidate.Name), zap.String("source", candidate.Source))
-	return true
+		zap.Uint("id", candidate.ID), zap.String("name", candidate.Name), zap.String("source", candidate.Source))
 }
 
 type seasonPackMovePlan struct {

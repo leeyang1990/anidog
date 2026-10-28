@@ -30,7 +30,11 @@ func (s *Service) validateCompletedMedia(ctx context.Context, dl *model.Download
 }
 
 func (s *Service) validateMedia(ctx context.Context, dl *model.Download, ep int, path string, force bool) error {
-	if !force && (s.cfg == nil || (!s.cfg.VerifyDownloadedMedia && dl.Source != SourceStream)) && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
+	return s.validateMediaWithOptions(ctx, dl, ep, path, force, false)
+}
+
+func (s *Service) validateMediaWithOptions(ctx context.Context, dl *model.Download, ep int, path string, force, strict bool) error {
+	if !force && !strict && (s.cfg == nil || (!s.cfg.VerifyDownloadedMedia && dl.Source != SourceStream)) && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
 		return nil
 	}
 	m, err := mediacheck.Probe(ctx, path)
@@ -60,14 +64,14 @@ func (s *Service) validateMedia(ctx context.Context, dl *model.Download, ep int,
 	}
 	// Manual selection can explicitly accept a version different from global
 	// preferences, but cannot waive structural validity or reference duration.
-	if dl.Source == SourceManual && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
+	if !strict && dl.Source == SourceManual && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
 		return nil
 	}
 	quality, languages, fallback, err := s.mediaGoal(ctx, dl.AnimeID)
 	if err != nil {
 		return err
 	}
-	if fallback && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
+	if !strict && fallback && dl.Purpose != model.DownloadPurposeSeasonUpgrade {
 		return nil
 	}
 	// Source titles rank candidates. Admission requires the actual media, for

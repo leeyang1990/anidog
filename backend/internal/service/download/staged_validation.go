@@ -72,6 +72,14 @@ func (s *Service) retainedValidationResult(ctx context.Context, dl *model.Downlo
 	return &Result{FilePath: *dl.FilePath, FinalPath: dl.ValidationFinalPath}, nil
 }
 
+// HasRetainedMedia is the asset availability boundary for source planning.
+// Cooling a source cannot invalidate bytes already awaiting local acceptance.
+// Missing files permit a new transfer; unsafe/unreadable paths fail closed.
+func (s *Service) HasRetainedMedia(ctx context.Context, dl *model.Download) (bool, error) {
+	result, err := s.retainedValidationResult(ctx, dl)
+	return result != nil, err
+}
+
 type validationRun struct {
 	cancel context.CancelFunc
 	done   chan struct{}

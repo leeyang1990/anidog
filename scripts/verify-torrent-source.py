@@ -22,7 +22,7 @@ reviewed = {'peerconn.go': ('f9ff3c53f7d20d504c57eabbed04720af374f8dd00a15a6d584
  'client.go': ('6d8b777108fbd0826879fa2fab00b371c027efb6ae143227dfaae5fbe09ba470',
                '44a71bff56c53b4c472c8f8e955064777dfe37a75e901abbcd827f099a0cef49'),
  'torrent.go': ('aa4dc01cb8caed2cfb2196b4cb8ffde92a05ea243de38086cc92d95096f3deeb',
-                'a689f4cde811435e0b368b19f9a4695bb845080de0acf3e6ab313f2bceeef70a'),
+                'd62508a7e34d63059bf3eb2d108e428a91fd52b9bc9eb321c86b956f53b040ab'),
  'client-tracker-announcer.go': ('7d86f9eecd54d4fb68486b16d9665c9f7e3022b7d4de2dc14733918fed32f3b5',
                                  '804601fe886eb349853e7b0a74370e2d5d26b10653b711adc8912b366724ebb0'),
  'torrent-piece-request-order.go': ('f4ad3c545eb4cecd4e35857170f5b7c32aa71c46713eba0f5d3acfc0fc085423',

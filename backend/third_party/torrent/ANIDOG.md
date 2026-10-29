@@ -78,7 +78,7 @@ libtorrent-generated v2 media additionally passes the HTTP/API/PostgreSQL/NAS
 acceptance harness with no replacement of the production binary.
 
 Multi-piece pure v2 additionally exposed two existing initialization invariants.
-`onSetInfo` batches piece initialization before publishing pending-work triggers.
+`onSetInfo` builds every request-order and pending-hash entry before reading storage completion. Completion callbacks can open connections directly, so suppressing priority triggers alone does not protect initialization.
 The request-order invariant compares data requests plus pieces still needing v2
 hashes, matching `updatePendingPieces` semantics. `Piece.setV2Hash` reconciles
 request priority even when disk completion is unchanged, before any completion

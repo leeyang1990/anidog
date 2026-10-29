@@ -7,6 +7,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,9 +17,11 @@ import (
 	"testing"
 	"time"
 
+	g "github.com/anacrolix/generics"
 	atorrent "github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/anacrolix/torrent/storage"
 )
 
 func versionedFixture(t *testing.T, root string, hybrid bool) (*metainfo.MetaInfo, string, []byte) {
@@ -206,4 +209,100 @@ func TestEngineV2IdentityTransferAndRecovery(t *testing.T) {
 	if err != nil || !bytes.Equal(got, payload) {
 		t.Fatal("removal changed retained bytes", err)
 	}
+}
+
+// Restored final files can already be marked complete while a v2 magnet's
+// cached metadata has no piece layers. Completion callbacks may dial peers;
+// they must only observe the complete inventory of hash and byte work.
+func TestV2RetainedInventoryBeforeCompletionCallbacks(t *testing.T) {
+	if os.Getenv("ANIDOG_V2_RETAINED_TEST") != "1" {
+		for _, mode := range []string{"classic", "mmap"} {
+			t.Run(mode, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestV2RetainedInventoryBeforeCompletionCallbacks$", "-test.timeout=12s")
+				for _, env := range os.Environ() {
+					if !strings.HasPrefix(env, "ANIDOG_V2_RETAINED_TEST=") && !strings.HasPrefix(env, "TORRENT_STORAGE_DEFAULT_FILE_IO=") {
+						cmd.Env = append(cmd.Env, env)
+					}
+				}
+				cmd.Env = append(cmd.Env, "ANIDOG_V2_RETAINED_TEST=1", "TORRENT_STORAGE_DEFAULT_FILE_IO="+mode)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("retained inventory: %v\n%s", err, out)
+				}
+			})
+		}
+		return
+	}
+	root := t.TempDir()
+	mi, source, payload := versionedFixture(t, root, false)
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.PieceLength = 16 << 10
+	mi.InfoBytes, err = bencode.Marshal(&info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mi.PieceLayers = nil
+	f, err := os.Create(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mi.Write(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(root, "download")
+	if err := os.MkdirAll(filepath.Join(dest, "package"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dest, "package", "payload.bin")
+	if err := os.WriteFile(path, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestEngine(t, filepath.Join(root, "state"), filepath.Join(root, "different-default"))
+	defer engine.Close()
+	engine.client.AddDialer(atorrent.NetworkDialer{Network: "tcp", Dialer: &net.Dialer{}})
+	// Model the truthful completion receipt retained by a storage backend for
+	// these already verified bytes, independently of its cache heuristics.
+	spec := atorrent.TorrentSpecFromMetaInfo(mi)
+	spec.Storage = completedInventoryStorage{newFileStorage(dest)}
+	spec.DisallowDataDownload = true
+	torrent, _, err := engine.client.AddTorrentSpec(spec)
+	if err != nil || torrent.Info() == nil || torrent.NumPieces() != 4 {
+		t.Fatal("inventory not initialized", err)
+	}
+	setDownloadDemand(torrent, false)
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("retained bytes changed", err)
+	}
+}
+
+type completedInventoryStorage struct{ storage.ClientImplCloser }
+
+func (s completedInventoryStorage) OpenTorrent(ctx context.Context, info *metainfo.Info, hash metainfo.Hash) (storage.TorrentImpl, error) {
+	opened, err := s.ClientImplCloser.OpenTorrent(ctx, info, hash)
+	if err != nil {
+		return opened, err
+	}
+	if piece := opened.Piece; piece != nil {
+		opened.Piece = func(p metainfo.Piece) storage.PieceImpl { return completedInventoryPiece{piece(p)} }
+	}
+	if piece := opened.PieceWithHash; piece != nil {
+		opened.PieceWithHash = func(p metainfo.Piece, h g.Option[[]byte]) storage.PieceImpl {
+			return completedInventoryPiece{piece(p, h)}
+		}
+	}
+	return opened, nil
+}
+
+type completedInventoryPiece struct{ storage.PieceImpl }
+
+func (completedInventoryPiece) Completion() storage.Completion {
+	return storage.Completion{Complete: true, Ok: true}
 }

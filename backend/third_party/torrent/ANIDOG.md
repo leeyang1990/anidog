@@ -29,7 +29,7 @@ unrelated unreleased upstream changes are not included.
 
 Run `python3 scripts/verify-torrent-source.py` from the repository root to
 compare every file with the checksum-verified upstream module and allow only
-the exact four documented source-file digests plus this file. Backend CI runs this check. A future
+the exact six documented source-file digests plus this file. Backend CI runs this check. A future
 upgrade must first pass the lifecycle, control, retained-partial recovery and
 NAS storage contracts, then remove the replacement and this directory together.
 
@@ -60,3 +60,36 @@ response released after replacement, late AddTrackers and shutdown. The original
 code panics on hybrid registration; alias registration alone still fails readd.
 The source verifier pins before/after SHA256 for all four changed source files
 and compares the rest of the complete module byte for byte.
+
+## v0.4.28: pure v2 registry entry
+
+`Client.AddTorrentOpt` selects a v2 short registry key when the v1 hash is
+absent, while preserving the absent v1 field in `opts`. A valid BEP 52 torrent
+can therefore reach the existing v2 metadata, piece hashing and wire protocol
+implementation without tripping the v1-only entry assertion. The nonzero
+registry assertion stays enabled. The application validates its input identity
+before calling this dependency and keeps the full v2 receipt separately from
+the short wire key; it never synthesizes a v1 identity from a v2 prefix.
+
+Fresh-process provider tests exercise pure v2 file and magnet submission, real
+peer transfer, full receipt snapshots, controls, cached metadata recovery,
+removal, and hybrid metadata discovery after a v2-only magnet. Independent
+libtorrent-generated v2 media additionally passes the HTTP/API/PostgreSQL/NAS
+acceptance harness with no replacement of the production binary.
+
+Multi-piece pure v2 additionally exposed two existing initialization invariants.
+`onSetInfo` batches piece initialization before publishing pending-work triggers.
+The request-order invariant compares data requests plus pieces still needing v2
+hashes, matching `updatePendingPieces` semantics. `Piece.setV2Hash` reconciles
+request priority even when disk completion is unchanged, before any completion
+callback schedules peers. The assertion remains active for both work sets; the
+existing v1 pause/control regression continues to exercise its original strict
+condition. Multi-piece fresh-process fixtures reproduce the original failure
+and verify transfer plus retained-byte recovery. The source verifier now pins
+six changed files; the rest of the complete upstream module remains identical.
+
+Outgoing handshakes snapshot both identities and the canonical short key under
+the client read lock before network I/O. Hybrid metadata discovery may publish
+the v1 alias concurrently; encryption, reserved bits and response validation
+must consume one consistent snapshot rather than race on mutable options.
+Fresh-process v2-magnet regressions run under the race detector as well.

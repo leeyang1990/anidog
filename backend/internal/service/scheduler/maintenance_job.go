@@ -5,12 +5,13 @@ import (
 	"time"
 
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/downloadrecord"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
 // MaintenanceJob 清理已经失去运行价值的竞速候选记录。
-// completed/failed 记录保留用于追踪问题，只删除过期 superseded 行。
+// completed/failed 记录保留用于追踪问题，只删除过期且无引用的 superseded 行。
 type MaintenanceJob struct {
 	db        *gorm.DB
 	retention time.Duration
@@ -31,6 +32,7 @@ func (j *MaintenanceJob) Run(ctx context.Context) {
 	}
 	cutoff := time.Now().Add(-j.retention)
 	result := j.db.WithContext(ctx).
+		Scopes(downloadrecord.Unreferenced).
 		Where("status = ? AND updated_at < ?", model.DownloadStatusSuperseded, cutoff).
 		Delete(&model.Download{})
 	if result.Error != nil {

@@ -110,6 +110,16 @@ func (t *Torrent) checkPendingPiecesMatchesRequestOrder() {
 		}
 		proBitmap.Add(uint32(item.Key.Index))
 	}
+	// Pending work includes fetching v2 piece hashes as well as data. Hashless
+	// pieces cannot enter the byte-request order yet (ignoreForRequests), but
+	// updatePendingPieces deliberately keeps them pending until hashes arrive.
+	// Compare the full expected work set, retaining the strict invariant for
+	// both known-hash data requests and missing-hash metadata acquisition.
+	for i := range t.pieces {
+		if !t.pieces[i].haveHash() {
+			proBitmap.Add(uint32(i))
+		}
+	}
 	if !proBitmap.Equals(&t._pendingPieces) {
 		intersection := roaring.And(&proBitmap, &t._pendingPieces)
 		exclPro := roaring.AndNot(&proBitmap, intersection)

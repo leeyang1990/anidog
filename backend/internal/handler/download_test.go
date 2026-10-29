@@ -10,6 +10,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/downloader/providers/mock"
+	"github.com/anidog/anidog-go/internal/model"
 	authsvc "github.com/anidog/anidog-go/internal/service/auth"
 	dlservice "github.com/anidog/anidog-go/internal/service/download"
 	"github.com/anidog/anidog-go/internal/testutil"
@@ -161,3 +162,25 @@ func TestDownload_ResumeAll(t *testing.T) {
 // ensure imports used
 var _ *config.Config = nil
 var _ *ws.Hub = nil
+
+func TestDownload_DeleteReferencedOriginReturnsConflict(t *testing.T) {
+	db := testutil.InitTestDB()
+	origin := model.Download{TorrentID: "origin", Name: "origin", URL: "fixture"}
+	if err := db.Create(&origin).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.MediaEvidence{VideoHash: "digest", InspectorVersion: "v", Evidence: "{}", OriginDownloadID: &origin.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := NewDownloadHandler(dlservice.NewService(db, testutil.TestConfig(), nil))
+	router := testutil.SetupRouter()
+	h.RegisterRoutes(router.Group("/api/v1"))
+	response := testutil.MakeRequest(router, http.MethodDelete, "/api/v1/downloads/"+uintToStr(origin.ID), nil, "")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	var count int64
+	if err := db.Model(&model.Download{}).Where("id = ?", origin.ID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatal("origin lost", count, err)
+	}
+}

@@ -193,20 +193,13 @@ func New(cfg *config.Config) (*Engine, error) {
 func (e *Engine) Name() string { return "AniDog Embedded BT" }
 
 func (e *Engine) AddTorrent(ctx context.Context, torrentURL, savePath string) (string, error) {
-	return e.add(ctx, torrentURL, torrentURL, savePath, false, time.Now(), true)
+	return e.add(ctx, addRequest{URL: torrentURL, SourceURL: torrentURL, SavePath: savePath, AddedAt: time.Now(), Persist: true})
 }
 
-func (e *Engine) add(
-	ctx context.Context,
-	manifestURL string,
-	sourceURL string,
-	savePath string,
-	paused bool,
-	addedAt time.Time,
-	persist bool,
-) (string, error) {
-	manifestURL = strings.TrimSpace(manifestURL)
-	sourceURL = strings.TrimSpace(sourceURL)
+func (e *Engine) add(ctx context.Context, request addRequest) (string, error) {
+	manifestURL := strings.TrimSpace(request.URL)
+	sourceURL := strings.TrimSpace(request.SourceURL)
+	savePath, paused, addedAt, persist := request.SavePath, request.Paused, request.AddedAt, request.Persist
 	if manifestURL == "" || sourceURL == "" {
 		return "", errors.New("torrent URL 不能为空")
 	}
@@ -253,6 +246,10 @@ func (e *Engine) add(
 	if err != nil {
 		return "", err
 	}
+	hash, err := contentIdentity(spec, request.Identity)
+	if err != nil {
+		return "", err
+	}
 	// Each task gets qBittorrent-compatible save-path semantics: torrent files
 	// are rooted below the exact directory selected by AniDog.
 	spec.Storage = newFileStorage(cleanSavePath)
@@ -262,13 +259,20 @@ func (e *Engine) add(
 	if err != nil {
 		return "", fmt.Errorf("添加 BT 任务: %w", err)
 	}
-	hash := strings.ToUpper(t.InfoHash().HexString())
 	if !added {
 		e.mu.RLock()
-		entry, tracked := e.entries[hash]
+		var entry *torrentEntry
+		for _, managed := range e.entries {
+			if managed.torrent == t {
+				entry = managed
+				break
+			}
+		}
+		tracked := entry != nil
 		storedPath := ""
 		if tracked {
 			storedPath = entry.SavePath
+			hash = entry.InfoHash
 		}
 		e.mu.RUnlock()
 		if tracked {
@@ -570,7 +574,7 @@ func (e *Engine) snapshotLocked(entry *torrentEntry) downloader.TorrentSnapshot 
 		}
 	}
 	return downloader.TorrentSnapshot{
-		ID:             strings.ToUpper(t.InfoHash().HexString()),
+		ID:             entry.InfoHash,
 		Name:           t.Name(),
 		State:          state,
 		HasMetadata:    hasMetadata,
@@ -722,7 +726,7 @@ func (e *Engine) restore(ctx context.Context) error {
 		if cached := e.metainfoPath(item.InfoHash); fileExists(cached) {
 			sourceURL = cached
 		}
-		if _, err := e.add(ctx, item.URL, sourceURL, item.SavePath, item.Paused, item.AddedAt, false); err != nil {
+		if _, err := e.add(ctx, addRequest{URL: item.URL, SourceURL: sourceURL, SavePath: item.SavePath, Identity: item.InfoHash, Paused: item.Paused, AddedAt: item.AddedAt}); err != nil {
 			restoreErrors = append(restoreErrors, fmt.Errorf("恢复 %s: %w", item.InfoHash, err))
 		}
 	}

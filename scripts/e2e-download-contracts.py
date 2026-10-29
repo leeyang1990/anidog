@@ -39,6 +39,12 @@ parser.add_argument(
     type=Path,
     help="Optional candidate Linux binary; omitted for official-image acceptance",
 )
+parser.add_argument(
+    "--retention-probe",
+    required=True,
+    type=Path,
+    help="Linux scheduler test binary built from the same source revision",
+)
 options = parser.parse_args()
 root = options.workspace.resolve()
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -46,6 +52,7 @@ fixtures = root / "fixtures"
 fixtures.mkdir(mode=0o700)
 if options.binary:
     shutil.copy2(options.binary.resolve(strict=True), fixtures / "anidog")
+shutil.copy2(options.retention_probe.resolve(strict=True), fixtures / "retention-probe")
 run_id = secrets.token_hex(5)
 data = options.media_parent.resolve(strict=True) / (".anidog-e2e-" + run_id)
 data.mkdir(mode=0o700)
@@ -68,7 +75,7 @@ def info():
     return json.loads(docker("inspect", app).stdout)[0]
 
 
-def api(path, body=None, form=None):
+def api(path, body=None, form=None, method=None):
     headers = {}
     if token:
         headers["Authorization"] = "Bearer " + token
@@ -84,7 +91,7 @@ def api(path, body=None, form=None):
         api_base + "/api/v1" + path,
         raw,
         headers,
-        method="PUT" if path == "/settings" and body else None,
+        method=method or ("PUT" if path == "/settings" and body else None),
     )
     with opener.open(req, timeout=15) as r:
         return json.load(r)
@@ -179,6 +186,7 @@ try:
         "1\n00:00:01,000 --> 00:00:03,000\n這是一份繁體字幕，測試實際檔案。\n"
     )
     cases = [
+        ("accepted-v2", "1920x1080", "simplified", "CHS", "zh-Hans"),
         ("accepted", "1920x1080", "simplified", "CHS", "zh-Hans"),
         ("low-resolution", "1280x720", "simplified", "CHS", "zh-Hans"),
         ("traditional", "1920x1080", "traditional", "CHT", "zh-Hant"),
@@ -242,7 +250,11 @@ try:
         )
         fs = lt.file_storage()
         lt.add_files(fs, str(fixtures / (name + ".mkv")))
-        ct = lt.create_torrent(fs, 32 * 1024)
+        ct = (
+            lt.create_torrent(fs, 32 * 1024, lt.create_torrent.v2_only)
+            if name == "accepted-v2"
+            else lt.create_torrent(fs, 32 * 1024)
+        )
         ct.add_tracker(
             "http://" + gateway + ":" + str(tracker.server_port) + "/announce"
         )
@@ -305,6 +317,26 @@ try:
         0
     ]["Gateway"]
     address = next(iter(info()["NetworkSettings"]["Networks"].values()))["IPAddress"]
+    probe = docker(
+        "run",
+        "--rm",
+        "--network",
+        net,
+        "--env-file",
+        str(envfile),
+        "-e",
+        "ANIDOG_POSTGRES_CONTRACT=1",
+        "-v",
+        str(fixtures) + ":/fixtures:ro",
+        "--entrypoint",
+        "/fixtures/retention-probe",
+        runtime,
+        "-test.run=^TestPostgresEvidenceRetention$",
+        "-test.v",
+        "-test.timeout=60s",
+    )
+    (root / "postgres-retention-contracts.log").write_bytes(probe.stdout + probe.stderr)
+    v2_restart_receipt = None
     targets = []
     for name, size, sub, title, lang in cases:
         anime = api(
@@ -326,6 +358,8 @@ try:
         params.ti = ti
         params.save_path = str(fixtures)
         params.flags &= ~(lt.torrent_flags.paused | lt.torrent_flags.auto_managed)
+        if name == "accepted-v2":
+            params.flags |= lt.torrent_flags.paused
         handle = session.add_torrent(params)
         row = api(
             "/downloads/",
@@ -338,6 +372,37 @@ try:
                 "episode_number": 1,
             },
         )
+        if name == "accepted-v2":
+            expected_v2 = str(ti.info_hashes().v2).upper()
+            for _ in range(30):
+                row = api("/downloads/" + str(row["id"]))
+                if row.get("info_hash"):
+                    break
+                time.sleep(1)
+            assert row.get("info_hash") == expected_v2 and len(expected_v2) == 64
+            attempt = row["torrent_id"]
+            assert attempt != expected_v2
+            paused = api(f"/downloads/{row['id']}/pause", method="POST")
+            assert paused["status"] == "paused"
+            docker("restart", app)
+            for _ in range(60):
+                try:
+                    row = api("/downloads/" + str(row["id"]))
+                    break
+                except Exception:
+                    time.sleep(1)
+            else:
+                raise RuntimeError("paused v2 task did not recover")
+            assert row["status"] == "paused" and row["info_hash"] == expected_v2
+            assert row["torrent_id"] == attempt
+            handle.resume()
+            api(f"/downloads/{row['id']}/resume", method="POST")
+            v2_restart_receipt = {
+                "id": row["id"],
+                "full_v2": expected_v2,
+                "attempt_id": attempt,
+                "paused_restart_preserved": True,
+            }
         targets.append(
             {
                 "name": name,
@@ -382,13 +447,15 @@ try:
         eps = api(f"/anime/{t['anime_id']}/episodes")
         assert len(eps) == 1
         ep = eps[0]
-        if t["name"] == "accepted":
+        if t["name"] in ["accepted", "accepted-v2"]:
             assert row["status"] == "completed" and ep["downloaded"]
             path = data / row["file_path"].removeprefix("/downloads/")
             assert (
                 path.is_file()
                 and hashlib.sha256(path.read_bytes()).digest()
-                == hashlib.sha256((fixtures / "accepted.mkv").read_bytes()).digest()
+                == hashlib.sha256(
+                    (fixtures / (t["name"] + ".mkv")).read_bytes()
+                ).digest()
             )
             assert ep["file_path"] == row["file_path"]
         else:
@@ -558,6 +625,8 @@ try:
     assert tracker_requests > 0
     result = {
         "normal_tracker_discovery": True,
+        "pure_v2_restart_and_transfer": v2_restart_receipt,
+        "postgres_retention_and_concurrent_fk": True,
         "tracker_requests": tracker_requests,
         "single_episode_upgrade": replacement,
         "candidate_binary": bool(options.binary),

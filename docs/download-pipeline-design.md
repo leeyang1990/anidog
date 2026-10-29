@@ -181,7 +181,21 @@ BT 内容身份和执行尝试身份不能互相覆盖。新记录的 `torrent_i
 可复用的端到端入口为 `scripts/e2e-download-contracts.py`，在 Linux Docker 主机安装 Python libtorrent、预载 PostgreSQL 16 镜像后运行：
 
 ```sh
-python3 scripts/e2e-download-contracts.py --image leeyang1990/anidog-backend:v0.4.27 --workspace /tmp/anidog-contract-run-unique --media-parent /path/to/test-media
+python3 scripts/e2e-download-contracts.py --image leeyang1990/anidog-backend:v0.4.28 --retention-probe /path/to/linux-scheduler.test --workspace /tmp/anidog-contract-run-unique --media-parent /path/to/test-media
 ```
 
 workspace 必须是新目录；脚本为每次运行创建独立内网、PostgreSQL、BT 状态及媒体子目录，经普通 HTTP API 验证合格/低清/繁体/未知、相同内容再次接单、旧单集质量审计与安全替换、旧版和新版 SHA256、重启与容量零值保存。seed 由本地 HTTP Tracker 正常发现，不向应用注入 peer 或补做生产没有的修复。可选 `--binary` 仅用于候选服务端验收；正式镜像验收应省略。结束清理此次容器和网络，保留成片与证据；私有临时凭据不进入报告。
+
+## v0.4.28 协议身份与证据生命周期
+
+BT provider 的接单回执使用完整内容身份：优先 v1，纯 v2 使用完整 SHA256。20 字节短键仅属于协议库的 Tracker/握手注册表；任务控制、数据库、快照、元数据缓存和 manifest 不引用该短键。恢复时核实持久身份确实是元数据中的别名，保留原接单身份；v2-only magnet 后来发现混合元数据时不更换键。输入缺少身份或没有有效协议键会在调用库前失败，不捕获 panic 作为正常控制流。受控依赖变更仍由精确源摘要检查保护。
+
+`service/downloadrecord` 统一表达记录的保留引用，下载器不读业务数据库。自动维护仅删除没有证据、复用、媒体映射或升级备份引用的过期淘汰记录；显式删除来源也先检查证据引用。`OriginDownloadID` 和 `EvidenceReusedFrom` 的 RESTRICT 外键是数据库并发边界，避免一个事务清理后另一个事务仍插入悬空来源。保留期限不是解除引用约束的授权，证据正文也不因来源过期而丢弃。
+
+代价：有引用的元数据可能超过 90 天继续保留，需要对引用列建索引；用户删除必要的来源会收到 409 冲突。迁移保留现有字段与记录，既有悬空引用应先核实修复，不能为建约束静默清空来源。两连接 PostgreSQL 合同覆盖并发删除提交/回滚和引用插入，不能用 SQLite 的串行结果代替。
+
+端到端脚本还要求 `--retention-probe /path/to/linux-scheduler.test`。该测试二进制从同一源码通过 `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -o /tmp/linux-scheduler.test ./internal/service/scheduler` 构建，在隔离网络与数据库中执行实际维护与外键合同；只有名为 fixture 的测试数据库允许执行，凭据不输出。正式镜像验收省略 `--binary`，保留旧版素材备份与完整哈希检查。
+
+显式删除在文件操作前锁定来源记录，直到删除事务提交：PostgreSQL 使用行锁，SQLite 在读取前取得写保留，避免引用在检查与文件操作之间插入。代价是下载器删除期间占用该锁；文件删除与数据库提交仍不是跨系统原子事务，下载器失败保留记录，不能据此宣称完成多主文件事务迁移。SQLite 两种驱动的每条连接均启用外键；仅在迁移连接执行一次 PRAGMA 不能保护后续连接。
+
+纯 v2 多分片回归另外固定初始化与哈希到达的请求调度约定：完整建立分片清单后再发布回调，待办集合包含数据与缺少哈希的元数据工作，哈希到达后重新计算请求资格。出站握手在客户端锁内取得身份快照，网络 I/O 不持锁；后到的混合元数据别名不能造成读写竞态。断言和哈希校验继续启用。

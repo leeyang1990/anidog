@@ -19,6 +19,7 @@ import (
 
 	"github.com/anidog/anidog-go/internal/config"
 	"github.com/anidog/anidog-go/internal/model"
+	"github.com/anidog/anidog-go/internal/service/downloadrecord"
 	"github.com/anidog/anidog-go/internal/service/episode"
 	"github.com/anidog/anidog-go/internal/service/failure"
 	"github.com/anidog/anidog-go/internal/service/mediacheck"
@@ -281,22 +282,38 @@ func (s *Service) Resume(dlID uint) (*model.Download, error) {
 	return &dl, nil
 }
 
+var ErrDownloadReferenced = downloadrecord.ErrReferenced
+
 // Remove removes a download and optionally its files.
 func (s *Service) Remove(dlID uint, removeFiles bool) error {
-	var dl model.Download
-	if err := s.db.First(&dl, dlID).Error; err != nil {
-		return fmt.Errorf("下载任务不存在")
-	}
-
-	s.cancelValidation(dlID)
-	exec := s.executors[dl.DownloadType]
-	if exec != nil {
-		if err := exec.Remove(executorTaskID(&dl), removeFiles); err != nil {
-			return fmt.Errorf("移除下载失败，保留任务等待重试: %w", err)
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Hold the origin's write lock until deletion commits: concurrent FK
+		// inserts must not appear between the guard and filesystem effects.
+		// SQLite has no row locks; acquire its write reservation before reading.
+		if tx.Dialector.Name() == "sqlite" {
+			if err := tx.Model(&model.Download{}).Where("id = ?", dlID).UpdateColumn("id", gorm.Expr("id")).Error; err != nil {
+				return err
+			}
 		}
-	}
-
-	return s.db.Delete(&dl).Error
+		var dl model.Download
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&dl, dlID).Error; err != nil {
+			return fmt.Errorf("下载任务不存在: %w", err)
+		}
+		var unreferenced int64
+		if err := tx.Model(&model.Download{}).Where("id = ?", dlID).Scopes(downloadrecord.EvidenceUnreferenced).Count(&unreferenced).Error; err != nil {
+			return err
+		}
+		if unreferenced != 1 {
+			return ErrDownloadReferenced
+		}
+		s.cancelValidation(dlID)
+		if exec := s.executors[dl.DownloadType]; exec != nil {
+			if err := exec.Remove(executorTaskID(&dl), removeFiles); err != nil {
+				return fmt.Errorf("移除下载失败，保留任务等待重试: %w", err)
+			}
+		}
+		return tx.Delete(&dl).Error
+	})
 }
 
 // execute runs the download in a goroutine, updating DB state as it goes.

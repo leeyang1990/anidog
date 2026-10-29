@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -268,6 +269,10 @@ func (h *DownloadHandler) DeleteDownload(c *gin.Context) {
 	}
 
 	if err := h.dlSvc.Remove(uint(id), true); err != nil {
+		if errors.Is(err, dlservice.ErrDownloadReferenced) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除下载任务失败"})
 		return
 	}

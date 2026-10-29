@@ -68,3 +68,34 @@ jobs:
         if: matrix.runtime == 'native'
         working-directory: backend
         run: ROD_BROWSER_BIN="$(command -v google-chrome)" ANIDOG_BROWSER_FIXTURE=1 go test ./internal/service/stream -run '^TestBrowserRecoveryFixtures$' -count=1
+
+  postgres:
+    name: PostgreSQL provenance contracts
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fixture
+          POSTGRES_PASSWORD: fixture
+          POSTGRES_DB: fixture
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U fixture"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      CGO_ENABLED: '0'
+      TORRENT_STORAGE_DEFAULT_FILE_IO: classic
+      ANIDOG_POSTGRES_CONTRACT: '1'
+      DATABASE_URL: postgres://fixture:fixture@127.0.0.1:5432/fixture?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Real database retention and concurrent reference contracts
+        working-directory: backend
+        run: go test ./internal/service/scheduler -run '^TestPostgresEvidenceRetention$' -count=1 -timeout=90s

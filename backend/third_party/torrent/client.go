@@ -984,6 +984,13 @@ func (cl *Client) incomingPeerPort() int {
 }
 
 func (cl *Client) initiateHandshakes(ctx context.Context, c *PeerConn, t *Torrent) (err error) {
+	// Metadata may discover another identity while network handshakes are in
+	// flight. Use one snapshot for encryption, reserved bits and verification;
+	// never retain pointers to mutable options across unlocked network IO.
+	cl.rLock()
+	handshakeIh := *t.canonicalShortInfohash()
+	v1, v2 := t.infoHash, t.infoHashV2
+	cl.rUnlock()
 	if c.headerEncrypted {
 		var rw io.ReadWriter
 		rw, c.cryptoMethod, err = mse.InitiateHandshakeContext(
@@ -992,7 +999,7 @@ func (cl *Client) initiateHandshakes(ctx context.Context, c *PeerConn, t *Torren
 				io.Reader
 				io.Writer
 			}{c.r, c.w},
-			t.canonicalShortInfohash().Bytes(),
+			handshakeIh.Bytes(),
 			nil,
 			cl.config.CryptoProvides,
 		)
@@ -1002,18 +1009,17 @@ func (cl *Client) initiateHandshakes(ctx context.Context, c *PeerConn, t *Torren
 		}
 	}
 	localReservedBits := cl.config.Extensions
-	handshakeIh := *t.canonicalShortInfohash()
 	// If we're sending the v1 infohash, and we know the v2 infohash, set the v2 upgrade bit. This
 	// means the peer can send the v2 infohash in the handshake to upgrade the connection.
-	localReservedBits.SetBit(pp.ExtensionBitV2Upgrade, g.Some(handshakeIh) == t.infoHash && t.infoHashV2.Ok)
+	localReservedBits.SetBit(pp.ExtensionBitV2Upgrade, g.Some(handshakeIh) == v1 && v2.Ok)
 	ih, err := cl.connBtHandshake(context.TODO(), c, &handshakeIh, localReservedBits)
 	if err != nil {
 		return fmt.Errorf("bittorrent protocol handshake: %w", err)
 	}
-	if g.Some(ih) == t.infoHash {
+	if g.Some(ih) == v1 {
 		return nil
 	}
-	if t.infoHashV2.Ok && *t.infoHashV2.Value.ToShort() == ih {
+	if v2.Ok && *v2.Value.ToShort() == ih {
 		torrent.Add("initiated handshakes upgraded to v2", 1)
 		c.v2 = true
 		return nil
@@ -1511,6 +1517,11 @@ func (cl *Client) AddTorrentInfoHashWithStorage(
 // then this Storage is ignored and the existing torrent returned with `new` set to `false`.
 func (cl *Client) AddTorrentOpt(opts AddTorrentOpts) (t *Torrent, new bool) {
 	infoHash := opts.InfoHash
+	if infoHash.IsZero() && opts.InfoHashV2.Ok {
+		// Only the registry and wire protocols use a truncated v2 hash. Keep
+		// opts.InfoHash unset so a pure v2 torrent never acquires a false v1 ID.
+		infoHash = *opts.InfoHashV2.Value.ToShort()
+	}
 	panicif.Zero(infoHash)
 	cl.lock()
 	defer cl.unlock()

@@ -10,7 +10,8 @@ type MediaEvidence struct {
 	VideoHash        string    `gorm:"uniqueIndex:media_evidence_content;not null" json:"video_hash"`
 	InspectorVersion string    `gorm:"uniqueIndex:media_evidence_content;not null" json:"inspector_version"`
 	Evidence         string    `gorm:"type:text;not null" json:"evidence"`
-	OriginDownloadID *uint     `json:"origin_download_id,omitempty"`
+	OriginDownloadID *uint     `gorm:"index" json:"origin_download_id,omitempty"`
+	OriginDownload   *Download `gorm:"foreignKey:OriginDownloadID;references:ID;constraint:OnDelete:RESTRICT" json:"-"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

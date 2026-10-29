@@ -588,6 +588,11 @@ func (t *Torrent) onSetInfo() {
 	t.pieceRequestOrder = rand.Perm(t.numPieces())
 	t.initPieceRequestOrder()
 	MakeSliceWithLength(&t.requestPieceStates, t.numPieces())
+	// Completion checks can change pending work. Publish triggers only after
+	// every piece has entered the request-order/completion model, not while
+	// metadata initialization still exposes a partially populated inventory.
+	triggersDisabled := t.disableTriggers
+	t.disableTriggers = true
 	for i := range t.pieces {
 		p := &t.pieces[i]
 		// Need to add relativeAvailability before updating piece completion, as that may result in
@@ -600,6 +605,7 @@ func (t *Torrent) onSetInfo() {
 		t.setInitialPieceCompletionFromStorage(i)
 		t.queueInitialPieceCheck(i)
 	}
+	t.disableTriggers = triggersDisabled
 	t.cl.event.Broadcast()
 	close(t.gotMetainfoC)
 	t.updateWantPeersEvent()

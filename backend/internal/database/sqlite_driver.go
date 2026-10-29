@@ -8,5 +8,5 @@ import (
 )
 
 func openSQLite(dsn string, cfg *gorm.Config) (*gorm.DB, error) {
-	return gorm.Open(sqlite.Open(dsn), cfg)
+	return gorm.Open(sqlite.Open(withSQLiteOption(dsn, "_foreign_keys=on")), cfg)
 }

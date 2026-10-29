@@ -383,6 +383,10 @@ func (p *Piece) setV2Hash(v2h [32]byte) {
 	oldV2Hash := p.hashV2.Set(v2h)
 	p.t.storageLock.Unlock()
 	if !oldV2Hash.Ok && p.hash == nil {
+		// Hash arrival changes request eligibility even if disk completion did
+		// not change. Reconcile both order and pending work before completion
+		// callbacks can schedule peers with the new known-hash state.
+		p.t.updatePiecePriority(p.index, "v2 piece hash received")
 		p.t.updatePieceCompletion(p.index)
 		p.t.queueInitialPieceCheck(p.index)
 	}

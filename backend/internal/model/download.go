@@ -48,22 +48,23 @@ type Download struct {
 	ID uint `gorm:"primaryKey" json:"id"`
 	// Stable attempt identity; provider content identity is stored in InfoHash.
 	// Legacy rows may still use a hash here and remain valid.
-	TorrentID             string  `gorm:"uniqueIndex;not null" json:"torrent_id"`
-	Name                  string  `gorm:"index;not null" json:"name"`
-	SourceTitle           string  `json:"source_title"`                                  // Original release/catalog title, not the rewritten display name.
-	VerifiedLanguages     string  `gorm:"type:text" json:"verified_languages,omitempty"` // Languages established by sampled subtitle evidence.
-	VideoHash             string  `gorm:"index;default:''" json:"video_hash,omitempty"`
-	SubtitleEvidence      string  `gorm:"type:text;default:''" json:"subtitle_evidence,omitempty"`
-	EvidenceReusedFrom    *uint   `json:"evidence_reused_from,omitempty"`
-	ResultClass           string  `gorm:"-" json:"result_class,omitempty"`
-	InspectionActive      bool    `gorm:"-" json:"inspection_active,omitempty"`
-	AttemptCount          int64   `gorm:"->;-:migration" json:"attempt_count,omitempty"`
-	TorrentRemovalPending bool    `gorm:"index;default:false" json:"torrent_removal_pending,omitempty"`
-	RecoveryNote          string  `gorm:"-" json:"recovery_note,omitempty"`
-	URL                   string  `gorm:"not null" json:"url"`
-	SavePath              *string `json:"save_path"`
-	Status                string  `gorm:"index;default:'pending'" json:"status"`
-	Progress              float64 `gorm:"default:0" json:"progress"`
+	TorrentID             string    `gorm:"uniqueIndex;not null" json:"torrent_id"`
+	Name                  string    `gorm:"index;not null" json:"name"`
+	SourceTitle           string    `json:"source_title"`                                  // Original release/catalog title, not the rewritten display name.
+	VerifiedLanguages     string    `gorm:"type:text" json:"verified_languages,omitempty"` // Languages established by sampled subtitle evidence.
+	VideoHash             string    `gorm:"index;default:''" json:"video_hash,omitempty"`
+	SubtitleEvidence      string    `gorm:"type:text;default:''" json:"subtitle_evidence,omitempty"`
+	EvidenceReusedFrom    *uint     `gorm:"index" json:"evidence_reused_from,omitempty"`
+	EvidenceOrigin        *Download `gorm:"foreignKey:EvidenceReusedFrom;references:ID;constraint:OnDelete:RESTRICT" json:"-"`
+	ResultClass           string    `gorm:"-" json:"result_class,omitempty"`
+	InspectionActive      bool      `gorm:"-" json:"inspection_active,omitempty"`
+	AttemptCount          int64     `gorm:"->;-:migration" json:"attempt_count,omitempty"`
+	TorrentRemovalPending bool      `gorm:"index;default:false" json:"torrent_removal_pending,omitempty"`
+	RecoveryNote          string    `gorm:"-" json:"recovery_note,omitempty"`
+	URL                   string    `gorm:"not null" json:"url"`
+	SavePath              *string   `json:"save_path"`
+	Status                string    `gorm:"index;default:'pending'" json:"status"`
+	Progress              float64   `gorm:"default:0" json:"progress"`
 	// LastProgressAt records the last time downloaded bytes/progress actually
 	// increased. qBittorrent can report stalledDL forever, so UpdatedAt is not
 	// useful for detecting a dead swarm because the sync job updates it every

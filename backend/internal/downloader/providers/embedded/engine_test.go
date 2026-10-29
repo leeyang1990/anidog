@@ -454,6 +454,13 @@ func TestEngineRechecksAndRepairsRetainedPartialAfterRestart(t *testing.T) {
 		rows, err := restored.ListTorrents(ctx)
 		return err == nil && len(rows) == 1 && rows[0].Downloaded == (256<<10)-(32<<10) && rows[0].Progress < 1
 	})
+	// A usable seed is a fixture precondition. Its asynchronous initial hash
+	// must finish before dialing; a hashing client can reject incoming peers.
+	// The retained-prefix assertion above still completes without any peer.
+	waitFor(t, ctx, func() bool {
+		rows, err := seed.ListTorrents(ctx)
+		return err == nil && len(rows) == 1 && rows[0].Progress == 1 && rows[0].State == "uploading"
+	})
 	restored.mu.RLock()
 	added := restored.entries[hash].torrent.AddClientPeer(seed.client)
 	restored.mu.RUnlock()

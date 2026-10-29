@@ -60,6 +60,10 @@ jobs:
         if: matrix.runtime == 'production'
         working-directory: backend
         run: go build ./cmd/anidog
+      - name: Desktop SQLite migration contracts
+        if: matrix.runtime == 'native'
+        working-directory: backend
+        run: CGO_ENABLED=0 go test -tags desktop ./internal/database -count=1
       - name: Concurrency and recovery contracts
         if: matrix.runtime == 'native'
         working-directory: backend

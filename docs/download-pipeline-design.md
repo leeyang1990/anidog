@@ -181,7 +181,7 @@ BT 内容身份和执行尝试身份不能互相覆盖。新记录的 `torrent_i
 可复用的端到端入口为 `scripts/e2e-download-contracts.py`，在 Linux Docker 主机安装 Python libtorrent、预载 PostgreSQL 16 镜像后运行：
 
 ```sh
-python3 scripts/e2e-download-contracts.py --image leeyang1990/anidog-backend:v0.4.28 --retention-probe /path/to/linux-scheduler.test --workspace /tmp/anidog-contract-run-unique --media-parent /path/to/test-media
+python3 scripts/e2e-download-contracts.py --image leeyang1990/anidog-backend:v0.4.29 --retention-probe /path/to/linux-scheduler.test --workspace /tmp/anidog-contract-run-unique --media-parent /path/to/test-media
 ```
 
 workspace 必须是新目录；脚本为每次运行创建独立内网、PostgreSQL、BT 状态及媒体子目录，经普通 HTTP API 验证合格/低清/繁体/未知、相同内容再次接单、旧单集质量审计与安全替换、旧版和新版 SHA256、重启与容量零值保存。seed 由本地 HTTP Tracker 正常发现，不向应用注入 peer 或补做生产没有的修复。可选 `--binary` 仅用于候选服务端验收；正式镜像验收应省略。结束清理此次容器和网络，保留成片与证据；私有临时凭据不进入报告。
@@ -199,3 +199,9 @@ BT provider 的接单回执使用完整内容身份：优先 v1，纯 v2 使用�
 显式删除在文件操作前锁定来源记录，直到删除事务提交：PostgreSQL 使用行锁，SQLite 在读取前取得写保留，避免引用在检查与文件操作之间插入。代价是下载器删除期间占用该锁；文件删除与数据库提交仍不是跨系统原子事务，下载器失败保留记录，不能据此宣称完成多主文件事务迁移。SQLite 两种驱动的每条连接均启用外键；仅在迁移连接执行一次 PRAGMA 不能保护后续连接。
 
 纯 v2 多分片回归另外固定初始化与哈希到达的请求调度约定：完整建立分片清单后再发布回调，待办集合包含数据与缺少哈希的元数据工作，哈希到达后重新计算请求资格。出站握手在客户端锁内取得身份快照，网络 I/O 不持锁；后到的混合元数据别名不能造成读写竞态。断言和哈希校验继续启用。
+
+## v0.4.29 SQLite 迁移与运行连接的边界
+
+逐连接启用外键与旧表重建属于不同阶段。SQLite 迁移器重建带自引用的表时，临时表仍引用旧表；直接在执行外键的连接上删除旧表会失败。`database.migrateSchema` 在启动、业务任务尚未运行时固定单条连接，迁移前关闭该连接的外键执行，在单个事务中重建并执行 `foreign_key_check`；所有引用有效才提交，否则回滚整个schema和数据。事务结束后无论结果都恢复并核实连接的外键执行，再交还连接池。其他连接继续执行外键，PostgreSQL 继续使用原生AutoMigrate路径。
+
+代价是SQLite表重建期间的写锁；不合法的旧引用会阻止启动，必须调查真实来源，不能以清空引用换取升级成功。原生和桌面驱动回归验证有效旧数据/来源保持、非法引用回滚、连接恢复和幂等。v0.4.28发布在这项补查发现问题后取消，保留公开tag，以新版本发布完整修正。

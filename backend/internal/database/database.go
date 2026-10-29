@@ -81,7 +81,7 @@ func Init(cfg *config.Config) *gorm.DB {
 	}
 
 	// AutoMigrate
-	if err := db.AutoMigrate(
+	if err := migrateSchema(db,
 		&model.User{},
 		&model.Anime{},
 		&model.AnimeEpisode{},

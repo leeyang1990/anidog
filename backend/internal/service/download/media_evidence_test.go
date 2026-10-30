@@ -607,3 +607,37 @@ func TestRetainedReviewClearsOldRetryDeadlineInReturnedFacts(t *testing.T) {
 		})
 	}
 }
+
+func TestReassessmentPreservesOriginalObservationProducer(t *testing.T) {
+	s, row, result := stagedValidationFixture(t)
+	media, err := mediacheck.Probe(context.Background(), result.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := model.Download{TorrentID: "original-measurement", Name: "original", URL: "fixture", Status: model.DownloadStatusSuperseded}
+	if err = s.db.Create(&origin).Error; err != nil {
+		t.Fatal(err)
+	}
+	w, h := media.Resolution()
+	old := mediacheck.SubtitleEvidence{InspectorVersion: "subtitle-v3", Method: "hard_subtitles", Width: w, Height: h, Duration: media.Duration(), Attempted: 2, Extracted: 2, Recognized: 2, Samples: []mediacheck.SubtitleSample{
+		{At: .5, FrameHash: fmt.Sprintf("%064x", 1), Caption: "這個國家的故事還沒有結束我們會再見面"},
+		{At: 1, FrameHash: fmt.Sprintf("%064x", 2), Caption: "这是我们的世界这个国家学校还有许多故事对话发展"},
+	}}
+	raw, _ := json.Marshal(old)
+	row.VideoHash = "original-video"
+	row.SubtitleEvidence = string(raw)
+	row.EvidenceReusedFrom = &origin.ID
+	s.videoHasher = func(context.Context, string, string) (string, error) { return row.VideoHash, nil }
+	s.subtitleInspector = func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence {
+		t.Fatal("reassessment performed a new measurement")
+		return mediacheck.SubtitleEvidence{}
+	}
+	e, err := s.inspectContent(context.Background(), &row, result.FilePath, media)
+	if err != nil || !e.Conflicting || row.EvidenceReusedFrom == nil || *row.EvidenceReusedFrom != origin.ID {
+		t.Fatal("reassessment changed measurement ownership", row.EvidenceReusedFrom, err)
+	}
+	var cached model.MediaEvidence
+	if err = s.db.First(&cached).Error; err != nil || cached.OriginDownloadID == nil || *cached.OriginDownloadID != origin.ID {
+		t.Fatal("cache lost measurement producer", cached, err)
+	}
+}

@@ -91,7 +91,9 @@ func (s *Service) inspectContent(ctx context.Context, dl *model.Download, path s
 		}
 		// Tool failures are attempt facts, not immutable content facts.
 		var origin *uint
-		if dl.ID != 0 {
+		if reassessed && dl.EvidenceReusedFrom != nil {
+			origin = dl.EvidenceReusedFrom
+		} else if dl.ID != 0 {
 			id := dl.ID
 			origin = &id
 		}

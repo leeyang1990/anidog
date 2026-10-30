@@ -765,7 +765,7 @@ func (t *Torrent) pieceState(index pieceIndex) (ret PieceState) {
 	if ret.Ok && !ret.Complete && t.piecePartiallyDownloaded(index) {
 		ret.Partial = true
 	}
-	if t.info.HasV2() && !p.hashV2.Ok && p.hasPieceLayer() {
+	if t.info.HasV2() && p.hashV2.Load() == nil && p.hasPieceLayer() {
 		ret.MissingPieceLayerHash = true
 	}
 	return
@@ -1304,7 +1304,7 @@ func (t *Torrent) hashPiece(piece pieceIndex) (
 		var sum [20]byte
 		sumExactly(sum[:], h.Sum)
 		correct = sum == *p.hash
-	} else if p.hashV2.Ok {
+	} else if hashV2 := p.hashV2.Load(); hashV2 != nil {
 		h := merkle.NewHash()
 		differingPeers, err = t.hashPieceWithSpecificHash(piece, h)
 		var sum [32]byte
@@ -1314,7 +1314,7 @@ func (t *Torrent) hashPiece(piece pieceIndex) (
 		sumExactly(sum[:], func(b []byte) []byte {
 			return h.SumMinLength(b, int(t.info.PieceLength))
 		})
-		correct = sum == p.hashV2.Value
+		correct = sum == *hashV2
 	} else {
 		expected := p.mustGetOnlyFile().piecesRoot.Unwrap()
 		h := merkle.NewHash()
@@ -3634,13 +3634,13 @@ file:
 		key := f.piecesRoot.Value
 		var value strings.Builder
 		for i := f.BeginPieceIndex(); i < f.EndPieceIndex(); i++ {
-			hashOpt := t.piece(i).hashV2
-			if !hashOpt.Ok {
+			hash := t.piece(i).hashV2.Load()
+			if hash == nil {
 				// All hashes must be present. This implementation should handle missing files, so
 				// move on to the next file.
 				continue file
 			}
-			value.Write(hashOpt.Value[:])
+			value.Write(hash[:])
 		}
 		if value.Len() == 0 {
 			// Non-empty files are not recorded in piece layers.

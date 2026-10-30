@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"sync"
+	"sync/atomic"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/anacrolix/chansync"
@@ -27,8 +28,9 @@ type Piece struct {
 	// The completed piece SHA1 hash, from the metainfo "pieces" field. Nil if the info is not V1
 	// compatible.
 	hash *metainfo.Hash
-	// Not easy to use unique.Handle because we need this as a slice sometimes.
-	hashV2 g.Option[[32]byte]
+	// Publish a complete immutable identity for storage calls outside Client
+	// and storage locks. A retained hash slice must never alias a later update.
+	hashV2 atomic.Pointer[[32]byte]
 	t      *Torrent
 	index  pieceIndex
 	// First and one after the last file indexes.
@@ -82,8 +84,8 @@ func (p *Piece) Storage() storage.Piece {
 		pieceHash.Set(p.hash.Bytes())
 	} else if !p.hasPieceLayer() {
 		pieceHash.Set(p.mustGetOnlyFile().piecesRoot.UnwrapPtr()[:])
-	} else if p.hashV2.Ok {
-		pieceHash.Set(p.hashV2.Value[:])
+	} else if hash := p.hashV2.Load(); hash != nil {
+		pieceHash.Set(hash[:])
 	}
 	return p.t.storage.PieceWithHash(p.Info(), pieceHash)
 }
@@ -380,9 +382,9 @@ func (p *Piece) setV2Hash(v2h [32]byte) {
 	// See Torrent.onSetInfo. We want to trigger an initial check if appropriate, if we didn't yet
 	// have a piece hash (can occur with v2 when we don't start with piece layers).
 	p.t.storageLock.Lock()
-	oldV2Hash := p.hashV2.Set(v2h)
+	oldV2Hash := p.hashV2.Swap(&v2h)
 	p.t.storageLock.Unlock()
-	if !oldV2Hash.Ok && p.hash == nil {
+	if oldV2Hash == nil && p.hash == nil {
 		// Hash arrival changes request eligibility even if disk completion did
 		// not change. Reconcile both order and pending work before completion
 		// callbacks can schedule peers with the new known-hash state.
@@ -400,7 +402,7 @@ func (p *Piece) haveHash() bool {
 	if !p.hasPieceLayer() {
 		return true
 	}
-	return p.hashV2.Ok
+	return p.hashV2.Load() != nil
 }
 
 func (p *Piece) hasPieceLayer() bool {
@@ -410,8 +412,8 @@ func (p *Piece) hasPieceLayer() bool {
 // TODO: This looks inefficient. It will rehash everytime it is called. The hashes should be
 // generated once.
 func (p *Piece) obtainHashV2() (hash [32]byte, err error) {
-	if p.hashV2.Ok {
-		hash = p.hashV2.Value
+	if snapshot := p.hashV2.Load(); snapshot != nil {
+		hash = *snapshot
 		return
 	}
 	if !p.hasPieceLayer() {

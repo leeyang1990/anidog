@@ -93,3 +93,22 @@ the client read lock before network I/O. Hybrid metadata discovery may publish
 the v1 alias concurrently; encryption, reserved bits and response validation
 must consume one consistent snapshot rather than race on mutable options.
 Fresh-process v2-magnet regressions run under the race detector as well.
+
+## v0.4.32: immutable v2 piece-hash snapshots
+
+The full race gate found `setV2Hash` rewriting `Option.Value` while
+`Piece.Storage` read it outside the Client/storage locks during completion.
+Storage adapters could also retain a slice aliasing that mutable array.
+`hashV2` now publishes an immutable `[32]byte` through `atomic.Pointer`; every
+reader takes a snapshot, including storage factories, hashing, hash requests
+and metadata export. Existing Client/storage lock ordering, Merkle validation,
+initial-check behavior and protocol assertions remain in place. No storage I/O
+is moved under a new lock. Each publication allocates a small immutable value.
+
+`TestV2StorageIdentityIsStableDuringMetadataUpdates` uses the public Client,
+valid v2 piece layers and a storage adapter that retains its supplied identity.
+Concurrent `MergeSpec` and storage reads reproduce the original race; the
+snapshot implementation passes. The existing classic/mmap file/magnet/hybrid
+transfer and recovery contracts also remain enabled. This is an AniDog change,
+not a claim that an upstream release already contains the fix. The source
+verifier continues to pin the same six reviewed source files exactly.

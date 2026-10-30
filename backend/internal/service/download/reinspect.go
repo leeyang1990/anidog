@@ -78,7 +78,7 @@ func (s *Service) InspectRetainedMedia(ctx context.Context, id uint) (*model.Dow
 	}
 	updates := map[string]interface{}{}
 	if err == nil {
-		updates = map[string]interface{}{"quality_note": "成片画质与字幕复核通过；尚未执行身份复核和归档，请显式重试", "failure_code": "", "failure_stage": "", "failure_kind": model.FailureKindReview, "last_error": "成片复核通过，等待显式确认原候选身份和归档"}
+		updates = map[string]interface{}{"quality_note": "成片画质与字幕复核通过；尚未执行身份复核和归档，请显式重试", "failure_code": "", "failure_stage": "", "failure_kind": model.FailureKindReview, "next_retry_at": nil, "last_error": "成片复核通过，等待显式确认原候选身份和归档"}
 	} else {
 		updates, _, _ = failureFields(err, row.RetryCount)
 		updates["last_error"] = err.Error()
@@ -91,6 +91,8 @@ func (s *Service) InspectRetainedMedia(ctx context.Context, id uint) (*model.Dow
 	if q.RowsAffected != 1 {
 		return nil, fmt.Errorf("复核期间任务状态已变化，未覆盖新状态")
 	}
+	// Reload into a fresh value: SQL NULL must clear a previous retry deadline.
+	row = model.Download{}
 	if err = s.db.WithContext(ctx).First(&row, id).Error; err != nil {
 		return nil, err
 	}

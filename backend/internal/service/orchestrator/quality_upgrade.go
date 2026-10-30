@@ -235,7 +235,7 @@ func (o *Orchestrator) trySeasonUpgrade(ctx context.Context, anime *model.Anime,
 			continue
 		}
 		candidates := o.collectBTCandidates(ctx, anime, enabled, tier == SourceMikan)
-		ranked := indexer.RankByPreferenceAndSeason(filterInstallmentCandidates(anime.Title, candidates), strict.ToIndexerPref(), 0, season)
+		ranked := indexer.RankByPreferenceAndSeason(filterInstallmentCandidates(anime.Title, candidates.Candidates), strict.ToIndexerPref(), 0, season)
 		// Preserve quality scoring; known live swarms win ties.
 		sort.SliceStable(ranked, func(i, j int) bool {
 			if ranked[i].Score != ranked[j].Score {
@@ -258,19 +258,23 @@ func (o *Orchestrator) trySeasonUpgrade(ctx context.Context, anime *model.Anime,
 				continue
 			}
 			if err := o.dlSvc.CheckAdditionalCapacity(ctx, c.Size); err != nil {
-				o.recordDiag(anime.ID, q.Needed[0], tier, len(candidates), 0, err.Error(), c.Title, c.Score)
+				o.recordDiag(anime.ID, q.Needed[0], tier, len(candidates.Candidates), 0, err.Error(), c.Title, c.Score)
 				return false
 			}
 			start, end, trigger := 1, expected, q.Needed[0]
 			_, err := o.dlSvc.Create(ctx, &dlservice.Task{Name: fmt.Sprintf("%s - 整季升级 01-%02d", anime.Title, expected), URL: url, SourceTitle: c.Title, EstimatedBytes: c.Size, DownloadType: model.DownloadTypeTorrent, Source: tier, AnimeName: anime.Title, AnimeID: &anime.ID, EpisodeNumber: &trigger, Scope: model.DownloadScopeSeason, EpisodeStart: &start, EpisodeEnd: &end, Purpose: model.DownloadPurposeSeasonUpgrade, UpgradeTarget: dlservice.QualityGoalKey(pref.Quality, pref.Languages), UpgradeReason: reason})
 			if err != nil {
-				o.recordDiag(anime.ID, trigger, tier, len(candidates), 0, "整季升级入队失败: "+err.Error(), c.Title, c.Score)
+				o.recordDiag(anime.ID, trigger, tier, len(candidates.Candidates), 0, "整季升级入队失败: "+err.Error(), c.Title, c.Score)
 				continue
 			}
-			o.recordDiag(anime.ID, trigger, tier, len(candidates), 0, reason, c.Title, c.Score)
+			o.recordDiag(anime.ID, trigger, tier, len(candidates.Candidates), 0, reason, c.Title, c.Score)
 			return true
 		}
-		o.recordDiag(anime.ID, q.Needed[0], tier, len(candidates), len(candidates), "未命中完整且达到目标的升级合集，保留现有版本", "", 0)
+		detail := "未命中完整且达到目标的升级合集，保留现有版本"
+		if warning := candidates.Warning(); warning != "" {
+			detail += "；" + warning
+		}
+		o.recordDiag(anime.ID, q.Needed[0], tier, len(candidates.Candidates), len(candidates.Candidates), detail, "", 0)
 	}
 	return false
 }

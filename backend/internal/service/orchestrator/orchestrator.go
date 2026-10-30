@@ -48,7 +48,7 @@ type Orchestrator struct {
 }
 
 type candidateCacheEntry struct {
-	items     []indexer.Candidate
+	result    indexer.SearchResult
 	expiresAt time.Time
 }
 
@@ -112,7 +112,7 @@ func (o *Orchestrator) collectBTCandidates(
 	anime *model.Anime,
 	enabled []indexer.Indexer,
 	includeMikan bool,
-) []indexer.Candidate {
+) indexer.SearchResult {
 	// 旧数据或订阅时直连失败可能没有 mikan_bangumi_id。每次真正缺集时用
 	// 动态代理客户端按多个标题补查一次，命中后持久化，后续直接走高召回 RSS。
 	if includeMikan && (anime.MikanBangumiID == nil || *anime.MikanBangumiID <= 0) && o.indexerHTTP != nil {
@@ -144,21 +144,25 @@ func (o *Orchestrator) collectBTCandidates(
 	if cached, ok := o.loadCandidateCache(cacheKey); ok {
 		zap.L().Debug("复用 BT 候选缓存",
 			zap.Uint("anime_id", anime.ID),
-			zap.Int("count", len(cached)))
+			zap.Int("count", len(cached.Candidates)))
 		return cached
 	}
 
 	var rssCands []indexer.Candidate
+	var rssFailed bool
+	var rssSucceeded bool
 	if includeMikan && anime.MikanBangumiID != nil && *anime.MikanBangumiID > 0 && o.mikanRSS != nil {
 		rssCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		items, err := o.mikanRSS.Fetch(rssCtx, *anime.MikanBangumiID)
 		cancel()
 		if err != nil {
+			rssFailed = true
 			zap.L().Warn("Mikan RSS 拉取失败，回退关键词搜索",
 				zap.String("anime", anime.Title),
 				zap.Int("mikan_bangumi_id", *anime.MikanBangumiID),
 				zap.Error(err))
 		} else {
+			rssSucceeded = true
 			for i := range items {
 				items[i].Parsed = titleparse.Parse(items[i].Title)
 			}
@@ -171,7 +175,14 @@ func (o *Orchestrator) collectBTCandidates(
 	}
 
 	// 关键词搜索路径（其他 indexer 仍要参与）
-	kwCands := indexer.Aggregate(ctx, enabled, anime.Title)
+	report := indexer.Aggregate(ctx, enabled, anime.Title)
+	kwCands := report.Candidates
+	if rssFailed {
+		report.FailedSources = append(report.FailedSources, "mikan_rss")
+	}
+	if rssSucceeded {
+		report.SuccessfulSources++
+	}
 
 	// 合并去重（InfoHash 优先；空则用 Title）
 	seen := make(map[string]bool, len(rssCands)+len(kwCands))
@@ -198,8 +209,9 @@ func (o *Orchestrator) collectBTCandidates(
 		seen[key] = true
 		merged = append(merged, c)
 	}
-	o.storeCandidateCache(cacheKey, merged)
-	return merged
+	report.Candidates = merged
+	o.storeCandidateCache(cacheKey, report)
+	return report
 }
 
 func (o *Orchestrator) candidateCacheKey(anime *model.Anime, enabled []indexer.Indexer, includeMikan bool) string {
@@ -215,27 +227,37 @@ func (o *Orchestrator) candidateCacheKey(anime *model.Anime, enabled []indexer.I
 	return fmt.Sprintf("%d|%d|%t|%s|%s", anime.ID, mikanID, includeMikan, anime.Title, strings.Join(names, ","))
 }
 
-func (o *Orchestrator) loadCandidateCache(key string) ([]indexer.Candidate, bool) {
+func (o *Orchestrator) loadCandidateCache(key string) (indexer.SearchResult, bool) {
 	o.candidateMu.Lock()
 	defer o.candidateMu.Unlock()
 	entry, ok := o.candidates[key]
 	if !ok {
-		return nil, false
+		return indexer.SearchResult{}, false
 	}
 	if time.Now().After(entry.expiresAt) {
 		delete(o.candidates, key)
-		return nil, false
+		return indexer.SearchResult{}, false
 	}
-	return append([]indexer.Candidate(nil), entry.items...), true
+	result := entry.result
+	result.Candidates = append([]indexer.Candidate(nil), result.Candidates...)
+	result.FailedSources = append([]string(nil), result.FailedSources...)
+	return result, true
 }
 
-func (o *Orchestrator) storeCandidateCache(key string, items []indexer.Candidate) {
+func (o *Orchestrator) storeCandidateCache(key string, result indexer.SearchResult) {
 	o.candidateMu.Lock()
 	defer o.candidateMu.Unlock()
-	// 缓存空结果同样重要：代理或索引站异常时，不能让每个缺集都再超时一次。
+	// Share incomplete observations briefly across missing episodes without hiding
+	// source recovery behind a normal successful-search cache lifetime.
+	ttl := candidateCacheTTL
+	if len(result.FailedSources) > 0 {
+		ttl = time.Minute
+	}
+	result.Candidates = append([]indexer.Candidate(nil), result.Candidates...)
+	result.FailedSources = append([]string(nil), result.FailedSources...)
 	o.candidates[key] = candidateCacheEntry{
-		items:     append([]indexer.Candidate(nil), items...),
-		expiresAt: time.Now().Add(candidateCacheTTL),
+		result:    result,
+		expiresAt: time.Now().Add(ttl),
 	}
 	// 订阅量通常很小；仍做惰性清理，避免长期改名/切换索引源留下无界缓存。
 	if len(o.candidates) > 256 {
@@ -571,7 +593,8 @@ func (o *Orchestrator) trySeasonPack(ctx context.Context, anime *model.Anime, mi
 		if len(enabled) == 0 {
 			continue
 		}
-		cands := o.collectBTCandidates(ctx, anime, enabled, tier == SourceMikan)
+		search := o.collectBTCandidates(ctx, anime, enabled, tier == SourceMikan)
+		cands := search.Candidates
 		ranked := indexer.RankByPreferenceAndSeason(filterInstallmentCandidates(anime.Title, cands), pref.ToIndexerPref(), 0, season)
 		ranked = retainPreferredLanguage(ranked, pref.Languages)
 		packs := make([]seasonPackCandidate, 0)
@@ -729,10 +752,19 @@ func (o *Orchestrator) tryBT(
 		return false, 0, 0, "无启用的普通 BT indexer", "", 0
 	}
 
-	cands := o.collectBTCandidates(ctx, anime, enabled, tier == SourceMikan)
+	search := o.collectBTCandidates(ctx, anime, enabled, tier == SourceMikan)
+	cands := search.Candidates
+	defer func() {
+		if resultCount > 0 && search.Warning() != "" {
+			reason += "；" + search.Warning()
+		}
+	}()
 	resultCount = len(cands)
 	if resultCount == 0 {
-		return false, 0, 0, "所有 indexer 均无结果", "", 0
+		if warning := search.Warning(); warning != "" {
+			return false, 0, 0, warning, "", 0
+		}
+		return false, 0, 0, "所有已查询索引均无结果", "", 0
 	}
 
 	season := 1

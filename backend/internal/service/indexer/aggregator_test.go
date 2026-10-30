@@ -33,7 +33,7 @@ func TestAggregate_DeduplicationByInfoHash(t *testing.T) {
 		{Title: "[组C] 番 - 02", InfoHash: "GHI789", Size: 800},
 	}}
 
-	got := Aggregate(context.Background(), []Indexer{a, b}, "番")
+	got := Aggregate(context.Background(), []Indexer{a, b}, "番").Candidates
 	if len(got) != 3 {
 		t.Errorf("期望 3 条去重后结果，得到 %d: %+v", len(got), got)
 	}
@@ -50,7 +50,7 @@ func TestAggregate_SourceName(t *testing.T) {
 	a := &mockIndexer{name: "test-source", results: []Candidate{
 		{Title: "番 - 01", InfoHash: "X"},
 	}}
-	got := Aggregate(context.Background(), []Indexer{a}, "番")
+	got := Aggregate(context.Background(), []Indexer{a}, "番").Candidates
 	if len(got) != 1 {
 		t.Fatal("expected 1 result")
 	}
@@ -65,7 +65,7 @@ func TestAggregate_IndexerErrorDoesNotBlock(t *testing.T) {
 	}}
 	b := &mockIndexer{name: "fail", err: context.DeadlineExceeded}
 
-	got := Aggregate(context.Background(), []Indexer{a, b}, "番")
+	got := Aggregate(context.Background(), []Indexer{a, b}, "番").Candidates
 	if len(got) != 1 {
 		t.Errorf("期望 1 条（fail 应被跳过），得到 %d", len(got))
 	}
@@ -81,7 +81,7 @@ func TestRankByPreference_EpisodeFilter(t *testing.T) {
 	ctx := context.Background()
 	_ = ctx
 	idx := &mockIndexer{name: "x", results: cands}
-	parsed := Aggregate(context.Background(), []Indexer{idx}, "番")
+	parsed := Aggregate(context.Background(), []Indexer{idx}, "番").Candidates
 
 	ranked := RankByPreference(parsed, DownloadPreference{Quality: "1080p"}, 2)
 	if len(ranked) != 1 {
@@ -98,7 +98,7 @@ func TestRankByPreference_GroupWhitelistBoost(t *testing.T) {
 		{Title: "[LoliHouse] 番 - 01 [1080p][简繁内封]", InfoHash: "2"},
 	}
 	idx := &mockIndexer{name: "x", results: cands}
-	parsed := Aggregate(context.Background(), []Indexer{idx}, "番")
+	parsed := Aggregate(context.Background(), []Indexer{idx}, "番").Candidates
 
 	ranked := RankByPreference(parsed, DownloadPreference{
 		Quality: "1080p",
@@ -118,7 +118,7 @@ func TestRankByPreference_Batch(t *testing.T) {
 		{Title: "[桜都] 番 [01-12 Fin][1080P][简繁内封]", InfoHash: "X"},
 	}
 	idx := &mockIndexer{name: "x", results: cands}
-	parsed := Aggregate(context.Background(), []Indexer{idx}, "番")
+	parsed := Aggregate(context.Background(), []Indexer{idx}, "番").Candidates
 
 	// 集数 5 在批量包范围内 → 应该命中
 	ranked := RankByPreference(parsed, DownloadPreference{}, 5)
@@ -157,7 +157,7 @@ func TestScoreOne_NoPrefs(t *testing.T) {
 		Seeders: 10,
 	}
 	idx := &mockIndexer{name: "x", results: []Candidate{c}}
-	parsed := Aggregate(context.Background(), []Indexer{idx}, "番")
+	parsed := Aggregate(context.Background(), []Indexer{idx}, "番").Candidates
 	_ = time.Now() // silence unused
 
 	ranked := RankByPreference(parsed, DownloadPreference{}, 1)

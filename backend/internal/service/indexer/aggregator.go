@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,16 +16,41 @@ import (
 	"github.com/anidog/anidog-go/internal/service/titleparse"
 )
 
+// SearchResult preserves source availability separately from candidate count.
+// Empty successful responses are facts; transport failures are not absence.
+type SearchResult struct {
+	Candidates        []Candidate
+	SuccessfulSources int
+	FailedSources     []string
+}
+
+func (r SearchResult) Status() string {
+	if len(r.FailedSources) == 0 {
+		return "complete"
+	}
+	if r.SuccessfulSources == 0 {
+		return "unavailable"
+	}
+	return "partial"
+}
+func (r SearchResult) Warning() string {
+	if len(r.FailedSources) == 0 {
+		return ""
+	}
+	return "候选搜索不完整：索引请求失败（" + strings.Join(r.FailedSources, "、") + "），不能据此确认没有资源"
+}
+
 // Aggregate 并发调用所有 indexers，汇总结果，解析标题，按 InfoHash 去重。
 // 默认每个 indexer 超时 10 秒；整体超时依赖 ctx。
-func Aggregate(ctx context.Context, indexers []Indexer, keyword string) []Candidate {
+func Aggregate(ctx context.Context, indexers []Indexer, keyword string) SearchResult {
 	if len(indexers) == 0 {
-		return nil
+		return SearchResult{}
 	}
 
 	var (
 		mu     sync.Mutex
 		merged []Candidate
+		report SearchResult
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -39,9 +65,13 @@ func Aggregate(ctx context.Context, indexers []Indexer, keyword string) []Candid
 					zap.String("indexer", idx.Name()),
 					zap.String("keyword", keyword),
 					zap.Error(err))
+				mu.Lock()
+				report.FailedSources = append(report.FailedSources, idx.Name())
+				mu.Unlock()
 				return nil // 单 indexer 失败不阻塞整体
 			}
 			mu.Lock()
+			report.SuccessfulSources++
 			for i := range items {
 				if items[i].SourceName == "" {
 					items[i].SourceName = idx.Name()
@@ -74,7 +104,9 @@ func Aggregate(ctx context.Context, indexers []Indexer, keyword string) []Candid
 		deduped[i].Parsed = titleparse.Parse(deduped[i].Title)
 	}
 
-	return deduped
+	report.Candidates = deduped
+	sort.Strings(report.FailedSources)
+	return report
 }
 
 // RankByPreference 按偏好评分并排序候选。

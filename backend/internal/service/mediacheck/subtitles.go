@@ -27,7 +27,7 @@ const traditionalMarkers = "歷曆謂靈階證據處誰離夠飯雞魚熱鍋飽�
 // Shared shinjitai characters alone cannot establish Chinese subtitles.
 const sharedJapaneseMarkers = "来体万当与点学国会将声数写条画没据"
 
-const SubtitleInspectorVersion = "subtitle-v3"
+const SubtitleInspectorVersion = "subtitle-v4"
 
 type SubtitleSample struct {
 	At            float64 `json:"at"`
@@ -40,25 +40,28 @@ type SubtitleSample struct {
 }
 
 type SubtitleEvidence struct {
-	TrackLanguages    []string         `json:"track_languages,omitempty"`
-	InspectorVersion  string           `json:"inspector_version"`
-	Samples           []SubtitleSample `json:"samples,omitempty"`
-	Method            string           `json:"method,omitempty"`
-	Width             int              `json:"width,omitempty"`
-	Height            int              `json:"height,omitempty"`
-	Duration          float64          `json:"duration,omitempty"`
-	Language          string           `json:"language"`
-	Frames            int              `json:"frames"`
-	Characters        int              `json:"characters"`
-	SimplifiedGlyphs  int              `json:"simplified_glyphs"`
-	TraditionalGlyphs int              `json:"traditional_glyphs"`
-	Reason            string           `json:"reason"`
-	Attempted         int              `json:"attempted"`
-	Extracted         int              `json:"extracted"`
-	Recognized        int              `json:"recognized"`
-	FrameErrors       int              `json:"frame_errors"`
-	OCRErrors         int              `json:"ocr_errors"`
-	Retryable         bool             `json:"retryable"`
+	ObservationVersion string           `json:"observation_version,omitempty"`
+	ReassessedFrom     string           `json:"reassessed_from,omitempty"`
+	Conflicting        bool             `json:"conflicting,omitempty"`
+	TrackLanguages     []string         `json:"track_languages,omitempty"`
+	InspectorVersion   string           `json:"inspector_version"`
+	Samples            []SubtitleSample `json:"samples,omitempty"`
+	Method             string           `json:"method,omitempty"`
+	Width              int              `json:"width,omitempty"`
+	Height             int              `json:"height,omitempty"`
+	Duration           float64          `json:"duration,omitempty"`
+	Language           string           `json:"language"`
+	Frames             int              `json:"frames"`
+	Characters         int              `json:"characters"`
+	SimplifiedGlyphs   int              `json:"simplified_glyphs"`
+	TraditionalGlyphs  int              `json:"traditional_glyphs"`
+	Reason             string           `json:"reason"`
+	Attempted          int              `json:"attempted"`
+	Extracted          int              `json:"extracted"`
+	Recognized         int              `json:"recognized"`
+	FrameErrors        int              `json:"frame_errors"`
+	OCRErrors          int              `json:"ocr_errors"`
+	Retryable          bool             `json:"retryable"`
 }
 
 type scriptVotes struct {
@@ -422,7 +425,7 @@ func detectHardSubtitles(ctx context.Context, duration float64, extract func(con
 	ctx, cancel := context.WithTimeout(ctx, 240*time.Second)
 	defer cancel()
 	votes := scriptVotes{}
-	evidence := SubtitleEvidence{InspectorVersion: SubtitleInspectorVersion, Method: "hard_subtitles", Duration: duration}
+	evidence := SubtitleEvidence{InspectorVersion: SubtitleInspectorVersion, ObservationVersion: SubtitleObservationVersion, Method: "hard_subtitles", Duration: duration}
 	// Some exact timestamps land in a gap, credits, or a line containing only
 	// shared Han characters. Sample additional dialogue without lowering the
 	// confidence, script-specific glyph, or independent-frame requirements.
@@ -473,14 +476,7 @@ func detectHardSubtitles(ctx context.Context, duration float64, extract func(con
 			break
 		}
 	}
-	result := votes.result()
-	evidence.Language, evidence.Frames, evidence.Characters, evidence.Reason = result.Language, result.Frames, result.Characters, result.Reason
-	evidence.SimplifiedGlyphs, evidence.TraditionalGlyphs = result.SimplifiedGlyphs, result.TraditionalGlyphs
-	if evidence.Language == "" && (evidence.FrameErrors > 0 || evidence.OCRErrors > 0 || ctx.Err() != nil) {
-		evidence.Retryable = true
-		evidence.Reason = fmt.Sprintf("字幕检测执行失败：抽帧 %d/%d 成功（%d 失败），识别 %d 成功（%d 失败）", evidence.Extracted, evidence.Attempted, evidence.FrameErrors, evidence.Recognized, evidence.OCRErrors)
-	}
-	return evidence
+	return assessSubtitleObservations(evidence, votes, ctx.Err())
 }
 
 // Keep diagnostics useful without persisting command arguments, signed URLs,

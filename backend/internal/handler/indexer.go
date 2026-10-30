@@ -61,7 +61,8 @@ func (h *IndexerHandler) Search(c *gin.Context) {
 		return
 	}
 
-	cands := indexer.Aggregate(c.Request.Context(), selected, req.Keyword)
+	report := indexer.Aggregate(c.Request.Context(), selected, req.Keyword)
+	cands := report.Candidates
 
 	prefs := indexer.DownloadPreference{}
 	if req.Preference != nil {
@@ -76,8 +77,11 @@ func (h *IndexerHandler) Search(c *gin.Context) {
 		zap.Int("ranked", len(ranked)))
 
 	c.JSON(http.StatusOK, gin.H{
-		"candidates": ranked,
-		"total":      len(cands),
+		"candidates":     ranked,
+		"total":          len(cands),
+		"search_status":  report.Status(),
+		"failed_sources": report.FailedSources,
+		"detail":         report.Warning(),
 	})
 }
 

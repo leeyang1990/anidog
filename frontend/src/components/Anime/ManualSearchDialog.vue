@@ -168,6 +168,7 @@ async function runSearch() {
       target_episode: episodeFilter.value || 0,
     })
     candidates.value = resp.candidates || []
+    if (resp.detail) toast.warning(resp.detail)
   } catch (e) {
     toast.error(e.message || '搜索失败')
     candidates.value = []

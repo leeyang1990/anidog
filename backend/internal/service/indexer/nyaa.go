@@ -29,8 +29,8 @@ func (n *NyaaIndexer) Name() string { return "nyaa" }
 
 // nyaaRSS 采用手动 XML 解析，因为 gofeed 不直接暴露 nyaa:* 扩展字段
 type nyaaRSS struct {
-	XMLName xml.Name   `xml:"rss"`
-	Channel nyaaChan   `xml:"channel"`
+	XMLName xml.Name `xml:"rss"`
+	Channel nyaaChan `xml:"channel"`
 }
 type nyaaChan struct {
 	Items []nyaaItem `xml:"item"`
@@ -54,7 +54,9 @@ func (n *NyaaIndexer) Search(ctx context.Context, keyword string) ([]Candidate, 
 		n.Client = &http.Client{Timeout: 15 * time.Second}
 	}
 
-	u := n.BaseURL + "/?page=rss&q=" + url.QueryEscape(keyword) + "&c=1_2&f=0"
+	// Source adapters return anime candidates; language eligibility belongs to
+	// the shared policy and media acceptance, not an English-only category.
+	u := n.BaseURL + "/?page=rss&q=" + url.QueryEscape(keyword) + "&c=1_0&f=0"
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
@@ -84,15 +86,15 @@ func (n *NyaaIndexer) Search(ctx context.Context, keyword string) ([]Candidate, 
 	out := make([]Candidate, 0, len(items))
 	for _, it := range items {
 		c := Candidate{
-			Title:      it.Title,
-			TorrentURL: it.Link,
-			InfoHash:   strings.ToUpper(it.InfoHash),
-			Size:       parseHumanSize(it.Size),
-			Seeders:    parseIntSafe(it.Seeders),
-			Leechers:   parseIntSafe(it.Leechers),
+			Title:           it.Title,
+			TorrentURL:      it.Link,
+			InfoHash:        strings.ToUpper(it.InfoHash),
+			Size:            parseHumanSize(it.Size),
+			Seeders:         parseIntSafe(it.Seeders),
+			Leechers:        parseIntSafe(it.Leechers),
 			SeedersReported: true,
-			SourceName: "nyaa",
-			DetailURL:  it.GUID,
+			SourceName:      "nyaa",
+			DetailURL:       it.GUID,
 		}
 		// 从 InfoHash 合成 magnet
 		if c.InfoHash != "" {

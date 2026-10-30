@@ -49,6 +49,7 @@ func (s *Service) inspectContent(ctx context.Context, dl *model.Download, path s
 	}
 	key := digest + ":" + mediacheck.SubtitleInspectorVersion
 	result := s.evidenceFlights.DoChan(key, func() (interface{}, error) {
+		refresh, _ := ctx.Value(refreshUnknownEvidence{}).(bool)
 		var cached model.MediaEvidence
 		err := s.db.WithContext(ctx).Where("video_hash = ? AND inspector_version = ?", digest, mediacheck.SubtitleInspectorVersion).Take(&cached).Error
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -59,16 +60,24 @@ func (s *Service) inspectContent(ctx context.Context, dl *model.Download, path s
 			if err = json.Unmarshal([]byte(cached.Evidence), &evidence); err != nil {
 				return empty, failure.Wrap(failure.Subtitles, failure.StateUnavailable, err)
 			}
-			refresh, _ := ctx.Value(refreshUnknownEvidence{}).(bool)
 			if evidence.InspectorVersion == mediacheck.SubtitleInspectorVersion && !evidence.Retryable && !(refresh && evidence.Language == "") {
 				return contentInspection{evidence, cached.OriginDownloadID}, nil
 			}
 		}
-		inspect := s.subtitleInspector
-		if inspect == nil {
-			inspect = mediacheck.DetectHardSubtitles
+		var evidence mediacheck.SubtitleEvidence
+		var reassessed bool
+		var previous mediacheck.SubtitleEvidence
+		w, h := media.Resolution()
+		if !refresh && dl.VideoHash == digest && json.Unmarshal([]byte(dl.SubtitleEvidence), &previous) == nil && previous.Width == w && previous.Height == h && math.Abs(previous.Duration-media.Duration()) < 0.01 {
+			evidence, reassessed = mediacheck.ReassessRetainedSubtitles(previous)
 		}
-		evidence := inspect(ctx, path, nil, media.Duration())
+		if !reassessed {
+			inspect := s.subtitleInspector
+			if inspect == nil {
+				inspect = mediacheck.DetectHardSubtitles
+			}
+			evidence = inspect(ctx, path, nil, media.Duration())
+		}
 		evidence.InspectorVersion = mediacheck.SubtitleInspectorVersion
 		evidence.Method = "hard_subtitles"
 		evidence.Width, evidence.Height = media.Resolution()

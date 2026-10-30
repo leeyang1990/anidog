@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -498,5 +499,111 @@ func TestFreshInspectionDoesNotClaimOldAttemptProvenance(t *testing.T) {
 	}
 	if copy.EvidenceReusedFrom == nil || *copy.EvidenceReusedFrom != row.ID {
 		t.Fatal("cache provenance does not identify actual inspector", copy.EvidenceReusedFrom)
+	}
+}
+
+func TestRetainedConflictingObservationsAreReassessedAfterDigestVerification(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprint("changed=", changed), func(t *testing.T) {
+			s, row, result := stagedValidationFixture(t)
+			media, err := mediacheck.Probe(context.Background(), result.FilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, h := media.Resolution()
+			previous := mediacheck.SubtitleEvidence{InspectorVersion: "subtitle-v3", Method: "hard_subtitles", Width: w, Height: h, Duration: media.Duration(), Attempted: 3, Extracted: 3, Recognized: 2, OCRErrors: 1, Retryable: true, Samples: []mediacheck.SubtitleSample{
+				{At: media.Duration() * .25, FrameHash: fmt.Sprintf("%064x", 1), Caption: "這個國家的故事還沒有結束我們會再見面"},
+				{At: media.Duration() * .5, FrameHash: fmt.Sprintf("%064x", 2), Caption: "这是我们的世界这个国家学校还有许多故事对话发展"},
+				{At: media.Duration() * .75, FrameHash: fmt.Sprintf("%064x", 3), FailureStage: "ocr", FailureReason: "timeout"},
+			}}
+			raw, _ := json.Marshal(previous)
+			row.VideoHash = "same-verified-video"
+			row.SubtitleEvidence = string(raw)
+			if err := s.db.Model(&row).Updates(map[string]interface{}{"video_hash": row.VideoHash, "subtitle_evidence": row.SubtitleEvidence}).Error; err != nil {
+				t.Fatal(err)
+			}
+			s.videoHasher = func(context.Context, string, string) (string, error) {
+				if changed {
+					return "new-bytes", nil
+				}
+				return row.VideoHash, nil
+			}
+			var calls int
+			s.subtitleInspector = func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence {
+				calls++
+				return mediacheck.SubtitleEvidence{Retryable: true, Reason: "tool unavailable"}
+			}
+			if s.CompleteEpisodeRace(context.Background(), row.ID, result.FilePath, result.FinalPath) {
+				t.Fatal("conflict or outage granted archive eligibility")
+			}
+			s.db.First(&row, row.ID)
+			if !changed {
+				var evidence mediacheck.SubtitleEvidence
+				if json.Unmarshal([]byte(row.SubtitleEvidence), &evidence) != nil || !evidence.Conflicting || evidence.ReassessedFrom != "subtitle-v3" || !reflect.DeepEqual(evidence.Samples, previous.Samples) {
+					t.Fatal("old measurements lost", row.SubtitleEvidence)
+				}
+				if calls != 0 || row.FailureKind != model.FailureKindReview || failure.ResultClass(row) != "review" || row.NextRetryAt != nil {
+					t.Fatal("reassessment caused a repeated measurement or execution retry", calls, row)
+				}
+				for i := 0; i < 2; i++ {
+					if err := s.ResumeMediaValidation(context.Background(), *row.AnimeID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				s.db.First(&row, row.ID)
+				if row.RetryCount != 0 || row.Status != model.DownloadStatusFailed || calls != 0 {
+					t.Fatal("review was retried")
+				}
+				other := NewService(s.db, s.cfg, nil)
+				other.videoHasher = s.videoHasher
+				other.subtitleInspector = func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence {
+					t.Fatal("restart discarded durable conflict")
+					return mediacheck.SubtitleEvidence{}
+				}
+				if e, err := other.inspectContent(context.Background(), &row, result.FilePath, media); err != nil || !e.Conflicting {
+					t.Fatal(e, err)
+				}
+				var origin model.MediaEvidence
+				if err := s.db.First(&origin).Error; err != nil || origin.OriginDownloadID == nil || *origin.OriginDownloadID != row.ID {
+					t.Fatal("measurement producer was lost", origin, err)
+				}
+				// A human's explicit request still performs a new measurement.
+				other.subtitleInspector = func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence {
+					return mediacheck.SubtitleEvidence{Language: "traditional"}
+				}
+				if e, err := other.inspectContent(context.WithValue(context.Background(), refreshUnknownEvidence{}, true), &row, result.FilePath, media); err != nil || e.Language != "traditional" {
+					t.Fatal("explicit inspection could not refresh", e, err)
+				}
+			} else if calls != 1 || failure.FromRecord(row).Code != failure.InspectionFailed {
+				t.Fatal("changed bytes inherited stale measurements", calls, row)
+			}
+			if _, err := os.Stat(result.FilePath); err != nil {
+				t.Fatal("retained payload disappeared", err)
+			}
+		})
+	}
+}
+
+func TestRetainedReviewClearsOldRetryDeadlineInReturnedFacts(t *testing.T) {
+	for _, language := range []string{"", "simplified"} {
+		t.Run("language="+language, func(t *testing.T) {
+			s, row, result := stagedValidationFixture(t)
+			oldDeadline := time.Now().Add(-time.Hour)
+			if err := s.db.Model(&row).Updates(map[string]interface{}{"status": model.DownloadStatusFailed, "file_path": result.FilePath, "failure_kind": model.FailureKindTransient, "next_retry_at": oldDeadline}).Error; err != nil {
+				t.Fatal(err)
+			}
+			s.subtitleInspector = func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence {
+				return mediacheck.SubtitleEvidence{Language: language, Reason: "inspection result"}
+			}
+			got, err := s.InspectRetainedMedia(context.Background(), row.ID)
+			if err != nil || got.NextRetryAt != nil || got.FailureKind != model.FailureKindReview {
+				t.Fatal("response retained obsolete retry deadline", got, err)
+			}
+			var persisted model.Download
+			s.db.First(&persisted, row.ID)
+			if persisted.NextRetryAt != nil || persisted.Status != model.DownloadStatusFailed {
+				t.Fatal(persisted)
+			}
+		})
 	}
 }

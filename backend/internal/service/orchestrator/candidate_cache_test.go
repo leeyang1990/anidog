@@ -2,8 +2,12 @@ package orchestrator
 
 import (
 	"context"
+	"github.com/anidog/anidog-go/internal/config"
+	downloadservice "github.com/anidog/anidog-go/internal/service/download"
+	"github.com/anidog/anidog-go/internal/testutil"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,5 +120,33 @@ func TestFailedMikanRSSDoesNotMasqueradeAsHealthyEmpty(t *testing.T) {
 	got := o.collectBTCandidates(context.Background(), &model.Anime{ID: 42, Title: "Example", MikanBangumiID: &mid}, []indexer.Indexer{&recoveringIndexer{}}, true)
 	if got.Status() != "partial" || got.SuccessfulSources != 1 || len(got.FailedSources) != 1 || got.FailedSources[0] != "mikan_rss" {
 		t.Fatal(got)
+	}
+}
+
+func TestBTFailureDiagnosisUsesSearchAvailability(t *testing.T) {
+	db := testutil.InitTestDB()
+	svc := downloadservice.NewService(db, &config.Config{}, nil)
+	svc.RegisterExecutor(model.DownloadTypeTorrent, &raceQueueExecutor{})
+	idx := &recoveringIndexer{fail: true}
+	o := New(db, svc, nil, nil, map[string]indexer.Indexer{idx.Name(): idx}, t.TempDir())
+	anime := &model.Anime{ID: 42, Title: "Example"}
+	pref := Preference{BTEnabled: true, EnabledIndexers: []string{idx.Name()}, Quality: "1080p", Languages: []string{"simplified"}}
+	ok, n, _, reason, _, _ := o.tryBT(context.Background(), anime, 5, pref, 0, SourceBT, true)
+	if ok || n != 0 || !strings.Contains(reason, "索引请求失败") || strings.Contains(reason, "均无结果") {
+		t.Fatal("execution failure became absence", ok, n, reason)
+	}
+	idx.fail = false
+	key := o.candidateCacheKey(anime, []indexer.Indexer{idx}, false)
+	entry := o.candidates[key]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	o.candidates[key] = entry
+	ok, n, _, reason, _, _ = o.tryBT(context.Background(), anime, 5, pref, 0, SourceBT, true)
+	if ok || n != 0 || !strings.Contains(reason, "均无结果") || strings.Contains(reason, "请求失败") {
+		t.Fatal("recovered empty response retained old failure", reason)
+	}
+	var tasks int64
+	db.Model(&model.Download{}).Count(&tasks)
+	if tasks != 0 {
+		t.Fatal("discovery created an unqualified transfer")
 	}
 }

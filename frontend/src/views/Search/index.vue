@@ -206,6 +206,7 @@ async function doSearch() {
   try {
     const resp = await post('/indexer/search', { keyword: keyword.value.trim(), indexers: selectedIndexers.value })
     results.value = resp.candidates || []
+    if (resp.detail) toast.warning(resp.detail)
   } catch (e) {
     toast.error(e.message || t('pages.search.searchFailed'))
     results.value = []

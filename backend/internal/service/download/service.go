@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -46,7 +45,7 @@ type Service struct {
 	validationSlots       chan struct{}
 	subtitleInspector     func(context.Context, string, []string, float64) mediacheck.SubtitleEvidence
 	videoHasher           func(context.Context, string, string) (string, error)
-	evidenceFlights       singleflight.Group
+	contentInspections    contentInspectionGroup
 	inspectionRequests    sync.Map
 }
 

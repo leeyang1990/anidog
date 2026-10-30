@@ -19,13 +19,6 @@ import (
 
 type refreshUnknownEvidence struct{}
 
-// Provenance belongs to the inspection result, not another attempt that happens
-// to contain the same video. A new tool failure must never inherit old proof.
-type contentInspection struct {
-	evidence mediacheck.SubtitleEvidence
-	origin   *uint
-}
-
 func (s *Service) inspectContent(ctx context.Context, dl *model.Download, path string, media mediacheck.Media) (mediacheck.SubtitleEvidence, error) {
 	var empty mediacheck.SubtitleEvidence
 	before, err := os.Stat(path)
@@ -48,20 +41,20 @@ func (s *Service) inspectContent(ctx context.Context, dl *model.Download, path s
 		return empty, failure.Wrap(failure.Subtitles, failure.InspectionFailed, err)
 	}
 	key := digest + ":" + mediacheck.SubtitleInspectorVersion
-	result := s.evidenceFlights.DoChan(key, func() (interface{}, error) {
-		refresh, _ := ctx.Value(refreshUnknownEvidence{}).(bool)
+	refresh, _ := ctx.Value(refreshUnknownEvidence{}).(bool)
+	inspection, err := s.contentInspections.inspect(ctx, key, refresh, func() (contentInspection, error) {
 		var cached model.MediaEvidence
 		err := s.db.WithContext(ctx).Where("video_hash = ? AND inspector_version = ?", digest, mediacheck.SubtitleInspectorVersion).Take(&cached).Error
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return empty, failure.Wrap(failure.Subtitles, failure.StateUnavailable, err)
+			return contentInspection{}, failure.Wrap(failure.Subtitles, failure.StateUnavailable, err)
 		}
 		if err == nil {
 			var evidence mediacheck.SubtitleEvidence
 			if err = json.Unmarshal([]byte(cached.Evidence), &evidence); err != nil {
-				return empty, failure.Wrap(failure.Subtitles, failure.StateUnavailable, err)
+				return contentInspection{}, failure.Wrap(failure.Subtitles, failure.StateUnavailable, err)
 			}
 			if evidence.InspectorVersion == mediacheck.SubtitleInspectorVersion && !evidence.Retryable && !(refresh && evidence.Language == "") {
-				return contentInspection{evidence, cached.OriginDownloadID}, nil
+				return contentInspection{evidence: evidence, origin: cached.OriginDownloadID}, nil
 			}
 		}
 		var evidence mediacheck.SubtitleEvidence
@@ -84,10 +77,10 @@ func (s *Service) inspectContent(ctx context.Context, dl *model.Download, path s
 		evidence.Duration = media.Duration()
 		after, err := os.Stat(path)
 		if err != nil {
-			return empty, err
+			return contentInspection{}, err
 		}
 		if before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
-			return empty, fmt.Errorf("字幕检查期间成片发生变化，请重新检查")
+			return contentInspection{}, fmt.Errorf("字幕检查期间成片发生变化，请重新检查")
 		}
 		// Tool failures are attempt facts, not immutable content facts.
 		var origin *uint
@@ -100,38 +93,32 @@ func (s *Service) inspectContent(ctx context.Context, dl *model.Download, path s
 		if !evidence.Retryable {
 			raw, err := json.Marshal(evidence)
 			if err != nil {
-				return empty, err
+				return contentInspection{}, err
 			}
 			record := model.MediaEvidence{VideoHash: digest, InspectorVersion: mediacheck.SubtitleInspectorVersion, Evidence: string(raw), OriginDownloadID: origin}
 			if err = s.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "video_hash"}, {Name: "inspector_version"}}, DoUpdates: clause.AssignmentColumns([]string{"evidence", "origin_download_id", "updated_at"})}).Create(&record).Error; err != nil {
-				return empty, failure.Wrap(failure.Subtitles, failure.StateUnavailable, err)
+				return contentInspection{}, failure.Wrap(failure.Subtitles, failure.StateUnavailable, err)
 			}
 		}
-		return contentInspection{evidence, origin}, nil
+		return contentInspection{evidence: evidence, origin: origin, measured: !reassessed}, nil
 	})
-	select {
-	case <-ctx.Done():
-		return empty, ctx.Err()
-	case completed := <-result:
-		if completed.Err != nil {
-			return empty, failure.Wrap(failure.Subtitles, failure.InspectionFailed, completed.Err)
-		}
-		after, statErr := os.Stat(path)
-		if statErr != nil || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
-			return empty, failure.Wrap(failure.Subtitles, failure.InspectionFailed, fmt.Errorf("检查期间成片变化，不能复用旧证据"))
-		}
-		inspection := completed.Val.(contentInspection)
-		evidence := inspection.evidence
-		evidence.TrackLanguages = subtitleTrackLanguages(media)
-		var reused *uint
-		if inspection.origin != nil && *inspection.origin != dl.ID {
-			reused = inspection.origin
-		}
-		if err = s.saveSubtitleEvidence(ctx, dl, digest, evidence, reused); err != nil {
-			return empty, err
-		}
-		return evidence, nil
+	if err != nil {
+		return empty, failure.Wrap(failure.Subtitles, failure.InspectionFailed, err)
 	}
+	after, statErr := os.Stat(path)
+	if statErr != nil || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		return empty, failure.Wrap(failure.Subtitles, failure.InspectionFailed, fmt.Errorf("检查期间成片变化，不能复用旧证据"))
+	}
+	evidence := inspection.evidence
+	evidence.TrackLanguages = subtitleTrackLanguages(media)
+	var reused *uint
+	if inspection.origin != nil && *inspection.origin != dl.ID {
+		reused = inspection.origin
+	}
+	if err = s.saveSubtitleEvidence(ctx, dl, digest, evidence, reused); err != nil {
+		return empty, err
+	}
+	return evidence, nil
 }
 
 func (s *Service) saveSubtitleEvidence(ctx context.Context, dl *model.Download, digest string, evidence mediacheck.SubtitleEvidence, reused *uint) error {

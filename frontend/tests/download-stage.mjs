@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { resolveDownloadStage, hasProgress, STAGE_KEYS } from '../src/utils/downloadStage.js'
+import { fileURLToPath } from 'node:url'
+import { createServer } from 'vite'
+import vue from '@vitejs/plugin-vue'
+import { createSSRApp, h } from 'vue'
+import { createI18n } from 'vue-i18n'
+import { renderToString } from 'vue/server-renderer'
+import { resolveDownloadStage, hasProgress, STAGE_KEYS, STREAM_STAGE_KEYS } from '../src/utils/downloadStage.js'
 
 // 下载阶段轨道：把抽象流程画成逐个点亮的圆点（动森机场信息牌那次借鉴）。
 // 这里盯住两件事：阶段必须由后端真实字段推导（不能靠猜），异常态必须能覆盖。
@@ -8,7 +14,16 @@ import { resolveDownloadStage, hasProgress, STAGE_KEYS } from '../src/utils/down
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8')
 const t = (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key)
 
-const base = { source: 'bt', status: 'downloading', progress: 0, downloaded_bytes: null }
+const base = { source: 'bt', download_type: 'torrent', status: 'downloading', progress: 0, downloaded_bytes: null }
+
+// 来源只用于标签，不能决定传输阶段。Mikan/manual/未来新来源也必须服从实际类型。
+for (const source of ['bt', 'rss', 'mikan', 'manual', 'stream', 'future-source', undefined]) {
+  assert.deepEqual(
+    resolveDownloadStage({ ...base, source, progress: 42 }, t),
+    resolveDownloadStage({ ...base, progress: 42 }, t),
+    `同为 torrent，${source} 来源不应改变阶段`,
+  )
+}
 
 // 1. 正常路径
 const pending = resolveDownloadStage({ ...base, status: 'pending' }, t)
@@ -61,8 +76,21 @@ assert.equal(paused.fill, 45.1)
 const superseded = resolveDownloadStage({ ...base, status: 'superseded', progress: 10 }, t)
 assert.equal(superseded.state, 'paused')
 
-// 4. 流媒体不硬套 BT 阶段
-assert.equal(resolveDownloadStage({ ...base, source: 'stream' }, t), null, '流媒体任务应返回 null 走普通进度条')
+// 4. 真实下载类型决定阶段，不使用来源名推断。未知类型不能冒充 BT。
+for (const source of ['bt', 'rss', 'mikan', 'stream', undefined]) {
+  const stream = resolveDownloadStage({ ...base, source, download_type: 'stream' }, t)
+  assert.deepEqual(stream.stages.map(s => s.key), STREAM_STAGE_KEYS)
+  assert.equal(stream.index, 1)
+  assert.equal(stream.label, 'pages.downloads.stageDownloading')
+  assert.equal(resolveDownloadStage({ ...base, source, download_type: undefined }, t), null)
+  assert.equal(resolveDownloadStage({ ...base, source, download_type: 'future' }, t), null)
+}
+for (const [status, index, state] of [['pending', 0, 'active'], ['queued', 0, 'active'], ['paused', 1, 'paused'], ['failed', 1, 'failed'], ['superseded', 1, 'paused'], ['completed', 2, 'done']]) {
+  const stream = resolveDownloadStage({ ...base, download_type: 'stream', status, progress: 42 }, t)
+  assert.equal(stream.index, index)
+  assert.equal(stream.state, state)
+}
+assert.equal(resolveDownloadStage({ ...base, status: 'unexpected' }, t), null)
 assert.equal(resolveDownloadStage(null, t), null)
 
 // 5. hasProgress 的边界
@@ -90,9 +118,48 @@ assert.match(css, /\.ac-stage-track__dot\[data-status='active'\]::after/)
 assert.match(css, /@keyframes ac-stage-halo \{\s*0% \{\s*transform: scale\(0\.6\)/)
 
 const list = await read('../src/views/Downloads/DownloadList.vue')
-assert.match(list, /resolveDownloadStage\(task, t, t\)/, '下载行必须用纯函数推导阶段')
-assert.match(list, /<AcStageTrack/)
-assert.match(list, /<AcFlipText :text="stageOf\(task\)\.label"/)
-assert.match(list, /<AcCountUp :value="task\.progress \|\| 0"/, '百分比也要滚动')
+assert.match(list, /<DownloadTaskProgress :task="task" :t="t"/)
+assert.doesNotMatch(list, /stageOf\(|<AcStageTrack|<AcProgress/, '列表不能保留另一套进度显示分支')
+
+// 7. 渲染实际 Vue 组件，验证终态、类型、来源和拒收结果的接线。
+const server = await createServer({
+  configFile: false, plugins: [vue()],
+  resolve: { alias: { '@': fileURLToPath(new URL('../src', import.meta.url)) } },
+  server: { middlewareMode: true }, appType: 'custom',
+})
+try {
+  const { default: Progress } = await server.ssrLoadModule('/src/components/Downloads/DownloadTaskProgress.vue')
+  const translate = key => key === 'status.completed' ? '已完成' : key
+  const render = task => renderToString(createSSRApp({ render: () => h(Progress, { task, t: translate }) })
+    .use(createI18n({ legacy: false, messages: {} })))
+  const completed = await render({ ...base, status: 'completed', progress: 100 })
+  assert.match(completed, /已完成 · 100%/)
+  assert.match(completed, /width:100%/)
+  assert.doesNotMatch(completed, /ac-stage-track/)
+  for (const source of ['bt', 'rss', 'mikan', 'stream', 'manual', 'future', undefined]) {
+    for (const download_type of ['torrent', 'stream', 'future', undefined]) {
+      assert.equal(await render({ source, download_type, status: 'completed', progress: 0, metadata_probe_started_at: 'stale', stalled_since: 'stale' }), completed)
+    }
+    const active = await render({ ...base, source, progress: 42 })
+    assert.equal((active.match(/class="ac-stage-track__dot"/g) || []).length, 4)
+    assert.match(active, /stageDownloading/)
+  }
+  const streaming = await render({ ...base, download_type: 'stream', source: 'bt', progress: 42, eta: '02:34' })
+  assert.equal((streaming.match(/class="ac-stage-track__dot"/g) || []).length, 3)
+  assert.doesNotMatch(streaming, /stageMetadata/)
+  assert.match(streaming, /02:34/, '改为阶段展示后仍保留流媒体预计剩余时间')
+  const unverified = await render({ ...base, progress: 100 })
+  assert.match(unverified, /stageDownloading/)
+  assert.doesNotMatch(unverified, /已完成/)
+  for (const result_class of ['review', 'rejected', 'reused']) {
+    assert.doesNotMatch(await render({ ...base, status: 'failed', progress: 100, result_class }), /ac-stage-track|已完成/)
+  }
+  assert.match(await render({ ...base, status: 'failed', result_class: 'error' }), /data-state="failed"/)
+  const unknown = await render({ ...base, download_type: undefined, progress: 42 })
+  assert.match(unknown, /data-presentation="progress"/)
+  assert.doesNotMatch(unknown, /ac-stage-track|stageMetadata/)
+} finally {
+  await server.close()
+}
 
 console.log('download stage tests passed')

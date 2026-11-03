@@ -8,9 +8,11 @@
 //   completed                         -> 完成
 //   异常态叠加：stalled_since（后端停滞检测）、seeking_alternative（已去抢别的源）
 //
-// 流媒体任务没有 BT 这套阶段，返回 null，由调用方退回普通进度条。
+// download_type 决定传输阶段；source 只描述候选来源，不参与进度推导。
+// 未知类型返回 null，不能根据来源猜成 BT。
 
 export const STAGE_KEYS = ['stageQueued', 'stageMetadata', 'stageDownloading', 'stageCompleted']
+export const STREAM_STAGE_KEYS = ['stageQueued', 'stageDownloading', 'stageCompleted']
 
 /** 判定是否有进度可言：有字节或进度大于 0。 */
 export function hasProgress(task) {
@@ -26,30 +28,32 @@ export function hasProgress(task) {
 export function resolveDownloadStage(task, t, tStatus) {
   const statusLabel = tStatus || t
   if (!task) return null
-  const source = task.source
-  if (source && source !== 'bt' && source !== 'rss') return null
+  const keys = task.download_type === 'torrent' ? STAGE_KEYS
+    : task.download_type === 'stream' ? STREAM_STAGE_KEYS : null
+  if (!keys) return null
 
-  const stages = STAGE_KEYS.map((key) => ({ key, label: t(`pages.downloads.${key}`) }))
+  const stages = keys.map((key) => ({ key, label: t(`pages.downloads.${key}`) }))
+  const downloadIndex = keys.indexOf('stageDownloading')
   const progress = Number(task.progress || 0)
   const reachedDownload = hasProgress(task)
 
   if (task.status === 'completed') {
     return {
-      stages, index: 3, state: 'done', fill: 100,
+      stages, index: stages.length - 1, state: 'done', fill: 100,
       label: t('pages.downloads.stageCompleted'), labelClass: 'text-ac-leaf-dark font-bold',
     }
   }
 
   if (task.status === 'failed') {
     return {
-      stages, index: reachedDownload ? 2 : 0, state: 'failed', fill: progress,
+      stages, index: reachedDownload ? downloadIndex : 0, state: 'failed', fill: progress,
       label: statusLabel('status.failed'), labelClass: 'text-ac-heart-dark font-bold',
     }
   }
 
   if (task.status === 'paused') {
     return {
-      stages, index: reachedDownload ? 2 : 0, state: 'paused', fill: progress,
+      stages, index: reachedDownload ? downloadIndex : 0, state: 'paused', fill: progress,
       label: statusLabel('status.paused'), labelClass: 'text-muted-foreground',
     }
   }
@@ -63,16 +67,16 @@ export function resolveDownloadStage(task, t, tStatus) {
 
   if (task.status === 'superseded') {
     return {
-      stages, index: reachedDownload ? 2 : 0, state: 'paused', fill: progress,
+      stages, index: reachedDownload ? downloadIndex : 0, state: 'paused', fill: progress,
       label: statusLabel('status.superseded'), labelClass: 'text-muted-foreground',
     }
   }
 
-  // 其余按 downloading 处理
-  const inMetadata = Boolean(task.metadata_probe_started_at) || !reachedDownload
+  if (task.status !== 'downloading') return null
+  const inMetadata = task.download_type === 'torrent' && (Boolean(task.metadata_probe_started_at) || !reachedDownload)
   const stalled = Boolean(task.stalled_since)
   const seeking = Boolean(task.seeking_alternative)
-  const index = inMetadata ? 1 : 2
+  const index = inMetadata ? 1 : downloadIndex
 
   let label = t('pages.downloads.stageDownloading')
   let labelClass = 'text-ac-grass-dark font-bold'

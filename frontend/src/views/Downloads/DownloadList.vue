@@ -121,37 +121,7 @@
           </div>
 
           <div class="w-40 shrink-0">
-            <!-- BT / RSS：阶段轨道（找源 → 取元数据 → 下载 → 完成），异常态直接在轨道上体现 -->
-            <template v-if="stageOf(task)">
-              <AcStageTrack
-                :stages="stageOf(task).stages"
-                :index="stageOf(task).index"
-                :state="stageOf(task).state"
-                :progress="stageOf(task).fill"
-                class="mb-1"
-              />
-              <div class="flex items-center justify-between gap-1 text-[11px] font-num">
-                <AcFlipText :text="stageOf(task).label" :class="stageOf(task).labelClass" />
-                <span class="text-muted-foreground">
-                  <AcCountUp :value="task.progress || 0" :duration="450" />%
-                </span>
-              </div>
-            </template>
-
-            <!-- 流媒体任务没有 BT 那套阶段，保留普通进度条，不硬套 -->
-            <div v-else-if="task.status === 'downloading' || task.status === 'paused'">
-              <div class="flex items-center justify-between text-xs mb-0.5 font-num">
-                <span class="text-muted-foreground">
-                  <AcCountUp :value="task.progress || 0" :duration="450" />%
-                </span>
-                <span v-if="task.eta && task.status === 'downloading'" class="text-muted-foreground">{{ task.eta }}</span>
-              </div>
-              <AcProgress :value="task.progress || 0" :height="4" :variant="task.status === 'paused' ? 'wood' : 'grass'" />
-            </div>
-            <div v-else-if="task.status === 'completed'">
-              <AcProgress :value="100" :height="4" variant="leaf" />
-            </div>
-            <div v-else class="text-xs text-muted-foreground">—</div>
+            <DownloadTaskProgress :task="task" :t="t" />
           </div>
 
           <div class="w-32 shrink-0 text-right text-xs text-muted-foreground font-num">
@@ -260,14 +230,14 @@ import {
 } from '@vicons/ionicons5'
 import { get, post, del } from '@/utils/api'
 import { isDesktopRuntime, openDesktopPath } from '@/utils/desktop'
-import { resolveDownloadStage } from '@/utils/downloadStage'
 import { downloadOutcome } from '@/utils/downloadOutcome'
 import { useSound } from '@/composables/useSound'
 import DownloadTaskDescription from '@/components/Downloads/DownloadTaskDescription.vue'
+import DownloadTaskProgress from '@/components/Downloads/DownloadTaskProgress.vue'
 import DirectoryPicker from '@/components/Common/DirectoryPicker.vue'
 import {
-  AcButton, AcInput, AcCard, AcEmpty, AcTag, AcProgress, AcModal, AcTextarea,
-  AcCountUp, AcStageTrack, AcFlipText, AcStamp, AcRadialMenu, AcSettleBurst, AcIrisWipe,
+  AcButton, AcInput, AcCard, AcEmpty, AcTag, AcModal, AcTextarea,
+  AcCountUp, AcStamp, AcRadialMenu, AcSettleBurst, AcIrisWipe,
 } from '../../components/ac'
 import { useI18n } from 'vue-i18n'
 
@@ -429,12 +399,6 @@ const filters = computed(() => [
   ...['rejected', 'review', 'reused', 'error'].map(key => ({ key, label: t(`pages.downloads.outcome_${key}`), count: counts.value[key] || 0 })),
 ])
 function statusCount(statuses) { return statuses.reduce((n, key) => n + (counts.value[key] || 0), 0) }
-
-// 阶段推导抽到 utils/downloadStage.js（纯函数，可单测）
-function stageOf(task) {
-  if (task.status === 'failed' && downloadOutcome(task) !== 'error') return null
-  return resolveDownloadStage(task, t, t)
-}
 
 const filteredTasks = computed(() => tasks.value)
 
